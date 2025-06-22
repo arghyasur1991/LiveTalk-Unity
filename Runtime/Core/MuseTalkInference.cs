@@ -264,7 +264,7 @@ namespace LiveTalk.Core
             if (_config.Version == "v15") // v15 mode
             {
                 // Apply v15 extra margin to y2 (bottom of face bbox)
-                adjustedFaceBbox.w = Mathf.Min(adjustedFaceBbox.w + 10f, originalImage.height);
+                adjustedFaceBbox.w = Mathf.Min(adjustedFaceBbox.w + _config.ExtraMargin, originalImage.height);
             }
             
             // Calculate expanded crop box for face_large (matching Python's crop_box calculation)
@@ -1136,7 +1136,7 @@ namespace LiveTalk.Core
                         
                         if (_config.Version == "v15")
                         {
-                            targetHeight += 10; // extra_margin
+                            targetHeight += (int)_config.ExtraMargin; // extra_margin
                             // Clamp to original image height
                             targetHeight = Mathf.Min(targetHeight, faceData.OriginalTexture.height - Mathf.RoundToInt(bbox.y));
                         }
@@ -1155,6 +1155,7 @@ namespace LiveTalk.Core
                             faceData.CropBox,
                             faceData.BlurredMask, 
                             faceData.FaceLarge, 
+                            _config.ExtraMargin,
                             blendingMode);
                         
                         blendedFrames.Add(blendedFrame);

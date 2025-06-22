@@ -21,6 +21,7 @@ namespace LiveTalk.Utils
             Vector4 faceBbox, Vector4 cropBox,
             Frame precomputedBlurredMask, 
             Frame precomputedFaceLarge, 
+            float extraMargin,
             string mode = "raw")
         {
             if (precomputedBlurredMask.data != null)
@@ -29,7 +30,7 @@ namespace LiveTalk.Utils
                 Vector4 adjustedFaceBbox = faceBbox;
                 if (mode == "jaw") // v15 mode
                 {
-                    adjustedFaceBbox.w = Mathf.Min(adjustedFaceBbox.w + 10f, originalImage.height);
+                    adjustedFaceBbox.w = Mathf.Min(adjustedFaceBbox.w + extraMargin, originalImage.height);
                 }
                 
                 // Apply the precomputed blurred mask to blend the face

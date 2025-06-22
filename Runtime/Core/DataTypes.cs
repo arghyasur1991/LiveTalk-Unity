@@ -24,7 +24,7 @@ namespace LiveTalk.Core
         {
             this.modelName = modelName;
             this.preferredExecutionProvider = preferredExecutionProvider;            
-            this.isInt8 = isInt8;
+            this.isInt8 = false; // TODO: Int8 is not currently supported. Keeping it false for now.
             this.version = version;
         }
     }

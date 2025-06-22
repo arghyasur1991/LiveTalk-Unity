@@ -8,19 +8,19 @@ namespace LiveTalk.API
     [Serializable]
     public class LiveTalkConfig
     {
-        public string ModelPath = "MuseTalk";
+        public string ModelPath = "LiveTalk";
         public string Version = "v15"; // only v15 is supported
         public string Device = "cpu"; // "cpu" or "cuda"
         public int BatchSize = 4;
-        public float ExtraMargin = 10f; // Additional margin for v15
-        public bool UseINT8 = true; // Enable INT8 quantization (CPU-optimized, default for Mac)
+        public float ExtraMargin { get; internal set; } = 10f; // Additional margin for v15
+        public bool UseINT8 { get; internal set; } = false; // Enable INT8 quantization TODO: Int8 is not currently supported. Keeping it false for now.
         
         // Disk caching configuration
-        public bool EnableDiskCache = true; // Enable persistent disk caching for avatar processing
+        public bool EnableDiskCache = false; // Enable persistent disk caching for avatar processing
         public string CacheDirectory = ""; // Cache directory path (empty = auto-detect)
         public int MaxCacheEntriesPerAvatar = 1000; // Maximum cache entries per avatar hash
         public long MaxCacheSizeMB = 1024; // Maximum total cache size in MB (1GB default)
-        public int CacheVersionNumber = 1; // Cache version for invalidation on format changes
+        public int CacheVersionNumber { get; internal set; } = 1; // Cache version for invalidation on format changes
         public bool CacheLatentsOnly = false; // Cache only latents (faster) vs full avatar data (slower but complete)
         
         public LiveTalkConfig()
@@ -35,34 +35,6 @@ namespace LiveTalk.API
             }
             ModelPath = modelPath;
             Version = version;
-        }
-        
-        /// <summary>
-        /// Create configuration optimized for performance with disk caching
-        /// </summary>
-        public static LiveTalkConfig CreateOptimized(string modelPath)
-        {
-            return new LiveTalkConfig(modelPath)
-            {
-                EnableDiskCache = true,
-                CacheLatentsOnly = false,
-                MaxCacheSizeMB = 2048,
-                UseINT8 = true
-            };
-        }
-        
-        /// <summary>
-        /// Create configuration for development/debugging with full texture caching
-        /// </summary>
-        public static LiveTalkConfig CreateForDevelopment(string modelPath)
-        {
-            return new LiveTalkConfig(modelPath)
-            {
-                EnableDiskCache = false,
-                CacheLatentsOnly = false, // Full texture caching for debugging
-                MaxCacheSizeMB = 512, // Smaller cache for development
-                UseINT8 = false // Full precision for better quality debugging
-            };
         }
     }
 }

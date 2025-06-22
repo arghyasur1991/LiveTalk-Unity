@@ -294,25 +294,5 @@ namespace LiveTalk.API
             var config = new LiveTalkConfig(modelPath);
             return new LiveTalkAPI(config, avatarController);
         }
-        
-        /// <summary>
-        /// Create an instance optimized for performance
-        /// </summary>
-        public static LiveTalkAPI CreateOptimized(LiveTalkController avatarController, string modelPath = "LiveTalk")
-        {
-            modelPath = Application.streamingAssetsPath + "/" + modelPath;
-            var config = LiveTalkConfig.CreateOptimized(modelPath);
-            return new LiveTalkAPI(config, avatarController);
-        }
-        
-        /// <summary>
-        /// Create an instance optimized for development/debugging
-        /// </summary>
-        public static LiveTalkAPI CreateForDevelopment(LiveTalkController avatarController, string modelPath = "LiveTalk")
-        {
-            modelPath = Application.streamingAssetsPath + "/" + modelPath;
-            var config = LiveTalkConfig.CreateForDevelopment(modelPath);
-            return new LiveTalkAPI(config, avatarController);
-        }
     }
 }
