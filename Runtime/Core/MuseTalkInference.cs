@@ -251,7 +251,7 @@ namespace LiveTalk.Core
             stream.Finished = true;
             Logger.Log($"[MuseTalkInference] === STREAMING GENERATION COMPLETED ===");
         }
-        
+
         /// <summary>
         /// Pre-compute segmentation data that can be cached and reused for all frames
         /// This includes face_large crop, BiSeNet segmentation mask, and all blending masks
@@ -492,86 +492,85 @@ namespace LiveTalk.Core
             }
             
             Logger.Log($"[MuseTalkInference] Processing new avatar animation sequence with {avatarTextures.Length} textures");
-            
             var avatarData = new AvatarData();
-
             var frames = new List<Frame>();
             foreach (var texture in avatarTextures)
             {
                 var frame = TextureUtils.Texture2DToFrame(texture);
                 frames.Add(frame);
             }
-            
-            // Face Detection
-            var result = _faceAnalysis.GetLandmarkAndBbox(frames);
-            List<Vector4> coordsList = result.Item1;
-            List<Frame> framesList = result.Item2;
-            
-            Logger.Log($"[MuseTalkInference] Face detection completed: {coordsList.Count} results for {avatarTextures.Length} input textures");
-            
-            // Process each detected face region
-            for (int i = 0; i < coordsList.Count; i++)
+
+            await Task.Run(async () =>
             {
-                var bbox = coordsList[i];
+                var result = _faceAnalysis.GetLandmarkAndBbox(frames);
+                List<Vector4> coordsList = result.Item1;
+                List<Frame> framesList = result.Item2;
                 
-                if (bbox == Vector4.zero)
+                Logger.Log($"[MuseTalkInference] Face detection completed: {coordsList.Count} results for {avatarTextures.Length} input textures");
+                
+                // Process each detected face region
+                for (int i = 0; i < coordsList.Count; i++)
                 {
-                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {i}, skipping");
-                    continue;
-                }
-                
-                try
-                {                    
-                    var originalTexture = framesList[i];
-                    
-                    // Crop face region with version-specific margins
-                    var croppedTexture = _faceAnalysis.CropFaceRegion(originalTexture, bbox, _config.Version);
-                    
-                    // Pre-compute segmentation mask and cached data for blending
-                    var segmentationData = PrecomputeSegmentationData(originalTexture, bbox, _config.Version);
-                   
-                    // Create face data for this region using byte arrays
-                    var faceData = new FaceData
+                    var bbox = coordsList[i];
+                    if (bbox == Vector4.zero)
                     {
-                        HasFace = true,
-                        BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
-                        CroppedFaceTexture = croppedTexture,
-                        OriginalTexture = originalTexture,
-                        FaceLarge = segmentationData.FaceLarge,
-                        SegmentationMask = segmentationData.SegmentationMask,
-                        AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
-                        CropBox = segmentationData.CropBox,
+                        Logger.LogWarning($"[MuseTalkInference] No face detected in image {i}, skipping");
+                        continue;
+                    }
+                    
+                    try
+                    {                    
+                        var originalFrame = framesList[i];
                         
-                        MaskSmall = segmentationData.MaskSmall,
-                        FullMask = segmentationData.FullMask,
-                        BoundaryMask = segmentationData.BoundaryMask,
-                        BlurredMask = segmentationData.BlurredMask
-                    };
+                        // Crop face region with version-specific margins
+                        var croppedFrame = _faceAnalysis.CropFaceRegion(originalFrame, bbox, _config.Version);
+                        
+                        // Pre-compute segmentation mask and cached data for blending
+                        var segmentationData = PrecomputeSegmentationData(originalFrame, bbox, _config.Version);
                     
-                    avatarData.FaceRegions.Add(faceData);
-                    
-                    // Get latents for UNet - use cached latents if available
-                    float[] latents;
-                    if (diskCachedData != null && i < diskCachedData.Latents.Count)
-                    {
-                        // Use cached latents from disk
-                        latents = diskCachedData.Latents[i];
-                        Logger.Log($"[MuseTalkInference] Using cached latents for face region {i}");
+                        // Create face data for this region using byte arrays
+                        var faceData = new FaceData
+                        {
+                            HasFace = true,
+                            BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
+                            CroppedFaceTexture = croppedFrame,
+                            OriginalTexture = originalFrame,
+                            FaceLarge = segmentationData.FaceLarge,
+                            SegmentationMask = segmentationData.SegmentationMask,
+                            AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
+                            CropBox = segmentationData.CropBox,
+                            
+                            MaskSmall = segmentationData.MaskSmall,
+                            FullMask = segmentationData.FullMask,
+                            BoundaryMask = segmentationData.BoundaryMask,
+                            BlurredMask = segmentationData.BlurredMask
+                        };
+                        
+                        avatarData.FaceRegions.Add(faceData);
+                        
+                        // Get latents for UNet - use cached latents if available
+                        float[] latents;
+                        if (diskCachedData != null && i < diskCachedData.Latents.Count)
+                        {
+                            // Use cached latents from disk
+                            latents = diskCachedData.Latents[i];
+                            Logger.Log($"[MuseTalkInference] Using cached latents for face region {i}");
+                        }
+                        else
+                        {
+                            // Generate new latents
+                            latents = await GetLatentsForUNet(croppedFrame);
+                        }
+                        avatarData.Latents.Add(latents);
                     }
-                    else
+                    catch (Exception e)
                     {
-                        // Generate new latents
-                        latents = await GetLatentsForUNet(croppedTexture);
+                        Logger.LogError($"[MuseTalkInference] Error processing face region {i}: {e.Message}");
+                        Logger.LogError($"[MuseTalkInference] Stack trace: {e.StackTrace}");
+                        // Continue processing other faces, but this will be caught in validation later
                     }
-                    avatarData.Latents.Add(latents);
                 }
-                catch (Exception e)
-                {
-                    Logger.LogError($"[MuseTalkInference] Error processing face region {i}: {e.Message}");
-                    Logger.LogError($"[MuseTalkInference] Stack trace: {e.StackTrace}");
-                    // Continue processing other faces, but this will be caught in validation later
-                }
-            }
+            });
             
             // Validate that we have processed at least one face successfully
             if (avatarData.FaceRegions.Count == 0)
@@ -588,10 +587,6 @@ namespace LiveTalk.Core
             {
                 Logger.LogWarning($"[MuseTalkInference] Latent count ({avatarData.Latents.Count}) does not match face region count ({avatarData.FaceRegions.Count}). Some faces may have failed processing.");
             }
-            
-            // Store avatar data for later use in blending
-            _avatarData = avatarData;
-            
             // Cache the processed avatar animation for reuse
             ManageCacheSize();
             _avatarAnimationCache[memoryCacheKey] = avatarData;
@@ -609,9 +604,10 @@ namespace LiveTalk.Core
                     Logger.LogWarning($"[MuseTalkInference] Failed to save to disk cache: {e.Message}");
                 }
             }
-            
-            Logger.Log($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} face regions with {avatarData.Latents.Count} latent sets across {avatarTextures.Length} avatar textures");
-            
+
+            _avatarData = avatarData;
+            Logger.Log($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
+                $"face regions with {avatarData.Latents.Count} latent sets across {avatarTextures.Length} avatar textures");            
             return avatarData;
         }
         
