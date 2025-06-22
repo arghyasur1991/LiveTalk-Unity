@@ -13,18 +13,25 @@ namespace LiveTalk.Core
         CoreML
     }
 
+    internal enum Precision
+    {
+        FP32,
+        FP16,
+        INT8
+    }
+
     internal class ModelConfig
     {
         public string modelName = "";
         public ExecutionProvider preferredExecutionProvider = ExecutionProvider.CPU;
-        public bool isInt8 = false;
+        public Precision precision = Precision.FP32;
         public string version = "";
 
-        public ModelConfig(string modelName, ExecutionProvider preferredExecutionProvider, bool isInt8, string version)
+        public ModelConfig(string modelName, ExecutionProvider preferredExecutionProvider, Precision precision, string version)
         {
             this.modelName = modelName;
             this.preferredExecutionProvider = preferredExecutionProvider;            
-            this.isInt8 = false; // TODO: Int8 is not currently supported. Keeping it false for now.
+            this.precision = precision;
             this.version = version;
         }
     }

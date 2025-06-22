@@ -119,7 +119,7 @@ namespace LiveTalk.Core
                 _landmarkRunner = new Model(_config, "landmark", ExecutionProvider.CoreML);
                 
                 // Load face parsing model (required for complete face analysis)
-                _faceParsing = new Model(_config, "face_parsing", ExecutionProvider.CoreML, true);
+                _faceParsing = new Model(_config, "face_parsing", ExecutionProvider.CoreML);
                 
                 // Verify all models initialized (including face parsing)
                 bool allInitialized = _detFace != null && _landmark2d106 != null && _landmarkRunner != null && _faceParsing != null;

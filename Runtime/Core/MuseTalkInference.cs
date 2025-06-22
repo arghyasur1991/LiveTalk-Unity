@@ -206,10 +206,10 @@ namespace LiveTalk.Core
         /// </summary>
         private void InitializeModels()
         {
-            _unet = new Model(_config, "unet", ExecutionProvider.CPU, true, _config.Version);
-            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CoreML, true, _config.Version);
-            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CoreML, true, _config.Version);
-            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, true, _config.Version);
+            _unet = new Model(_config, "unet", ExecutionProvider.CPU, Precision.FP32, _config.Version);
+            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CoreML, Precision.FP16, _config.Version);
+            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CoreML, Precision.FP16, _config.Version);
+            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, Precision.FP32, _config.Version);
         }
 
         /// <summary>

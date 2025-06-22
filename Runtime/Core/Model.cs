@@ -23,10 +23,10 @@ namespace LiveTalk.Core
             LiveTalkConfig config, 
             string modelName, 
             ExecutionProvider preferredExecutionProvider = ExecutionProvider.CPU, 
-            bool isInt8 = false, 
+            Precision precision = Precision.FP32, 
             string version = "")
         {
-            _config = new ModelConfig(modelName, preferredExecutionProvider, isInt8, version);
+            _config = new ModelConfig(modelName, preferredExecutionProvider, precision, version);
             _loadTask = LoadModel(config);
         }
 

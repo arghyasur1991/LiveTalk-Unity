@@ -77,7 +77,7 @@ namespace LiveTalk.Utils
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             var sessionOptions = CreateSessionOptions(config);
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
-                    (!config.UseINT8 || !modelConfig.isInt8)) // Use CoreML if INT8 is not enabled
+                !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
             {
                 sessionOptions.AppendExecutionProvider_CoreML(
                     CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
@@ -89,6 +89,11 @@ namespace LiveTalk.Utils
             return model;
         }
 
+        private static bool IsInt8Enabled(LiveTalkConfig config, ModelConfig modelConfig)
+        {
+            return config.UseINT8 && modelConfig.precision == Precision.INT8;
+        }
+
         /// <summary>
         /// Get model file path with optimal quality/performance balance
         /// QUALITY OPTIMIZATION: Automatically use FP32 for VAE models to preserve image quality
@@ -96,11 +101,12 @@ namespace LiveTalk.Utils
         public static string GetModelPath(LiveTalkConfig config, ModelConfig modelConfig)
         {
             bool isVersionIndependent = modelConfig.version == "";
-            bool useInt8 = config.UseINT8 && modelConfig.isInt8;
+            string precisionSuffix = modelConfig.precision == Precision.FP32 ? "" : 
+                                        $"_{modelConfig.precision.ToString().ToLower()}";
 
             string modelName = modelConfig.modelName;
             modelName += isVersionIndependent ? "" : $"_{modelConfig.version}";
-            modelName += useInt8 ? "_int8" : "";
+            modelName += precisionSuffix;
             string modelPath = Path.Combine(config.ModelPath, $"{modelName}.onnx");
             if (!File.Exists(modelPath))
             {
