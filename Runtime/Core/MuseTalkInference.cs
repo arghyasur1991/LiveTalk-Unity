@@ -998,22 +998,16 @@ namespace LiveTalk.Core
         {
             return await Task.Run(async () =>
             {
-                // Match Python timestep preparation
-                int batchSize = (int)latentBatch.Dimensions[0];
-                var timesteps = new long[batchSize];
-                for (int i = 0; i < batchSize; i++)
-                    timesteps[i] = 0L;
-                
-                var timestepTensor = new DenseTensor<long>(timesteps, new[] { batchSize });
-
-                await _unet.LoadInput(0, latentBatch);
-                await _unet.LoadInput(1, timestepTensor);
-                await _unet.LoadInput(2, audioBatch);
+                var inputs = new List<Tensor<float>>
+                {
+                    latentBatch,
+                    audioBatch
+                };
                 
                 _reusableUNetResult?.Dispose();
                 
                 // Keep the result alive as a member variable to prevent GC of tensor memory
-                _reusableUNetResult = await _unet.Run();
+                _reusableUNetResult = await _unet.Run(inputs);
                 var output = _reusableUNetResult.First().AsTensor<float>();
                 
                 // OPTIMIZATION: Return the tensor directly without copying via ToArray()
