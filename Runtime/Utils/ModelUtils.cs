@@ -79,7 +79,10 @@ namespace LiveTalk.Utils
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
                     (!config.UseINT8 || !modelConfig.isInt8)) // Use CoreML if INT8 is not enabled
             {
-                sessionOptions.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU);
+                sessionOptions.AppendExecutionProvider_CoreML(
+                    CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
+                    CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
+                    CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
             }
             var model = new InferenceSession(modelPath, sessionOptions);
             Debug.Log($"[ModelUtils] Loaded model: {modelPath}");
