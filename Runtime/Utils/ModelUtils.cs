@@ -86,7 +86,8 @@ namespace LiveTalk.Utils
             if (
                 modelName == "1k3d68" ||
                 modelName == "2d106det" ||
-                modelName == "warping_spade"
+                modelName == "warping_spade" || 
+                modelName == "face_parsing"
             )
             {
                 sessionOptions.AppendExecutionProvider_CoreML();
