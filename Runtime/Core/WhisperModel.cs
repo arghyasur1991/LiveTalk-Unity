@@ -15,7 +15,7 @@ namespace LiveTalk.Core
     /// </summary>
     internal class WhisperModel : IDisposable
     {
-        private InferenceSession _session;
+        private Model _model;
         private bool _isInitialized = false;
         
         // Model constants matching Python implementation
@@ -67,30 +67,8 @@ namespace LiveTalk.Core
         /// </summary>
         public WhisperModel(LiveTalkConfig config)
         {
-            _session = ModelUtils.LoadModel(config, "whisper_encoder");
+            _model = new Model(config, "whisper_encoder", ExecutionProvider.CPU, true);
             _isInitialized = true;
-            VerifyModelSignature();
-        }
-        
-        private void VerifyModelSignature()
-        {
-            if (!_isInitialized || _session == null) return;
-            
-            var inputMeta = _session.InputMetadata;
-            var outputMeta = _session.OutputMetadata;
-            
-            // Debug.Log($"[WhisperModel] Inputs: {string.Join(", ", inputMeta.Keys)}");
-            // Debug.Log($"[WhisperModel] Outputs: {string.Join(", ", outputMeta.Keys)}");
-            
-            if (!inputMeta.ContainsKey(INPUT_NAME))
-            {
-                Debug.LogError($"[WhisperModel] Expected input '{INPUT_NAME}' not found");
-            }
-            
-            if (!outputMeta.ContainsKey(OUTPUT_NAME))
-            {
-                Debug.LogError($"[WhisperModel] Expected output '{OUTPUT_NAME}' not found");
-            }
         }
         
         /// <summary>
@@ -398,13 +376,12 @@ namespace LiveTalk.Core
             // Create ONNX tensor
             var inputShape = new int[] { 1, melBands, TARGET_FRAMES };
             var tensor = new DenseTensor<float>(inputTensor.Cast<float>().ToArray(), inputShape);
-            
-            var inputs = new List<NamedOnnxValue>
+            var inputs = new List<Tensor<float>>
             {
-                NamedOnnxValue.CreateFromTensor(INPUT_NAME, tensor)
+                tensor
             };
             
-            using var outputs = _session.Run(inputs);
+            using var outputs = _model.Run(inputs);
             var output = outputs.First(o => o.Name == OUTPUT_NAME);
             
             if (output.Value is DenseTensor<float> outputTensor)
@@ -540,8 +517,8 @@ namespace LiveTalk.Core
         
         public void Dispose()
         {
-            _session?.Dispose();
-            _session = null;
+            _model?.Dispose();
+            _model = null;
             _isInitialized = false;
             Debug.Log("[WhisperModel] Disposed");
         }

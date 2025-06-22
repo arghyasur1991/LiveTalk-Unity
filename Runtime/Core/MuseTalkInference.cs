@@ -101,10 +101,10 @@ namespace LiveTalk.Core
         private static readonly DebugLogger Logger = new();
         
         // ONNX Runtime sessions
-        private InferenceSession _unetSession;
-        private InferenceSession _vaeEncoderSession;
-        private InferenceSession _vaeDecoderSession;
-        private InferenceSession _positionalEncodingSession;
+        private Model _unet;
+        private Model _vaeEncoder;
+        private Model _vaeDecoder;
+        private Model _positionalEncoding;
         
         // Whisper model for audio feature extraction
         private readonly WhisperModel _whisperModel;
@@ -206,10 +206,10 @@ namespace LiveTalk.Core
         /// </summary>
         private void InitializeModels()
         {
-            _unetSession = ModelUtils.LoadModel(_config, "unet");
-            _vaeEncoderSession = ModelUtils.LoadModel(_config, "vae_encoder");
-            _vaeDecoderSession = ModelUtils.LoadModel(_config, "vae_decoder");
-            _positionalEncodingSession = ModelUtils.LoadModel(_config, "positional_encoding");
+            _unet = new Model(_config, "unet", ExecutionProvider.CPU, true, "v15");
+            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CPU, true, "v15");
+            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CPU, true, "v15");
+            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, true, "v15");
         }
 
         /// <summary>
@@ -670,13 +670,13 @@ namespace LiveTalk.Core
                 var resizedData = FrameUtils.ResizeFrame(image, 256, 256, SamplingMode.Bilinear);
                 var inputTensor = FrameUtils.FrameToTensor(resizedData, 2.0f / 255.0f, -1.0f);
                 
-                var inputs = new List<NamedOnnxValue>
+                var inputs = new List<Tensor<float>>
                 {
-                    NamedOnnxValue.CreateFromTensor("image", inputTensor)
+                    inputTensor
                 };
                 
                 // Run VAE encoder
-                using var results = _vaeEncoderSession.Run(inputs);
+                using var results = _vaeEncoder.Run(inputs);
 
                 var latents = results.First(r => r.Name == "latents").AsTensor<float>();
                 var result = latents.ToArray();
@@ -697,13 +697,13 @@ namespace LiveTalk.Core
                 var resizedData = FrameUtils.ResizeFrame(image, 256, 256, SamplingMode.Bilinear);
                 var inputTensor = FrameUtils.FrameToTensor(resizedData, 2.0f / 255.0f, -1.0f, applyLowerHalfMask: true);
                 
-                var inputs = new List<NamedOnnxValue>
+                var inputs = new List<Tensor<float>>
                 {
-                    NamedOnnxValue.CreateFromTensor("image", inputTensor)
+                    inputTensor
                 };
                 
                 // Run VAE encoder
-                using var results = _vaeEncoderSession.Run(inputs);
+                using var results = _vaeEncoder.Run(inputs);
                 var latents = results.First(r => r.Name == "latents").AsTensor<float>();
                 
                 return latents.ToArray();
@@ -981,12 +981,12 @@ namespace LiveTalk.Core
         {
             return await Task.Run(() =>
             {
-                var inputs = new List<NamedOnnxValue>
+                var inputs = new List<Tensor<float>>
                 {
-                    NamedOnnxValue.CreateFromTensor("audio_features", audioBatch)
+                    audioBatch
                 };
                 
-                using var results = _positionalEncodingSession.Run(inputs);
+                using var results = _positionalEncoding.Run(inputs);
                 var output = results.First().AsTensor<float>();
                 var result = new DenseTensor<float>(output.ToArray(), output.Dimensions.ToArray());
                 
@@ -1010,18 +1010,15 @@ namespace LiveTalk.Core
                     timesteps[i] = 0L;
                 
                 var timestepTensor = new DenseTensor<long>(timesteps, new[] { batchSize });
-                
-                var inputs = new List<NamedOnnxValue>
-                {
-                    NamedOnnxValue.CreateFromTensor("input_latents", latentBatch),
-                    NamedOnnxValue.CreateFromTensor("timesteps", timestepTensor),
-                    NamedOnnxValue.CreateFromTensor("audio_prompts", audioBatch)
-                };
+
+                _unet.LoadInput(0, latentBatch);
+                _unet.LoadInput(1, timestepTensor);
+                _unet.LoadInput(2, audioBatch);
                 
                 _reusableUNetResult?.Dispose();
                 
                 // Keep the result alive as a member variable to prevent GC of tensor memory
-                _reusableUNetResult = _unetSession.Run(inputs);
+                _reusableUNetResult = _unet.Run();
                 var output = _reusableUNetResult.First().AsTensor<float>();
                 
                 // OPTIMIZATION: Return the tensor directly without copying via ToArray()
@@ -1058,12 +1055,12 @@ namespace LiveTalk.Core
                 
                 try
                 {
-                    var inputs = new List<NamedOnnxValue>
+                    var inputs = new List<Tensor<float>>
                     {
-                        NamedOnnxValue.CreateFromTensor("latents", unetOutputBatch)
+                        unetOutputBatch
                     };
                     
-                    using var results = _vaeDecoderSession.Run(inputs);
+                    using var results = _vaeDecoder.Run(inputs);
 
                     var batchImageOutputValue = results.First();
                     batchImageOutput = batchImageOutputValue.AsTensor<float>(); // Keep alive
@@ -1239,10 +1236,10 @@ namespace LiveTalk.Core
         {
             if (!_disposed)
             {
-                _unetSession?.Dispose();
-                _vaeEncoderSession?.Dispose();
-                _vaeDecoderSession?.Dispose();
-                _positionalEncodingSession?.Dispose();
+                _unet?.Dispose();
+                _vaeEncoder?.Dispose();
+                _vaeDecoder?.Dispose();
+                _positionalEncoding?.Dispose();
                 _whisperModel?.Dispose();
                 _faceAnalysis?.Dispose();
                 _reusableUNetResult?.Dispose();

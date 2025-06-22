@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
-using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace LiveTalk.Core
@@ -39,10 +38,10 @@ namespace LiveTalk.Core
         private static readonly DebugLogger Logger = new();
         
         // LivePortrait ONNX models - matches Python models dict exactly
-        private InferenceSession _appearanceFeatureExtractor;  // feature extraction
-        private InferenceSession _motionExtractor;  // motion parameters
-        private InferenceSession _stitching;  // keypoint stitching
-        private InferenceSession _warpingSpade;  // neural warping
+        private Model _appearanceFeatureExtractor;  // feature extraction
+        private Model _motionExtractor;  // motion parameters
+        private Model _stitching;  // keypoint stitching
+        private Model _warpingSpade;  // neural warping
         
         // Face analysis (using consolidated FaceAnalysis class)
         private FaceAnalysis _faceAnalysis;
@@ -89,10 +88,10 @@ namespace LiveTalk.Core
         
         private void InitializeModels()
         {
-            _appearanceFeatureExtractor = ModelUtils.LoadModel(_config, "appearance_feature_extractor");
-            _motionExtractor = ModelUtils.LoadModel(_config, "motion_extractor");
-            _stitching = ModelUtils.LoadModel(_config, "stitching");
-            _warpingSpade = ModelUtils.LoadModel(_config, "warping_spade");
+            _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor");
+            _motionExtractor = new Model(_config, "motion_extractor");
+            _stitching = new Model(_config, "stitching");
+            _warpingSpade = new Model(_config, "warping_spade", ExecutionProvider.CoreML);
             
             // Initialize consolidated face analysis
             _faceAnalysis = new FaceAnalysis(_config);
@@ -504,7 +503,7 @@ namespace LiveTalk.Core
                 preprocessedData
             };
             
-            var results = ModelUtils.RunModel("motion_extractor", _motionExtractor, inputs);
+            var results = _motionExtractor.Run(inputs);
             
             // OPTIMIZED: Work with tensors directly, avoiding ToArray() calls until the final step
             var pitchTensor = results[1].AsTensor<float>();
@@ -655,7 +654,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = ModelUtils.RunModel("appearance_feature_extractor", _appearanceFeatureExtractor, inputs);
+            var results = _appearanceFeatureExtractor.Run(inputs);
             var outputTensor = results.First().AsTensor<float>();
             
             // Python: f_s = output[0]
@@ -960,7 +959,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = ModelUtils.RunModel("stitching", _stitching, inputs);
+            var results = _stitching.Run(inputs);
             var delta = results.First().AsTensor<float>().ToArray();
             
             // Python: delta_exp = delta[..., : 3 * num_kp].reshape(bs, num_kp, 3)  # 1x20x3
@@ -1031,7 +1030,7 @@ namespace LiveTalk.Core
                 kpSourceTensor   // kp_source
             };
             
-            var results = ModelUtils.RunModel("warping_spade", _warpingSpade, inputs);
+            var results = _warpingSpade.Run(inputs);
             
             // Python: return output[0] - take the first output (warped_feature)
             var output = results[0].AsTensor<float>().ToArray();

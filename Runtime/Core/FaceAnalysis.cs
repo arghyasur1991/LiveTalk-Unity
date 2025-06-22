@@ -81,10 +81,10 @@ namespace LiveTalk.Core
         private static readonly DebugLogger Logger = new();
         
         // ONNX Models
-        private readonly InferenceSession _detFace;      // Face detection model
-        private readonly InferenceSession _landmark2d106; // 106 landmark detection model
-        private readonly InferenceSession _landmarkRunner; // Landmark refinement model
-        private readonly InferenceSession _faceParsingSession; // Face parsing/segmentation model
+        private readonly Model _detFace;      // Face detection model
+        private readonly Model _landmark2d106; // 106 landmark detection model
+        private readonly Model _landmarkRunner; // Landmark refinement model
+        private readonly Model _faceParsing; // Face parsing/segmentation model
         
         // Configuration
         private readonly LiveTalkConfig _config;
@@ -113,15 +113,15 @@ namespace LiveTalk.Core
             try
             {
                 // Load all required models
-                _detFace = ModelUtils.LoadModel(_config, "det_10g");
-                _landmark2d106 = ModelUtils.LoadModel(_config, "2d106det");
-                _landmarkRunner = ModelUtils.LoadModel(_config, "landmark");
+                _detFace = new Model(_config, "det_10g");
+                _landmark2d106 = new Model(_config, "2d106det", ExecutionProvider.CoreML);
+                _landmarkRunner = new Model(_config, "landmark");
                 
                 // Load face parsing model (required for complete face analysis)
-                _faceParsingSession = ModelUtils.LoadModel(_config, "face_parsing");
+                _faceParsing = new Model(_config, "face_parsing", ExecutionProvider.CoreML, true);
                 
                 // Verify all models initialized (including face parsing)
-                bool allInitialized = _detFace != null && _landmark2d106 != null && _landmarkRunner != null && _faceParsingSession != null;
+                bool allInitialized = _detFace != null && _landmark2d106 != null && _landmarkRunner != null && _faceParsing != null;
                 
                 if (!allInitialized)
                 {
@@ -129,7 +129,7 @@ namespace LiveTalk.Core
                     if (_detFace == null) failedModels.Add("DetFace");
                     if (_landmark2d106 == null) failedModels.Add("Landmark106");
                     if (_landmarkRunner == null) failedModels.Add("LandmarkRunner");
-                    if (_faceParsingSession == null) failedModels.Add("FaceParsing");
+                    if (_faceParsing == null) failedModels.Add("FaceParsing");
                     
                     throw new InvalidOperationException($"Failed to initialize face analysis models: {string.Join(", ", failedModels)}");
                 }
@@ -254,7 +254,7 @@ namespace LiveTalk.Core
             // Python: output = det_face.run(None, {"input.1": det_img})
             // Use the actual input name from the model metadata - EXACT MATCH
             var inputs = new List<Tensor<float>> { inputTensor };
-            var results = ModelUtils.RunModel("det_face", _detFace, inputs);
+            var results = _detFace.Run(inputs);
             var outputs = results.ToArray();
             
             // Process detection results exactly as in LivePortraitInference
@@ -298,7 +298,7 @@ namespace LiveTalk.Core
             
             // Python: output = landmark.run(None, {"data": aimg})
             var inputs = new List<Tensor<float>> { inputTensor };
-            var results = ModelUtils.RunModel("landmark2d106", _landmark2d106, inputs);
+            var results = _landmark2d106.Run(inputs);
             var output = results.First().AsTensor<float>().ToArray();
             
             // Python: pred = output[0][0]
@@ -346,7 +346,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = ModelUtils.RunModel("landmark_runner", _landmarkRunner, inputs);
+            var results = _landmarkRunner.Run(inputs);
             var outputs = results.ToArray();
             
             // Python: out_pts = output[2]
@@ -1088,7 +1088,7 @@ namespace LiveTalk.Core
             };
             
             // Run inference using ModelUtils for consistency
-            var results = ModelUtils.RunModel("face_parsing", _faceParsingSession, inputs);
+            var results = _faceParsing.Run(inputs);
             var output = results.First().AsTensor<float>();
             
             // Convert output to segmentation map [512, 512]
@@ -1251,7 +1251,7 @@ namespace LiveTalk.Core
                 _detFace?.Dispose();
                 _landmark2d106?.Dispose();
                 _landmarkRunner?.Dispose();
-                _faceParsingSession?.Dispose();
+                _faceParsing?.Dispose();
                 _disposed = true;
                 Logger.Log("[FaceAnalysis] Disposed");
             }

@@ -77,17 +77,18 @@ namespace LiveTalk.Utils
             return options;
         }
 
-        public static InferenceSession LoadModel(LiveTalkConfig config, string modelName)
+        public static InferenceSession LoadModel(LiveTalkConfig config, ModelConfig modelConfig)
         {
-            string modelPath = GetModelPath(config, modelName);
+            string modelPath = GetModelPath(config, modelConfig);
             if (!File.Exists(modelPath))
-                throw new FileNotFoundException($"{modelName} model not found: {modelPath}");
+                throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             var sessionOptions = CreateSessionOptions(config);
             if (
-                modelName == "1k3d68" ||
-                modelName == "2d106det" ||
-                modelName == "warping_spade" || 
-                modelName == "face_parsing"
+                // modelConfig.modelName == "1k3d68" ||
+                // modelConfig.modelName == "2d106det" ||
+                // modelConfig.modelName == "warping_spade" || 
+                // modelConfig.modelName == "face_parsing"
+                modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
             )
             {
                 sessionOptions.AppendExecutionProvider_CoreML();
@@ -97,80 +98,37 @@ namespace LiveTalk.Utils
             return model;
         }
 
-        public static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunModel(string modelName, InferenceSession session, List<Tensor<float>> inputTensors)
-        {
-            var inputNames = session.InputMetadata.Keys.ToArray();
-            if (inputTensors.Count != inputNames.Length)
-            {
-                throw new Exception($"Input tensors count mismatch: {inputTensors.Count} != {inputNames.Length}");
-            }
-            var inputs = new List<NamedOnnxValue>(inputTensors.Count);
-            for (int i = 0; i < inputTensors.Count; i++)
-            {
-                inputs.Add(NamedOnnxValue.CreateFromTensor(inputNames[i], inputTensors[i]));
-            }
-            var start = System.Diagnostics.Stopwatch.StartNew();
-            var results = session.Run(inputs);
-            var elapsed = start.ElapsedMilliseconds;
-            Debug.Log($"[ModelUtils] RunModel {modelName} took {elapsed}ms");
-            return results;
-        }
-
         /// <summary>
         /// Get model file path with optimal quality/performance balance
         /// QUALITY OPTIMIZATION: Automatically use FP32 for VAE models to preserve image quality
         /// </summary>
-        public static string GetModelPath(LiveTalkConfig config, string baseName)
+        public static string GetModelPath(LiveTalkConfig config, ModelConfig modelConfig)
         {
             // SPECIAL CASE: Models that don't use version suffix
-            bool isVersionIndependent = baseName.Contains("whisper_encoder") || 
-                                        baseName.Contains("face_parsing") ||
-                                        baseName.Contains("det_10g") ||
-                                        baseName.Contains("1k3d68") ||
-                                        // LivePortrait models are version independent
-                                        baseName == "appearance_feature_extractor" ||
-                                        baseName == "motion_extractor" ||
-                                        baseName == "warping_spade" ||
-                                        baseName == "stitching" ||
-                                        baseName == "landmark" ||
-                                        baseName == "2d106det";
-            
-            string baseModelPath;
-            if (isVersionIndependent)
+            // bool isVersionIndependent = baseName.Contains("whisper_encoder") || 
+            //                             baseName.Contains("face_parsing") ||
+            //                             baseName.Contains("det_10g") ||
+            //                             baseName.Contains("1k3d68") ||
+            //                             // LivePortrait models are version independent
+            //                             baseName == "appearance_feature_extractor" ||
+            //                             baseName == "motion_extractor" ||
+            //                             baseName == "warping_spade" ||
+            //                             baseName == "stitching" ||
+            //                             baseName == "landmark" ||
+            //                             baseName == "2d106det";
+
+            bool isVersionIndependent = modelConfig.version == "";
+            bool useInt8 = config.UseINT8 && modelConfig.isInt8;
+
+            string modelName = modelConfig.modelName;
+            modelName += useInt8 ? "_int8" : "";
+            modelName += isVersionIndependent ? "" : $"_{modelConfig.version}";
+            string modelPath = Path.Combine(config.ModelPath, $"{modelName}.onnx");
+            if (!File.Exists(modelPath))
             {
-                baseModelPath = Path.Combine(config.ModelPath, $"{baseName}.onnx");
+                throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             }
-            else
-            {
-                baseModelPath = Path.Combine(config.ModelPath, $"{baseName}_{config.Version}.onnx");
-            }
-            
-            bool forceFP32 = false; // baseName.Contains("vae_decoder"); // VAE decoder quality is sensitive to FP32
-            
-            // For other models: Priority INT8 for CPU optimization > FP32 fallback
-            if (config.UseINT8 && !forceFP32)
-            {
-                // Try INT8 model first (optimal for CPU performance)
-                string int8ModelPath;
-                if (isVersionIndependent)
-                {
-                    int8ModelPath = Path.Combine(config.ModelPath, $"{baseName}_int8.onnx");
-                }
-                else
-                {
-                    int8ModelPath = Path.Combine(config.ModelPath, $"{baseName}_{config.Version}_int8.onnx");
-                }
-                
-                if (File.Exists(int8ModelPath))
-                {
-                    // Debug.Log($"[MuseTalkInference] Using INT8 model (performance optimization): {int8ModelPath}");
-                    return int8ModelPath;
-                }
-                // Debug.LogWarning($"[MuseTalkInference] INT8 model not found: {int8ModelPath}, falling back to FP32");
-            }
-            
-            // Debug.Log($"[MuseTalkInference] Using FP32 model: {baseModelPath}");
-            return baseModelPath;
+            return modelPath;
         }
 
         /// <summary>

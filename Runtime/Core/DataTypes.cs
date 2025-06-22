@@ -6,6 +6,28 @@ using UnityEngine;
 
 namespace LiveTalk.Core
 {
+    internal enum ExecutionProvider
+    {
+        CPU,
+        CUDA,
+        CoreML
+    }
+
+    internal class ModelConfig
+    {
+        public string modelName = "";
+        public ExecutionProvider preferredExecutionProvider = ExecutionProvider.CPU;
+        public bool isInt8 = false;
+        public string version = "";
+
+        public ModelConfig(string modelName, ExecutionProvider preferredExecutionProvider, bool isInt8, string version)
+        {
+            this.modelName = modelName;
+            this.preferredExecutionProvider = preferredExecutionProvider;            
+            this.isInt8 = isInt8;
+            this.version = version;
+        }
+    }
     internal struct Frame
     {
         public byte[] data;
@@ -82,7 +104,7 @@ namespace LiveTalk.Core
         /// </summary>
         Vertical
     }
-    
+
     /// <summary>
     /// Face detection and landmark data
     /// REFACTORED: Uses byte arrays for internal storage instead of Texture2D for better memory efficiency
