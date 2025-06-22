@@ -206,10 +206,10 @@ namespace LiveTalk.Core
         /// </summary>
         private void InitializeModels()
         {
-            _unet = new Model(_config, "unet", ExecutionProvider.CPU, true, "v15");
-            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CPU, true, "v15");
-            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CPU, true, "v15");
-            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, true, "v15");
+            _unet = new Model(_config, "unet", ExecutionProvider.CPU, true, _config.Version);
+            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CPU, true, _config.Version);
+            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CPU, true, _config.Version);
+            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, true, _config.Version);
         }
 
         /// <summary>
@@ -257,11 +257,11 @@ namespace LiveTalk.Core
         /// This includes face_large crop, BiSeNet segmentation mask, and all blending masks
         /// REFACTORED: Uses byte arrays internally for better memory efficiency
         /// </summary>
-        private SegmentationData PrecomputeSegmentationData(Frame originalImage, Vector4 faceBbox, string version)
+        private SegmentationData PrecomputeSegmentationData(Frame originalImage, Vector4 faceBbox)
         {
             // Apply version-specific adjustments to face bbox (matching BlendFaceWithOriginal logic)
             Vector4 adjustedFaceBbox = faceBbox;
-            if (version == "v15") // v15 mode
+            if (_config.Version == "v15") // v15 mode
             {
                 // Apply v15 extra margin to y2 (bottom of face bbox)
                 adjustedFaceBbox.w = Mathf.Min(adjustedFaceBbox.w + 10f, originalImage.height);
@@ -526,7 +526,7 @@ namespace LiveTalk.Core
                         var croppedFrame = _faceAnalysis.CropFaceRegion(originalFrame, bbox, _config.Version);
                         
                         // Pre-compute segmentation mask and cached data for blending
-                        var segmentationData = PrecomputeSegmentationData(originalFrame, bbox, _config.Version);
+                        var segmentationData = PrecomputeSegmentationData(originalFrame, bbox);
                     
                         // Create face data for this region using byte arrays
                         var faceData = new FaceData
