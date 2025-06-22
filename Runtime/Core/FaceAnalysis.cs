@@ -115,7 +115,7 @@ namespace LiveTalk.Core
                 // Load all required models
                 _detFace = new Model(_config, "det_10g_fixed", ExecutionProvider.CoreML);
                 _landmark2d106 = new Model(_config, "2d106det", ExecutionProvider.CoreML);
-                _landmarkRunner = new Model(_config, "landmark");
+                _landmarkRunner = new Model(_config, "landmark", ExecutionProvider.CoreML);
                 
                 // Load face parsing model (required for complete face analysis)
                 _faceParsing = new Model(_config, "face_parsing", ExecutionProvider.CoreML, true);

@@ -88,8 +88,8 @@ namespace LiveTalk.Core
         
         private void InitializeModels()
         {
-            _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor");
-            _motionExtractor = new Model(_config, "motion_extractor");
+            _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor", ExecutionProvider.CoreML);
+            _motionExtractor = new Model(_config, "motion_extractor", ExecutionProvider.CoreML);
             _stitching = new Model(_config, "stitching");
             _warpingSpade = new Model(_config, "warping_spade", ExecutionProvider.CoreML);
             
