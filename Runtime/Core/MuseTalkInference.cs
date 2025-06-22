@@ -207,7 +207,7 @@ namespace LiveTalk.Core
         private void InitializeModels()
         {
             _unet = new Model(_config, "unet", ExecutionProvider.CPU, true, _config.Version);
-            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CPU, true, _config.Version);
+            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CoreML, true, _config.Version);
             _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CPU, true, _config.Version);
             _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, true, _config.Version);
         }
