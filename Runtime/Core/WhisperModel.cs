@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using System.Threading.Tasks;
 
 namespace LiveTalk.Core
 {
@@ -31,37 +32,6 @@ namespace LiveTalk.Core
         
         public bool IsInitialized => _isInitialized;
         
-        #if UNITY_EDITOR
-        /// <summary>
-        /// TESTING ONLY: Expose mel spectrogram extraction for comparison
-        /// </summary>
-        public float[,] TestExtractMelSpectrogram(float[] audioSamples, int sampleRate)
-        {
-            if (sampleRate != SAMPLE_RATE)
-            {
-                audioSamples = AudioUtils.ResampleAudio(audioSamples, sampleRate, SAMPLE_RATE);
-            }
-            return ExtractMelSpectrogram(audioSamples);
-        }
-        
-        /// <summary>
-        /// TESTING ONLY: Expose ONNX inference for comparison
-        /// </summary>
-        public float[,,,] TestRunWhisperInference(float[,] melSpectrogram)
-        {
-            return RunWhisperInference(melSpectrogram);
-        }
-        
-        /// <summary>
-        /// TESTING ONLY: Expose chunk processing for comparison
-        /// </summary>
-        public float[][] TestProcessWhisperChunks(float[,,,] whisperFeatures, int audioLength)
-        {
-            var audioFeatures = ProcessWhisperFeatures(whisperFeatures, audioLength);
-            return audioFeatures.FeatureChunks.ToArray();
-        }
-        #endif
-        
         /// <summary>
         /// Initialize Whisper model from StreamingAssets
         /// </summary>
@@ -75,7 +45,7 @@ namespace LiveTalk.Core
         /// Process audio samples and extract Whisper features using pure Unity/C# implementation
         /// Matches the Python onnx_inference.py processing exactly
         /// </summary>
-        public AudioFeatures ProcessAudio(float[] audioSamples, int originalSampleRate = 44100)
+        public async Task<AudioFeatures> ProcessAudio(float[] audioSamples, int originalSampleRate = 44100)
         {
             if (!_isInitialized)
             {
@@ -102,7 +72,7 @@ namespace LiveTalk.Core
                 float[,] melSpectrogram = ExtractMelSpectrogram(resampledAudio);
                 
                 // Step 3: Process through ONNX Whisper
-                var whisperFeatures = RunWhisperInference(melSpectrogram);
+                var whisperFeatures = await RunWhisperInference(melSpectrogram);
                 
                 // Step 4: Convert to MuseTalk audio chunks
                 var audioFeatures = ProcessWhisperFeatures(whisperFeatures, resampledAudio.Length);
@@ -353,7 +323,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Run the ONNX Whisper model inference
         /// </summary>
-        private float[,,,] RunWhisperInference(float[,] melSpectrogram)
+        private async Task<float[,,,]> RunWhisperInference(float[,] melSpectrogram)
         {
             int melBands = melSpectrogram.GetLength(0);
             int frames = melSpectrogram.GetLength(1);
@@ -381,7 +351,7 @@ namespace LiveTalk.Core
                 tensor
             };
             
-            using var outputs = _model.Run(inputs);
+            using var outputs = await _model.Run(inputs);
             var output = outputs.First(o => o.Name == OUTPUT_NAME);
             
             if (output.Value is DenseTensor<float> outputTensor)

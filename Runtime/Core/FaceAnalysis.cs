@@ -4,6 +4,7 @@ using System.Linq;
 using UnityEngine;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using System.Threading.Tasks;
 
 namespace LiveTalk.Core
 {
@@ -152,7 +153,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// EXACT MATCH to LivePortraitInference.FaceAnalysis method
         /// </summary>
-        public List<FaceDetectionResult> AnalyzeFaces(Frame frame, int maxFaces = -1)
+        public async Task<List<FaceDetectionResult>> AnalyzeFaces(Frame frame, int maxFaces = -1)
         {
             if (!IsInitialized)
                 throw new InvalidOperationException("FaceAnalysis not initialized");
@@ -161,13 +162,13 @@ namespace LiveTalk.Core
                 throw new ArgumentException("Invalid image parameters");
             
             // Process detection results exactly as in LivePortraitInference
-            var faces = DetectFaces(frame);
+            var faces = await DetectFaces(frame);
             
             // Get landmarks for each face - EXACT MATCH to original
             var finalFaces = new List<FaceDetectionResult>();
             foreach (var face in faces)
             {
-                var landmarks = GetLandmarks(frame, face);
+                var landmarks = await GetLandmarks(frame, face);
                 face.Landmarks106 = landmarks;
                 finalFaces.Add(face);
             }
@@ -186,7 +187,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Detect faces in image using SCRFD model - EXACT MATCH to LivePortraitInference
         /// </summary>
-        private List<FaceDetectionResult> DetectFaces(Frame frame)
+        private async Task<List<FaceDetectionResult>> DetectFaces(Frame frame)
         {
             // Python: face_analysis(img) - EXACT MATCH to LivePortraitInference implementation
             int pythonHeight = frame.height;  // This matches Python's img.shape[0]
@@ -254,7 +255,7 @@ namespace LiveTalk.Core
             // Python: output = det_face.run(None, {"input.1": det_img})
             // Use the actual input name from the model metadata - EXACT MATCH
             var inputs = new List<Tensor<float>> { inputTensor };
-            var results = _detFace.Run(inputs);
+            var results = await _detFace.Run(inputs);
             var outputs = results.ToArray();
             
             // Process detection results exactly as in LivePortraitInference
@@ -266,7 +267,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: get_landmark(img, face) - EXACT MATCH to LivePortraitInference
         /// </summary>
-        private Vector2[] GetLandmarks(Frame frame, FaceDetectionResult face)
+        private async Task<Vector2[]> GetLandmarks(Frame frame, FaceDetectionResult face)
         {
             // Python: input_size = 192
             const int inputSize = 192;
@@ -298,7 +299,7 @@ namespace LiveTalk.Core
             
             // Python: output = landmark.run(None, {"data": aimg})
             var inputs = new List<Tensor<float>> { inputTensor };
-            var results = _landmark2d106.Run(inputs);
+            var results = await _landmark2d106.Run(inputs);
             var output = results.First().AsTensor<float>().ToArray();
             
             // Python: pred = output[0][0]
@@ -326,7 +327,7 @@ namespace LiveTalk.Core
 
         /// <summary>
         /// </summary>
-        public Vector2[] LandmarkRunner(Frame img, Vector2[] lmk)
+        public async Task<Vector2[]> LandmarkRunner(Frame img, Vector2[] lmk)
         {
             // Python: crop_dct = crop_image(img, lmk, dsize=224, scale=1.5, vy_ratio=-0.1)
             var cropSize = 224;
@@ -346,7 +347,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = _landmarkRunner.Run(inputs);
+            var results = await _landmarkRunner.Run(inputs);
             var outputs = results.ToArray();
             
             // Python: out_pts = output[2]
@@ -781,7 +782,7 @@ namespace LiveTalk.Core
         /// Get landmark and bbox using hybrid SCRFD+106landmark approach (matches InsightFaceHelper logic exactly)
         /// Compatible with MuseTalkInference API
         /// </summary>
-        public (List<Vector4>, List<Frame>) GetLandmarkAndBbox(List<Frame> frames, int bboxShift = 0)
+        public async Task<(List<Vector4>, List<Frame>)> GetLandmarkAndBbox(List<Frame> frames, int bboxShift = 0)
         {
             var coordsList = new List<Vector4>();
             var framesList = new List<Frame>();
@@ -808,7 +809,7 @@ namespace LiveTalk.Core
                 var frame = frames[idx];
                 
                 // Step 1: Detect faces using SCRFD (matching InsightFaceHelper exactly)
-                var faces = DetectFaces(frame);   
+                var faces = await DetectFaces(frame);   
 
                 if (faces.Count == 0)
                 {
@@ -829,7 +830,7 @@ namespace LiveTalk.Core
                 if (scrfdKps != null && scrfdKps.Length >= 5)
                 {
                     // Use existing GetLandmarks method which already gives us 106 landmarks
-                    landmarks106 = GetLandmarks(frame, face);
+                    landmarks106 = await GetLandmarks(frame, face);
                     if (landmarks106 != null && landmarks106.Length >= 106)
                     {
                         // Calculate final bbox using hybrid approach (adapted for 106 landmarks)
@@ -1013,7 +1014,7 @@ namespace LiveTalk.Core
         /// Generate face segmentation mask using ONNX BiSeNet model from byte array
         /// OPTIMIZED: Works with byte arrays throughout the entire pipeline
         /// </summary>
-        public Frame GenerateFaceSegmentationMask(Frame frame, string mode = "jaw")
+        public async Task<Frame> GenerateFaceSegmentationMask(Frame frame, string mode = "jaw")
         {
             if (!IsInitialized)
             {
@@ -1027,7 +1028,7 @@ namespace LiveTalk.Core
                 var preprocessedTensor = PreprocessImageForBiSeNet(frame);
                 
                 // Step 2: Run ONNX inference
-                var parsingResult = RunBiSeNetInference(preprocessedTensor);
+                var parsingResult = await RunBiSeNetInference(preprocessedTensor);
                 
                 // Step 3: Post-process to create mask based on mode, returning byte array
                 var maskFrame = PostProcessParsingResult(parsingResult, mode, frame.width, frame.height);
@@ -1044,16 +1045,14 @@ namespace LiveTalk.Core
         /// <summary>
         /// Create face mask with morphological operations returning byte array (matching Python implementation)
         /// </summary>
-        public Frame CreateFaceMaskWithMorphology(Frame frame, string mode = "jaw")
+        public async Task<Frame> CreateFaceMaskWithMorphology(Frame frame, string mode = "jaw")
         {
-            var baseMaskFrame = GenerateFaceSegmentationMask(frame, mode);
+            var baseMaskFrame = await GenerateFaceSegmentationMask(frame, mode);
             if (baseMaskFrame.data == null) return new Frame(null, 0, 0);
             
             var smoothedMaskFrame = ApplyMorphologicalOperations(baseMaskFrame, mode);
             return smoothedMaskFrame;
         }
-        
-
         
         private DenseTensor<float> PreprocessImageForBiSeNet(Frame inputImage)
         {
@@ -1078,19 +1077,9 @@ namespace LiveTalk.Core
             
             return FrameUtils.FrameToTensor(resizedImageData, multipliers, offsets);
         }
-        
-        private unsafe int[,] RunBiSeNetInference(DenseTensor<float> inputTensor)
+
+        private unsafe int[,] PostProcessParsingResult(Tensor<float> output)
         {
-            // Create input for ONNX model
-            var inputs = new List<Tensor<float>>
-            {
-                inputTensor
-            };
-            
-            // Run inference using ModelUtils for consistency
-            var results = _faceParsing.Run(inputs);
-            var output = results.First().AsTensor<float>();
-            
             // Convert output to segmentation map [512, 512]
             // Output shape: [1, 19, 512, 512] - 19 face parsing classes
             var parsingMap = new int[512, 512];
@@ -1144,6 +1133,21 @@ namespace LiveTalk.Core
             }
             
             return parsingMap;
+        }
+        
+        private async Task<int[,]> RunBiSeNetInference(DenseTensor<float> inputTensor)
+        {
+            // Create input for ONNX model
+            var inputs = new List<Tensor<float>>
+            {
+                inputTensor
+            };
+            
+            // Run inference using ModelUtils for consistency
+            var results = await _faceParsing.Run(inputs);
+            var output = results.First().AsTensor<float>();
+            
+            return PostProcessParsingResult(output);
         }
         
         private unsafe Frame PostProcessParsingResult(int[,] parsingMap, string mode, int targetWidth, int targetHeight)

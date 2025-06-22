@@ -6,6 +6,7 @@ namespace LiveTalk.Core
 {
     using System;
     using System.Linq;
+    using System.Threading.Tasks;
     using API;
     using UnityEngine;
     using Utils;
@@ -13,9 +14,10 @@ namespace LiveTalk.Core
     internal class Model
     {
         private readonly ModelConfig _config;
-        private readonly InferenceSession _session;
-        private readonly List<string> _inputNames = new();
-        private readonly List<NamedOnnxValue> _inputs;
+        private InferenceSession _session;
+        private List<string> _inputNames = new();
+        private List<NamedOnnxValue> _inputs;
+        private readonly Task<InferenceSession> _loadTask;
 
         public Model(
             LiveTalkConfig config, 
@@ -25,23 +27,34 @@ namespace LiveTalk.Core
             string version = "")
         {
             _config = new ModelConfig(modelName, preferredExecutionProvider, isInt8, version);
-            _session = ModelUtils.LoadModel(config, _config);
+            _loadTask = LoadModel(config);
+        }
+
+        private async Task<InferenceSession> LoadModel(LiveTalkConfig config)
+        {
+            await Task.Run(() => {
+                _session = ModelUtils.LoadModel(config, _config);
+            });
             _inputNames = _session.InputMetadata.Keys.ToList();
             _inputs = new List<NamedOnnxValue>(_inputNames.Count);
+            return _session;
         }
 
-        public void LoadInput(int index, Tensor<float> inputTensor)
+        public async Task LoadInput(int index, Tensor<float> inputTensor)
         {
+            await _loadTask;
             _inputs.Add(NamedOnnxValue.CreateFromTensor(_inputNames[index], inputTensor));
         }
 
-        public void LoadInput(int index, Tensor<long> inputTensor)
+        public async Task LoadInput(int index, Tensor<long> inputTensor)
         {
+            await _loadTask;
             _inputs.Add(NamedOnnxValue.CreateFromTensor(_inputNames[index], inputTensor));
         }
 
-        public void LoadInputs(List<Tensor<float>> inputTensors)
+        public async Task LoadInputs(List<Tensor<float>> inputTensors)
         {
+            await _loadTask;
             var inputNames = _session.InputMetadata.Keys.ToArray();
             if (inputTensors.Count != inputNames.Length)
             {
@@ -53,14 +66,16 @@ namespace LiveTalk.Core
             }
         }
 
-        public IDisposableReadOnlyCollection<DisposableNamedOnnxValue> Run(List<Tensor<float>> inputTensors)
+        public async Task<IDisposableReadOnlyCollection<DisposableNamedOnnxValue>> Run(List<Tensor<float>> inputTensors)
         {
-            LoadInputs(inputTensors);
-            return Run();
+            await _loadTask;
+            await LoadInputs(inputTensors);
+            return await Run();
         }
 
-        public IDisposableReadOnlyCollection<DisposableNamedOnnxValue> Run()
+        public async Task<IDisposableReadOnlyCollection<DisposableNamedOnnxValue>> Run()
         {
+            await _loadTask;
             var start = System.Diagnostics.Stopwatch.StartNew();
             var results = _session.Run(_inputs);
             var elapsed = start.ElapsedMilliseconds;

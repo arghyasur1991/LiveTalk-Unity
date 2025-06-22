@@ -118,24 +118,24 @@ namespace LiveTalk.Core
 
         private async Task<ProcessSourceImageResult> ProcessSourceImageAsync(Frame frame)
         {
-            return await Task.Run(() => {
+            return await Task.Run(async () => {
                 var srcImg = SrcPreprocess(frame);
                 
                 // Python: crop_info = crop_src_image(self.models, src_img)
-                var cropInfo = CropSrcImage(srcImg);
+                var cropInfo = await CropSrcImage(srcImg);
 
                 // Python: img_crop_256x256 = crop_info["img_crop_256x256"]
                 // Python: I_s = preprocess(img_crop_256x256)
                 var Is = Preprocess(cropInfo.ImageCrop256x256);
                 
                 // Python: x_s_info = get_kp_info(self.models, I_s)
-                var xSInfo = GetKpInfo(Is);
+                var xSInfo = await GetKpInfo(Is);
                 
                 // Python: R_s = get_rotation_matrix(x_s_info["pitch"], x_s_info["yaw"], x_s_info["roll"])
                 var Rs = MathUtils.GetRotationMatrix(xSInfo.Pitch, xSInfo.Yaw, xSInfo.Roll);
                 
                 // Python: f_s = extract_feature_3d(self.models, I_s)
-                var fs = ExtractFeature3d(Is);
+                var fs = await ExtractFeature3d(Is);
                 
                 // Python: x_s = transform_keypoint(x_s_info)
                 var xs = TransformKeypoint(xSInfo);
@@ -427,9 +427,9 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: crop_src_image(models, img) - EXACT MATCH
         /// </summary>
-        private CropInfo CropSrcImage(Frame frame)
+        private async Task<CropInfo> CropSrcImage(Frame frame)
         {
-            var srcFaces = _faceAnalysis.AnalyzeFaces(frame);
+            var srcFaces = await _faceAnalysis.AnalyzeFaces(frame);
             
             // Python: if len(src_face) == 0: print("No face detected in the source image."); return None
             if (srcFaces.Count == 0)
@@ -454,7 +454,7 @@ namespace LiveTalk.Core
             var cropInfo = CropImage(frame, lmk, cropSize, 2.3f, -0.125f);
 
             // Python: lmk = landmark_runner(models, img, lmk)
-            lmk = _faceAnalysis.LandmarkRunner(frame, lmk);
+            lmk = await _faceAnalysis.LandmarkRunner(frame, lmk);
             
             // Python: crop_info["lmk_crop"] = lmk
             cropInfo.LandmarksCrop = lmk;
@@ -492,7 +492,7 @@ namespace LiveTalk.Core
         /// OPTIMIZED: Get keypoint info avoiding ToArray() calls and minimizing memory allocations
         /// ~2-3x faster by working with tensors directly and avoiding intermediate arrays
         /// </summary>
-        private MotionInfo GetKpInfo(DenseTensor<float> preprocessedData)
+        private async Task<MotionInfo> GetKpInfo(DenseTensor<float> preprocessedData)
         {            
             // Python: net = models["motion_extractor"]
             // Python: output = net.run(None, {"img": x})
@@ -503,7 +503,7 @@ namespace LiveTalk.Core
                 preprocessedData
             };
             
-            var results = _motionExtractor.Run(inputs);
+            var results = await _motionExtractor.Run(inputs);
             
             // OPTIMIZED: Work with tensors directly, avoiding ToArray() calls until the final step
             var pitchTensor = results[1].AsTensor<float>();
@@ -641,7 +641,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: extract_feature_3d(models, x) - EXACT MATCH
         /// </summary>
-        private Tensor<float> ExtractFeature3d(DenseTensor<float> preprocessedData)
+        private async Task<Tensor<float>> ExtractFeature3d(DenseTensor<float> preprocessedData)
         {            
             var inputTensor = preprocessedData;
             
@@ -654,7 +654,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = _appearanceFeatureExtractor.Run(inputs);
+            var results = await _appearanceFeatureExtractor.Run(inputs);
             var outputTensor = results.First().AsTensor<float>();
             
             // Python: f_s = output[0]
@@ -749,9 +749,9 @@ namespace LiveTalk.Core
             LivePortraitPredInfo predInfo,
             Frame drivingFrame)
         {
-            return await Task.Run(() => 
+            return await Task.Run(async () => 
             {
-                var (Ip, updatedPredInfo) = Predict(
+                var (Ip, updatedPredInfo) = await Predict(
                     processResult.XsInfo, 
                     processResult.Rs, 
                     processResult.Fs, 
@@ -773,7 +773,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: predict(frame_id, models, x_s_info, R_s, f_s, x_s, img, pred_info) - EXACT MATCH
         /// </summary>
-        private (Frame, LivePortraitPredInfo) Predict(
+        private async Task<(Frame, LivePortraitPredInfo)> Predict(
             MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs, 
             Frame img, LivePortraitPredInfo predInfo)
         {
@@ -785,7 +785,7 @@ namespace LiveTalk.Core
             {
                 // Python: face_analysis = models["face_analysis"]
                 // Python: src_face = face_analysis(img)
-                var srcFaces = _faceAnalysis.AnalyzeFaces(img);
+                var srcFaces = await _faceAnalysis.AnalyzeFaces(img);
                 if (srcFaces.Count == 0)
                 {
                     throw new InvalidOperationException("No face detected in the frame");
@@ -802,12 +802,12 @@ namespace LiveTalk.Core
                 lmk = srcFace.Landmarks106;
                 
                 // Python: lmk = landmark_runner(models, img, lmk)
-                lmk = _faceAnalysis.LandmarkRunner(img, lmk);
+                lmk = await _faceAnalysis.LandmarkRunner(img, lmk);
             }
             else
             {
                 // Python: lmk = landmark_runner(models, img, pred_info['lmk'])
-                lmk = _faceAnalysis.LandmarkRunner(img, predInfo.Landmarks);
+                lmk = await _faceAnalysis.LandmarkRunner(img, predInfo.Landmarks);
             }
             
             // Python: pred_info['lmk'] = lmk
@@ -844,7 +844,7 @@ namespace LiveTalk.Core
             
             // Python: collect s_d, R_d, δ_d and t_d for inference
             // Python: x_d_info = get_kp_info(models, I_d)
-            var xDInfo = GetKpInfo(Id);
+            var xDInfo = await GetKpInfo(Id);
 
             // Python: R_d = get_rotation_matrix(x_d_info["pitch"], x_d_info["yaw"], x_d_info["roll"])
             var Rd = MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
@@ -917,10 +917,10 @@ namespace LiveTalk.Core
             // Debug: Check keypoint transformation values
             
             // Python: x_d_new = stitching(models, x_s, x_d_new)
-            xDNew = Stitching(xs, xDNew);
+            xDNew = await Stitching(xs, xDNew);
             
             // Python: out = warping_spade(models, f_s, x_s, x_d_new)
-            var output = WarpingSpade(fs, xs, xDNew);
+            var output = await WarpingSpade(fs, xs, xDNew);
             
             // Python: out = out.transpose(0, 2, 3, 1)  # 1x3xHxW -> 1xHxWx3
             // Python: out = np.clip(out, 0, 1)  # clip to 0~1
@@ -935,7 +935,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: stitching(models, kp_source, kp_driving) - EXACT MATCH
         /// </summary>
-        private float[] Stitching(float[] kpSource, float[] kpDriving)
+        private async Task<float[]> Stitching(float[] kpSource, float[] kpDriving)
         {
             // Python: bs, num_kp = kp_source.shape[:2]
             // Python: kp_driving_new = kp_driving
@@ -959,7 +959,7 @@ namespace LiveTalk.Core
                 inputTensor
             };
             
-            var results = _stitching.Run(inputs);
+            var results = await _stitching.Run(inputs);
             var delta = results.First().AsTensor<float>().ToArray();
             
             // Python: delta_exp = delta[..., : 3 * num_kp].reshape(bs, num_kp, 3)  # 1x20x3
@@ -991,7 +991,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Python: warping_spade(models, feature_3d, kp_source, kp_driving) - EXACT MATCH
         /// </summary>
-        private float[] WarpingSpade(Tensor<float> feature3d, float[] kpSource, float[] kpDriving)
+        private async Task<float[]> WarpingSpade(Tensor<float> feature3d, float[] kpSource, float[] kpDriving)
         {
             // CRITICAL FIX: Verify tensor shapes match Python exactly
             // Python: feature_3d shape should be (1, 32, 16, 64, 64) = 2,097,152 elements
@@ -1030,7 +1030,7 @@ namespace LiveTalk.Core
                 kpSourceTensor   // kp_source
             };
             
-            var results = _warpingSpade.Run(inputs);
+            var results = await _warpingSpade.Run(inputs);
             
             // Python: return output[0] - take the first output (warped_feature)
             var output = results[0].AsTensor<float>().ToArray();

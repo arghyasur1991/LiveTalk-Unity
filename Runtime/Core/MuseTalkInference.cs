@@ -257,7 +257,7 @@ namespace LiveTalk.Core
         /// This includes face_large crop, BiSeNet segmentation mask, and all blending masks
         /// REFACTORED: Uses byte arrays internally for better memory efficiency
         /// </summary>
-        private SegmentationData PrecomputeSegmentationData(Frame originalImage, Vector4 faceBbox)
+        private async Task<SegmentationData> PrecomputeSegmentationData(Frame originalImage, Vector4 faceBbox)
         {
             // Apply version-specific adjustments to face bbox (matching BlendFaceWithOriginal logic)
             Vector4 adjustedFaceBbox = faceBbox;
@@ -275,7 +275,7 @@ namespace LiveTalk.Core
             var faceLarge = CropImage(originalImage, cropRect);
             
             // Generate face segmentation mask using BiSeNet on face_large
-            var segmentationMask = GenerateFaceSegmentationMaskCached(faceLarge);
+            var segmentationMask = await GenerateFaceSegmentationMaskCached(faceLarge);
             
             if (segmentationMask.data == null)
                 throw new InvalidOperationException("Failed to generate segmentation mask");
@@ -313,12 +313,12 @@ namespace LiveTalk.Core
         /// Generate segmentation mask for caching (extracted from ImageBlendingHelper logic)
         /// FIXED: Runs on main thread to avoid Unity texture operation violations
         /// </summary>
-        private Frame GenerateFaceSegmentationMaskCached(Frame faceLarge)
+        private async Task<Frame> GenerateFaceSegmentationMaskCached(Frame faceLarge)
         {
             try
             {
                 // Run BiSeNet directly on the face_large crop using byte array optimized method
-                var mask = _faceAnalysis.CreateFaceMaskWithMorphology(faceLarge, "jaw");
+                var mask = await _faceAnalysis.CreateFaceMaskWithMorphology(faceLarge, "jaw");
                 
                 if (mask.data != null)
                 {
@@ -502,7 +502,7 @@ namespace LiveTalk.Core
 
             await Task.Run(async () =>
             {
-                var result = _faceAnalysis.GetLandmarkAndBbox(frames);
+                var result = await _faceAnalysis.GetLandmarkAndBbox(frames);
                 List<Vector4> coordsList = result.Item1;
                 List<Frame> framesList = result.Item2;
                 
@@ -526,7 +526,7 @@ namespace LiveTalk.Core
                         var croppedFrame = _faceAnalysis.CropFaceRegion(originalFrame, bbox, _config.Version);
                         
                         // Pre-compute segmentation mask and cached data for blending
-                        var segmentationData = PrecomputeSegmentationData(originalFrame, bbox);
+                        var segmentationData = await PrecomputeSegmentationData(originalFrame, bbox);
                     
                         // Create face data for this region using byte arrays
                         var faceData = new FaceData
@@ -646,15 +646,10 @@ namespace LiveTalk.Core
         /// </summary>
         private async Task<AudioFeatures> ExtractWhisperFeatures(float[] audioData, int sampleRate)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
-                var features = _whisperModel.ProcessAudio(audioData, sampleRate);
-                
-                if (features == null)
-                {
+                var features = await _whisperModel.ProcessAudio(audioData, sampleRate) ?? 
                     throw new InvalidOperationException("Whisper model failed to process audio. Check model loading and input data.");
-                }
-                
                 return features;
             });
         }
@@ -664,7 +659,7 @@ namespace LiveTalk.Core
         /// </summary>
         private async Task<float[]> EncodeImage(Frame image)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
                 // Resize image data to 256x256 for VAE encoder
                 var resizedData = FrameUtils.ResizeFrame(image, 256, 256, SamplingMode.Bilinear);
@@ -676,7 +671,7 @@ namespace LiveTalk.Core
                 };
                 
                 // Run VAE encoder
-                using var results = _vaeEncoder.Run(inputs);
+                using var results = await _vaeEncoder.Run(inputs);
 
                 var latents = results.First(r => r.Name == "latents").AsTensor<float>();
                 var result = latents.ToArray();
@@ -691,7 +686,7 @@ namespace LiveTalk.Core
         /// </summary>
         private async Task<float[]> EncodeImageWithMask(Frame image)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
                 // Resize image data to 256x256 for VAE encoder
                 var resizedData = FrameUtils.ResizeFrame(image, 256, 256, SamplingMode.Bilinear);
@@ -703,7 +698,7 @@ namespace LiveTalk.Core
                 };
                 
                 // Run VAE encoder
-                using var results = _vaeEncoder.Run(inputs);
+                using var results = await _vaeEncoder.Run(inputs);
                 var latents = results.First(r => r.Name == "latents").AsTensor<float>();
                 
                 return latents.ToArray();
@@ -979,14 +974,14 @@ namespace LiveTalk.Core
         /// </summary>
         private async Task<DenseTensor<float>> AddPositionalEncoding(DenseTensor<float> audioBatch)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
                 var inputs = new List<Tensor<float>>
                 {
                     audioBatch
                 };
                 
-                using var results = _positionalEncoding.Run(inputs);
+                using var results = await _positionalEncoding.Run(inputs);
                 var output = results.First().AsTensor<float>();
                 var result = new DenseTensor<float>(output.ToArray(), output.Dimensions.ToArray());
                 
@@ -1001,7 +996,7 @@ namespace LiveTalk.Core
         /// </summary>
         private async Task<Tensor<float>> RunUNet(DenseTensor<float> latentBatch, DenseTensor<float> audioBatch)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
                 // Match Python timestep preparation
                 int batchSize = (int)latentBatch.Dimensions[0];
@@ -1011,14 +1006,14 @@ namespace LiveTalk.Core
                 
                 var timestepTensor = new DenseTensor<long>(timesteps, new[] { batchSize });
 
-                _unet.LoadInput(0, latentBatch);
-                _unet.LoadInput(1, timestepTensor);
-                _unet.LoadInput(2, audioBatch);
+                await _unet.LoadInput(0, latentBatch);
+                await _unet.LoadInput(1, timestepTensor);
+                await _unet.LoadInput(2, audioBatch);
                 
                 _reusableUNetResult?.Dispose();
                 
                 // Keep the result alive as a member variable to prevent GC of tensor memory
-                _reusableUNetResult = _unet.Run();
+                _reusableUNetResult = await _unet.Run();
                 var output = _reusableUNetResult.First().AsTensor<float>();
                 
                 // OPTIMIZATION: Return the tensor directly without copying via ToArray()
@@ -1048,7 +1043,7 @@ namespace LiveTalk.Core
         private async Task<List<Texture2D>> DecodeLatents(Tensor<float> unetOutputBatch, int batchSize, int globalStartIdx = 0)
         {
             // Run ONNX VAE decoder inference on background thread first            
-            var blendedFrames = await Task.Run(() =>
+            var blendedFrames = await Task.Run(async () =>
             {
                 var tensors = new List<Tensor<float>>();
                 Tensor<float> batchImageOutput = null; // Keep reference alive
@@ -1060,7 +1055,7 @@ namespace LiveTalk.Core
                         unetOutputBatch
                     };
                     
-                    using var results = _vaeDecoder.Run(inputs);
+                    using var results = await _vaeDecoder.Run(inputs);
 
                     var batchImageOutputValue = results.First();
                     batchImageOutput = batchImageOutputValue.AsTensor<float>(); // Keep alive
