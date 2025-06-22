@@ -83,18 +83,11 @@ namespace LiveTalk.Utils
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             var sessionOptions = CreateSessionOptions(config);
-            if (
-                // modelConfig.modelName == "1k3d68" ||
-                // modelConfig.modelName == "2d106det" ||
-                // modelConfig.modelName == "warping_spade" || 
-                // modelConfig.modelName == "face_parsing"
-                modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
-            )
+            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML)
             {
                 sessionOptions.AppendExecutionProvider_CoreML();
             }
             var model = new InferenceSession(modelPath, sessionOptions);
-            // Debug.Log($"[MuseTalkInference] Loaded {modelName} from {modelPath}");
             return model;
         }
 
@@ -104,19 +97,6 @@ namespace LiveTalk.Utils
         /// </summary>
         public static string GetModelPath(LiveTalkConfig config, ModelConfig modelConfig)
         {
-            // SPECIAL CASE: Models that don't use version suffix
-            // bool isVersionIndependent = baseName.Contains("whisper_encoder") || 
-            //                             baseName.Contains("face_parsing") ||
-            //                             baseName.Contains("det_10g") ||
-            //                             baseName.Contains("1k3d68") ||
-            //                             // LivePortrait models are version independent
-            //                             baseName == "appearance_feature_extractor" ||
-            //                             baseName == "motion_extractor" ||
-            //                             baseName == "warping_spade" ||
-            //                             baseName == "stitching" ||
-            //                             baseName == "landmark" ||
-            //                             baseName == "2d106det";
-
             bool isVersionIndependent = modelConfig.version == "";
             bool useInt8 = config.UseINT8 && modelConfig.isInt8;
 
