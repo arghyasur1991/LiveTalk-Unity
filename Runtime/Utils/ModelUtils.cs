@@ -85,7 +85,7 @@ namespace LiveTalk.Utils
             var sessionOptions = CreateSessionOptions(config);
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML)
             {
-                sessionOptions.AppendExecutionProvider_CoreML();
+                sessionOptions.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU);
             }
             var model = new InferenceSession(modelPath, sessionOptions);
             return model;
