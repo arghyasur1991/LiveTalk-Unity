@@ -83,11 +83,13 @@ namespace LiveTalk.Utils
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             var sessionOptions = CreateSessionOptions(config);
-            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML)
+            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
+                    (!config.UseINT8 || !modelConfig.isInt8)) // Use CoreML if INT8 is not enabled
             {
                 sessionOptions.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU);
             }
             var model = new InferenceSession(modelPath, sessionOptions);
+            Debug.Log($"[ModelUtils] Loaded model: {modelPath}");
             return model;
         }
 
@@ -101,8 +103,8 @@ namespace LiveTalk.Utils
             bool useInt8 = config.UseINT8 && modelConfig.isInt8;
 
             string modelName = modelConfig.modelName;
-            modelName += useInt8 ? "_int8" : "";
             modelName += isVersionIndependent ? "" : $"_{modelConfig.version}";
+            modelName += useInt8 ? "_int8" : "";
             string modelPath = Path.Combine(config.ModelPath, $"{modelName}.onnx");
             if (!File.Exists(modelPath))
             {
