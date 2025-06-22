@@ -11,7 +11,7 @@ namespace LiveTalk.API
         public string ModelPath = "LiveTalk";
         public string Version = "v15"; // only v15 is supported
         public string Device = "cpu"; // "cpu" or "cuda"
-        public int BatchSize = 4;
+        public int BatchSize { get; internal set; } = 1;
         public float ExtraMargin { get; internal set; } = 10f; // Additional margin for v15
         public bool UseINT8 { get; internal set; } = false; // Enable INT8 quantization TODO: Int8 is not currently supported. Keeping it false for now.
         

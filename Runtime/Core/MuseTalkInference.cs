@@ -34,7 +34,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Batch size for processing
         /// </summary>
-        public int BatchSize { get; set; } = 4;
+        public int BatchSize { get; internal set; } = 1;
         
         public MuseTalkInput(Texture2D avatarTexture, AudioClip audioClip)
         {
