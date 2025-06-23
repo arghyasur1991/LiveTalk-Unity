@@ -215,9 +215,9 @@ namespace LiveTalk.Utils
                         ["RequireStaticInputShapes"] = "0",
                         ["EnableOnSubgraphs"] = "1",
 
-                        ["SpecializationStrategy"] = "FastPrediction",
-                        ["AllowLowPrecisionAccumulationOnGPU"] = "1",
-                        ["ProfileComputePlan"] = "0"
+                        // ["SpecializationStrategy"] = "FastPrediction",
+                        // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
+                        // ["ProfileComputePlan"] = "0"
                     };
                     
                     if (!string.IsNullOrEmpty(cacheDirectory))
