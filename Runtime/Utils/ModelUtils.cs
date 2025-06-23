@@ -17,6 +17,46 @@ namespace LiveTalk.Utils
     internal static class ModelUtils
     {
         /// <summary>
+        /// Log model metadata including cache keys for debugging
+        /// </summary>
+        public static void LogModelMetadata(string modelPath)
+        {
+            try
+            {
+                using (var session = new InferenceSession(modelPath))
+                {
+                    var metadata = session.ModelMetadata;
+                    Debug.Log($"[ModelUtils] Model Metadata for {Path.GetFileName(modelPath)}:");
+                    Debug.Log($"  Producer: {metadata.ProducerName}");
+                    Debug.Log($"  Version: {metadata.Version}");
+                    Debug.Log($"  Domain: {metadata.Domain}");
+                    
+                    var customMetadata = metadata.CustomMetadataMap;
+                    if (customMetadata != null && customMetadata.Count > 0)
+                    {
+                        Debug.Log("  Custom Metadata:");
+                        foreach (var kvp in customMetadata)
+                        {
+                            Debug.Log($"    {kvp.Key}: {kvp.Value}");
+                            if (kvp.Key == "CACHE_KEY")
+                            {
+                                Debug.Log($"    ✅ Found CACHE_KEY: {kvp.Value}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Debug.Log("  ⚠️ No custom metadata found - cache will use file path hash");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ModelUtils] Error reading model metadata from {modelPath}: {e.Message}");
+            }
+        }
+
+        /// <summary>
         /// Log the ONNX Runtime version information
         /// </summary>
         public static void LogOnnxRuntimeVersion()
@@ -155,6 +195,10 @@ namespace LiveTalk.Utils
             string modelPath = GetModelPath(config, modelConfig);
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
+            
+            // Log model metadata for debugging
+            LogModelMetadata(modelPath);
+            
             var sessionOptions = CreateSessionOptions(config);
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
                 !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
@@ -162,10 +206,6 @@ namespace LiveTalk.Utils
                 LogOnnxRuntimeVersion();
                 try
                 {
-                    if (modelConfig.modelName == "unet")
-                    {
-                        // throw new Exception("Unet going to fallback");
-                    }
                     // Configure CoreML provider with caching support using dictionary API
                     string cacheDirectory = GetCoreMLCacheDirectory(config);
                     
@@ -176,13 +216,24 @@ namespace LiveTalk.Utils
                     {
                         ["ModelFormat"] = "MLProgram",
                         ["MLComputeUnits"] = "CPUAndGPU",
-                        ["RequireStaticInputShapes"] = "1",
+                        ["RequireStaticInputShapes"] = "0",
                         ["EnableOnSubgraphs"] = "1"
                     };
                     
                     if (!string.IsNullOrEmpty(cacheDirectory))
                     {
                         coremlOptions["ModelCacheDirectory"] = cacheDirectory;
+                    }
+                    
+                    // Performance optimization options (available in ONNX Runtime 1.22.0+)
+                    if (Application.platform == RuntimePlatform.OSXEditor || Application.platform == RuntimePlatform.OSXPlayer)
+                    {
+                        // macOS-specific optimizations
+                        coremlOptions["SpecializationStrategy"] = "FastPrediction"; // Options: "Default", "FastPrediction"
+                        coremlOptions["AllowLowPrecisionAccumulationOnGPU"] = "1"; // Use float16 for GPU accumulation
+                        
+                        // Enable profiling for performance debugging (set to "0" for production)
+                        coremlOptions["ProfileComputePlan"] = "0"; // Set to "1" to enable profiling
                     }
                     
                     sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
