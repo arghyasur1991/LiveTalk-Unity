@@ -172,7 +172,7 @@ namespace LiveTalk.Core
             if (_maskTemplate.data == null)
                 throw new Exception("[LivePortraitInference] No mask template available");
             
-            var srcFrame = TextureUtils.Texture2DToFrame(input.SourceImage);
+            var srcFrame = TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(input.SourceImage));
             var processSrcTask = ProcessSourceImageAsync(srcFrame);
             yield return new WaitUntil(() => processSrcTask.IsCompleted);
             var processResult = processSrcTask.Result;
@@ -208,19 +208,17 @@ namespace LiveTalk.Core
         /// Generate animated textures pipelined - matches Python LivePortraitMuseTalkAPI.execute
         /// </summary>
         public IEnumerator GenerateAsync(
-            Texture2D sourceImage, string[] frameFiles, 
-            OutputStream outputStream, LiveTalkController avatarController)
+            Texture2D sourceImage,
+            OutputStream outputStream,
+            DrivingFramesStream drivingStream)
         {
             // Step 1: Start source image processing immediately (async)
+            sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
             var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
             var processSrcTask = ProcessSourceImageAsync(srcImg);
             
             Logger.Log("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
-
-            // Step 2: Create driving frames stream and start loading frames asynchronously
-            var drivingStream = new DrivingFramesStream(frameFiles.Length);
-            var loadFramesCoroutine = avatarController.StartCoroutine(LoadDrivingFramesAsync(frameFiles, drivingStream));
-
+            
             // Step 3: Wait for source processing to complete
             yield return new WaitUntil(() => processSrcTask.IsCompleted);
             var processResult = processSrcTask.Result;
@@ -235,7 +233,7 @@ namespace LiveTalk.Core
                 InitialMotionInfo = null
             };
 
-            while (processedFrames < frameFiles.Length && drivingStream.HasMoreFrames)
+            while (processedFrames < drivingStream.TotalExpectedFrames && drivingStream.HasMoreFrames)
             {
                 // Wait for next driving frame using CustomYieldInstruction
                 var awaiter = drivingStream.WaitForNext();
@@ -258,7 +256,7 @@ namespace LiveTalk.Core
                     {
                         var generatedImgTexture = TextureUtils.FrameToTexture2D(generatedImg);
                         outputStream.queue.Enqueue(generatedImgTexture);
-                        Logger.Log($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{frameFiles.Length}");
+                        Logger.Log($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
                     }
 
                     processedFrames++;
@@ -283,62 +281,6 @@ namespace LiveTalk.Core
             Logger.Log($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
         }
 
-
-        /// <summary>
-        /// Load driving frames asynchronously and add them to the stream
-        /// </summary>
-        private IEnumerator LoadDrivingFramesAsync(string[] frameFiles, DrivingFramesStream stream)
-        {
-            Logger.Log($"[LivePortraitMuseTalkAPI] Starting to load {frameFiles.Length} driving frames asynchronously");
-
-            for (int i = 0; i < frameFiles.Length; i++)
-            {
-                string filePath = frameFiles[i];
-                
-                // Load frame data asynchronously - outside try-catch to avoid yield in try-catch
-                var loadFileTask = System.IO.File.ReadAllBytesAsync(filePath);
-                yield return new WaitUntil(() => loadFileTask.IsCompleted);
-                
-                try
-                {
-                    if (loadFileTask.IsFaulted)
-                    {
-                        Logger.LogError($"[LivePortraitMuseTalkAPI] Error loading driving frame {filePath}: {loadFileTask.Exception?.GetBaseException().Message}");
-                        continue;
-                    }
-                    
-                    byte[] fileData = loadFileTask.Result;
-                    Texture2D texture = new(2, 2);
-                    
-                    if (texture.LoadImage(fileData))
-                    {
-                        texture.name = System.IO.Path.GetFileNameWithoutExtension(filePath);
-                        var rgbTexture = TextureUtils.ConvertTexture2DToRGB24(texture);
-                        stream.loadQueue.Enqueue(rgbTexture);
-                        
-                        // Clean up original texture if different
-                        if (rgbTexture != texture)
-                        {
-                            UnityEngine.Object.DestroyImmediate(texture);
-                        }
-                    }
-                    else
-                    {
-                        Logger.LogWarning($"[LivePortraitMuseTalkAPI] Failed to load image: {filePath}");
-                        UnityEngine.Object.DestroyImmediate(texture);
-                    }
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError($"[LivePortraitMuseTalkAPI] Error processing driving frame {filePath}: {e.Message}");
-                }
-                yield return null;
-            }
-
-            stream.LoadingFinished = true;
-            Logger.Log($"[LivePortraitMuseTalkAPI] Finished loading driving frames, {stream.QueueCount} frames queued");
-        }
-        
         /// <summary>
         /// Python: src_preprocess(img) - EXACT MATCH
         /// Returns (byte[] imageData, int width, int height) in RGB24 format

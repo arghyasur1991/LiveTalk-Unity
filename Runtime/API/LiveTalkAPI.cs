@@ -8,6 +8,7 @@ using UnityEngine;
 namespace LiveTalk.API
 {
     using Core;
+    using UnityEngine.Video;
     using Utils;
 
     public sealed class OutputStream
@@ -173,6 +174,23 @@ namespace LiveTalk.API
             return stream;
         }
 
+        public OutputStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
+        {
+            if (!_initialized)
+                throw new InvalidOperationException("API not initialized");
+                
+            if (sourceImage == null || videoPlayer == null)
+                throw new ArgumentException("Invalid input: source image and video player are required");
+
+            Logger.Log($"[LivePortraitMuseTalkAPI] Starting pipelined processing: {videoPlayer.clip.frameCount} driving frames");
+            
+            var stream = new OutputStream((int)videoPlayer.clip.frameCount);
+            _avatarController.LoadDrivingFrames(videoPlayer);
+            _avatarController.StartCoroutine(
+                _livePortrait.GenerateAsync(sourceImage, stream, _avatarController.DrivingFramesStream));
+            return stream;
+        }
+
         public OutputStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
         {
             if (!_initialized)
@@ -191,8 +209,9 @@ namespace LiveTalk.API
             Logger.Log($"[LivePortraitMuseTalkAPI] Starting pipelined processing: {frameFiles.Length} driving frames");
             
             var stream = new OutputStream(frameFiles.Length);
+            _avatarController.LoadDrivingFrames(frameFiles);
             _avatarController.StartCoroutine(
-                _livePortrait.GenerateAsync(sourceImage, frameFiles, stream, _avatarController));
+                _livePortrait.GenerateAsync(sourceImage, stream, _avatarController.DrivingFramesStream));
             return stream;
         }
 
