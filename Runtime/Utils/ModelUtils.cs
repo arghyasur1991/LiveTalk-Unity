@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using UnityEngine;
@@ -15,6 +16,85 @@ namespace LiveTalk.Utils
     /// </summary>
     internal static class ModelUtils
     {
+        /// <summary>
+        /// Log the ONNX Runtime version information
+        /// </summary>
+        public static void LogOnnxRuntimeVersion()
+        {
+            try
+            {
+                // First, log the assembly version
+                var assembly = typeof(InferenceSession).Assembly;
+                var assemblyName = assembly.GetName();
+                Debug.Log($"[ModelUtils] ONNX Runtime Assembly Version: {assemblyName.Version}");
+                Debug.Log($"[ModelUtils] ONNX Runtime Assembly Location: {assembly.Location}");
+                
+                // Use reflection to access the internal NativeMethods.OrtGetVersionString
+                var nativeMethodsType = typeof(InferenceSession).Assembly.GetType("Microsoft.ML.OnnxRuntime.NativeMethods");
+                if (nativeMethodsType != null)
+                {
+                    var getVersionStringField = nativeMethodsType.GetField("OrtGetVersionString", 
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    
+                    if (getVersionStringField != null)
+                    {
+                        var getVersionStringDelegate = getVersionStringField.GetValue(null);
+                        if (getVersionStringDelegate != null)
+                        {
+                            // Invoke the delegate
+                            var method = getVersionStringDelegate.GetType().GetMethod("Invoke");
+                            if (method != null)
+                            {
+                                IntPtr versionPtr = (IntPtr)method.Invoke(getVersionStringDelegate, null);
+                                
+                                if (versionPtr != IntPtr.Zero)
+                                {
+                                    string version = Marshal.PtrToStringAnsi(versionPtr);
+                                    Debug.Log($"[ModelUtils] ONNX Runtime Native Library Version: {version}");
+                                }
+                                else
+                                {
+                                    Debug.LogWarning("[ModelUtils] Failed to get ONNX Runtime version - null pointer returned");
+                                }
+                            }
+                            else
+                            {
+                                Debug.LogWarning("[ModelUtils] Could not find Invoke method on version string delegate");
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogWarning("[ModelUtils] OrtGetVersionString delegate is null");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[ModelUtils] Could not find OrtGetVersionString field in NativeMethods");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning("[ModelUtils] Could not find NativeMethods type via reflection");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ModelUtils] Error getting ONNX Runtime version via reflection: {e.Message}");
+                
+                // Fallback: try to get version info from assembly
+                try
+                {
+                    var assembly = typeof(InferenceSession).Assembly;
+                    var assemblyName = assembly.GetName();
+                    Debug.Log($"[ModelUtils] ONNX Runtime Assembly Version (fallback): {assemblyName.Version}");
+                }
+                catch (Exception fallbackEx)
+                {
+                    Debug.LogError($"[ModelUtils] Fallback version detection also failed: {fallbackEx.Message}");
+                }
+            }
+        }
+
         /// <summary>
         /// Create optimized session options for ONNX Runtime
         /// OPTIMIZED: Enable all performance optimizations
@@ -79,19 +159,107 @@ namespace LiveTalk.Utils
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
                 !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
             {
-                sessionOptions.AppendExecutionProvider_CoreML(
-                    CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
-                    CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
-                    CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
+                LogOnnxRuntimeVersion();
+                try
+                {
+                    if (modelConfig.modelName == "unet")
+                    {
+                        // throw new Exception("Unet going to fallback");
+                    }
+                    // Configure CoreML provider with caching support using dictionary API
+                    string cacheDirectory = GetCoreMLCacheDirectory(config);
+                    
+                    // Ensure cache directory exists and is writable
+                    EnsureCacheDirectoryExists(cacheDirectory);
+                    
+                    var coremlOptions = new Dictionary<string, string>
+                    {
+                        ["ModelFormat"] = "MLProgram",
+                        ["MLComputeUnits"] = "CPUAndGPU",
+                        ["RequireStaticInputShapes"] = "1",
+                        ["EnableOnSubgraphs"] = "1"
+                    };
+                    
+                    if (!string.IsNullOrEmpty(cacheDirectory))
+                    {
+                        coremlOptions["ModelCacheDirectory"] = cacheDirectory;
+                    }
+                    
+                    sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
+                    Debug.Log($"[ModelUtils] CoreML provider configured with caching (cache: {cacheDirectory})");
+                    
+                    // Try creating the session - if it fails due to cache corruption, clean and retry
+                    try
+                    {
+                        var model = new InferenceSession(modelPath, sessionOptions);
+                        Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider: {modelPath}");
+                        return model;
+                    }
+                    catch (Exception sessionException)
+                    {
+                        if (sessionException.Message.Contains("Manifest.json") || 
+                            sessionException.Message.Contains("coreml_cache") ||
+                            sessionException.Message.Contains("manifest does not exist"))
+                        {
+                            Debug.LogWarning($"[ModelUtils] CoreML cache corruption detected, cleaning cache and retrying: {sessionException.Message}");
+                            // CleanCorruptedCoreMLCache(cacheDirectory);
+                            
+                            // Retry with clean cache
+                            var model = new InferenceSession(modelPath, sessionOptions);
+                            Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider after cache cleanup: {modelPath}");
+                            return model;
+                        }
+                        else
+                        {
+                            throw; // Re-throw if it's not a cache-related issue
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[ModelUtils] CoreML provider configuration failed: {e.Message}");
+                    
+                    // Fallback to old CoreML flags approach
+                    try
+                    {
+                        var fallbackOptions = CreateSessionOptions(config);
+                        fallbackOptions.AppendExecutionProvider_CoreML(
+                            CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
+                            CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
+                            CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
+                        
+                        var model = new InferenceSession(modelPath, fallbackOptions);
+                        Debug.Log("[ModelUtils] Using fallback CoreML provider (no caching)");
+                        return model;
+                    }
+                    catch (Exception fallbackException)
+                    {
+                        Debug.LogWarning($"[ModelUtils] CoreML fallback also failed: {fallbackException.Message}. Using CPU provider.");
+                    }
+                }
             }
-            var model = new InferenceSession(modelPath, sessionOptions);
-            Debug.Log($"[ModelUtils] Loaded model: {modelPath}");
-            return model;
+            
+            // Default CPU execution
+            var cpuModel = new InferenceSession(modelPath, sessionOptions);
+            Debug.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
+            return cpuModel;
         }
 
         private static bool IsInt8Enabled(LiveTalkConfig config, ModelConfig modelConfig)
         {
             return config.UseINT8 && modelConfig.precision == Precision.INT8;
+        }
+
+        /// <summary>
+        /// Get the cache directory for CoreML compiled models
+        /// </summary>
+        private static string GetCoreMLCacheDirectory(LiveTalkConfig config)
+        {
+            if (!string.IsNullOrEmpty(config?.ModelPath))
+            {
+                return Path.Combine(config.ModelPath, "coreml_cache");
+            }
+            return Path.Combine(Application.persistentDataPath, "coreml_cache");
         }
 
         /// <summary>
@@ -175,6 +343,51 @@ namespace LiveTalk.Utils
             {
                 Debug.LogError($"[ModelUtils] Error loading mask template: {e.Message}");
                 return new Frame(null, 0, 0);
+            }
+        }
+
+        /// <summary>
+        /// Ensure the CoreML cache directory exists and is writable
+        /// </summary>
+        private static void EnsureCacheDirectoryExists(string cacheDirectory)
+        {
+            if (string.IsNullOrEmpty(cacheDirectory))
+                return;
+                
+            try
+            {
+                if (!Directory.Exists(cacheDirectory))
+                {
+                    Directory.CreateDirectory(cacheDirectory);
+                    Debug.Log($"[ModelUtils] Created CoreML cache directory: {cacheDirectory}");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[ModelUtils] Failed to create cache directory {cacheDirectory}: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Clean corrupted CoreML cache directory
+        /// </summary>
+        private static void CleanCorruptedCoreMLCache(string cacheDirectory)
+        {
+            if (string.IsNullOrEmpty(cacheDirectory) || !Directory.Exists(cacheDirectory))
+                return;
+                
+            try
+            {
+                Debug.Log($"[ModelUtils] Cleaning corrupted CoreML cache: {cacheDirectory}");
+                Directory.Delete(cacheDirectory, true);
+                
+                // Recreate the directory
+                Directory.CreateDirectory(cacheDirectory);
+                Debug.Log($"[ModelUtils] CoreML cache cleaned and recreated: {cacheDirectory}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ModelUtils] Failed to clean CoreML cache {cacheDirectory}: {e.Message}");
             }
         }
     }

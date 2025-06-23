@@ -6,7 +6,7 @@
   "unity": "6000.0",
   "unityRelease": "46f1",
   "dependencies": {
-    "com.github.asus4.onnxruntime": "file:/Users/sur/Personal/Projects/ML/onnxruntime-unity.git/com.github.asus4.onnxruntime",
+    "com.github.asus4.onnxruntime": "0.4.0",
     "com.github.asus4.onnxruntime-extensions": "0.4.0",
     "com.unity.nuget.newtonsoft-json": "3.2.1"
   },
