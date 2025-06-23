@@ -196,14 +196,10 @@ namespace LiveTalk.Utils
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             
-            // Log model metadata for debugging
-            LogModelMetadata(modelPath);
-            
             var sessionOptions = CreateSessionOptions(config);
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
                 !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
             {
-                LogOnnxRuntimeVersion();
                 try
                 {
                     // Configure CoreML provider with caching support using dictionary API
@@ -217,23 +213,16 @@ namespace LiveTalk.Utils
                         ["ModelFormat"] = "MLProgram",
                         ["MLComputeUnits"] = "CPUAndGPU",
                         ["RequireStaticInputShapes"] = "0",
-                        ["EnableOnSubgraphs"] = "1"
+                        ["EnableOnSubgraphs"] = "1",
+
+                        ["SpecializationStrategy"] = "FastPrediction",
+                        ["AllowLowPrecisionAccumulationOnGPU"] = "1",
+                        ["ProfileComputePlan"] = "0"
                     };
                     
                     if (!string.IsNullOrEmpty(cacheDirectory))
                     {
                         coremlOptions["ModelCacheDirectory"] = cacheDirectory;
-                    }
-                    
-                    // Performance optimization options (available in ONNX Runtime 1.22.0+)
-                    if (Application.platform == RuntimePlatform.OSXEditor || Application.platform == RuntimePlatform.OSXPlayer)
-                    {
-                        // macOS-specific optimizations
-                        coremlOptions["SpecializationStrategy"] = "FastPrediction"; // Options: "Default", "FastPrediction"
-                        coremlOptions["AllowLowPrecisionAccumulationOnGPU"] = "1"; // Use float16 for GPU accumulation
-                        
-                        // Enable profiling for performance debugging (set to "0" for production)
-                        coremlOptions["ProfileComputePlan"] = "0"; // Set to "1" to enable profiling
                     }
                     
                     sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
