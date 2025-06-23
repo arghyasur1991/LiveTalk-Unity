@@ -788,17 +788,6 @@ namespace LiveTalk.Core
             var framesList = new List<Frame>();
             var CoordPlaceholder = Vector4.zero; // Matching InsightFaceHelper.CoordPlaceholder
             
-            if (!IsInitialized)
-            {
-                Logger.LogError("[FaceAnalysis] Models not initialized");
-                // Return placeholder coordinates for all frames
-                for (int i = 0; i < frames.Count; i++)
-                {
-                    coordsList.Add(CoordPlaceholder);
-                }
-                return (coordsList, framesList);
-            }
-            
             Logger.Log($"[FaceAnalysis] Processing {frames.Count} images with hybrid SCRFD+106landmark approach");
             
             var averageRangeMinus = new List<float>();

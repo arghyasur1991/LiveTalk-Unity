@@ -219,6 +219,7 @@ namespace LiveTalk.API
             List<Texture2D> avatarTextures = FileUtils.LoadFramesFromFolder(talkingHeadFolderPath);
             if (avatarTextures == null || avatarTextures.Count == 0)
             {
+                avatarTexture = TextureUtils.ConvertTexture2DToRGB24(avatarTexture);
                 avatarTextures = new List<Texture2D> { avatarTexture };
             }
 
