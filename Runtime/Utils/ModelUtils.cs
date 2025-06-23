@@ -228,7 +228,7 @@ namespace LiveTalk.Utils
                     sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
                     Debug.Log($"[ModelUtils] CoreML provider configured with caching (cache: {cacheDirectory})");
                     
-                    // Try creating the session - if it fails due to cache corruption, clean and retry
+                    // Try creating the session - if it fails due to cache corruption, retry
                     try
                     {
                         var model = new InferenceSession(modelPath, sessionOptions);
@@ -241,12 +241,13 @@ namespace LiveTalk.Utils
                             sessionException.Message.Contains("coreml_cache") ||
                             sessionException.Message.Contains("manifest does not exist"))
                         {
-                            Debug.LogWarning($"[ModelUtils] CoreML cache corruption detected, cleaning cache and retrying: {sessionException.Message}");
-                            // CleanCorruptedCoreMLCache(cacheDirectory);
+                            Debug.LogWarning($"[ModelUtils] CoreML cache corruption detected. Retrying: {sessionException.Message}");
                             
-                            // Retry with clean cache
+                            // wait for 1 second
+                            System.Threading.Thread.Sleep(1000);
+                            
                             var model = new InferenceSession(modelPath, sessionOptions);
-                            Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider after cache cleanup: {modelPath}");
+                            Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider after retrying: {modelPath}");
                             return model;
                         }
                         else
