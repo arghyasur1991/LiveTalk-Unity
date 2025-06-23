@@ -33,17 +33,6 @@ namespace LiveTalk.Core
         private async Task<InferenceSession> LoadModel(LiveTalkConfig config)
         {
             await Task.Run(() => {
-                if (_config.modelName != "det_10g_fixed" 
-                && _config.modelName != "2d106det" 
-                // && _config.modelName != "landmark" 
-                && _config.modelName != "face_parsing"
-                && _config.modelName != "vae_encoder"
-                && _config.modelName != "vae_decoder"
-                && _config.modelName != "unet"
-                )
-                {
-                    // _config.preferredExecutionProvider = ExecutionProvider.CPU;
-                }
                 _session = ModelUtils.LoadModel(config, _config);
             });
             _inputNames = _session.InputMetadata.Keys.ToList();
