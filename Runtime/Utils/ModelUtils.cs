@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using UnityEngine;
@@ -71,100 +70,20 @@ namespace LiveTalk.Utils
             return options;
         }
 
-        /// <summary>
-        /// Configure CoreML provider with caching and optimization options
-        /// </summary>
-        private static void ConfigureCoreMLProvider(SessionOptions sessionOptions, LiveTalkConfig config, ModelConfig modelConfig)
-        {
-            try
-            {
-                // Set up CoreML cache directory for faster model loading
-                string cacheDirectory = GetCoreMLCacheDirectory(config);
-                
-                // Configure CoreML options using the newer API approach
-                var coremlOptions = new Dictionary<string, string>
-                {
-                    ["ModelFormat"] = "MLProgram", // Use MLProgram format for better performance (iOS 15+/macOS 12+)
-                    ["MLComputeUnits"] = "ALL",    // Use all available compute units (CPU, GPU, Neural Engine)
-                    ["EnableOnSubgraphs"] = "1",   // Enable on subgraphs
-                };
-                
-                // Add cache directory if available
-                if (!string.IsNullOrEmpty(cacheDirectory))
-                {
-                    coremlOptions["ModelCacheDirectory"] = cacheDirectory;
-                    Debug.Log($"[ModelUtils] CoreML cache enabled: {cacheDirectory}");
-                }
-                
-                // Use the newer generic provider API
-                sessionOptions.AppendExecutionProvider("CoreMLExecutionProvider", coremlOptions);
-                Debug.Log($"[ModelUtils] CoreML provider configured for {modelConfig.modelName} with caching enabled");
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[ModelUtils] Failed to configure CoreML with advanced options: {e.Message}");
-                try
-                {
-                    // Fallback to older flag-based method with basic settings
-                    // sessionOptions.AppendExecutionProvider_CoreML();
-                    Debug.Log($"[ModelUtils] CoreML provider configured using fallback method for {modelConfig.modelName}");
-                }
-                catch (Exception fallbackException)
-                {
-                    Debug.LogError($"[ModelUtils] Failed to configure CoreML provider: {fallbackException.Message}");
-                    throw;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Get or create CoreML cache directory
-        /// </summary>
-        private static string GetCoreMLCacheDirectory(LiveTalkConfig config)
-        {
-            try
-            {
-                // Use config-specific cache directory if available
-                string baseCacheDir;
-                if (!string.IsNullOrEmpty(config?.ModelPath))
-                {
-                    baseCacheDir = Path.Combine(config.ModelPath, "coreml_cache");
-                }
-                else
-                {
-                    // Use persistent data path as fallback
-                    baseCacheDir = Path.Combine(Application.persistentDataPath, "LiveTalk", "coreml_cache");
-                }
-
-                // Create directory if it doesn't exist
-                if (!Directory.Exists(baseCacheDir))
-                {
-                    Directory.CreateDirectory(baseCacheDir);
-                }
-
-                return baseCacheDir;
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[ModelUtils] Failed to create CoreML cache directory: {e.Message}");
-                return string.Empty; // Disable caching if directory creation fails
-            }
-        }
-
         public static InferenceSession LoadModel(LiveTalkConfig config, ModelConfig modelConfig)
         {
             string modelPath = GetModelPath(config, modelConfig);
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
-            
             var sessionOptions = CreateSessionOptions(config);
-            
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
                 !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
             {
-                ConfigureCoreMLProvider(sessionOptions, config, modelConfig);
+                sessionOptions.AppendExecutionProvider_CoreML(
+                    CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
+                    CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
+                    CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
             }
-            
             var model = new InferenceSession(modelPath, sessionOptions);
             Debug.Log($"[ModelUtils] Loaded model: {modelPath}");
             return model;
