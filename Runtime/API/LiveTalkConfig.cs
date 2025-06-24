@@ -13,8 +13,6 @@ namespace LiveTalk.API
         public string Device = "cpu"; // "cpu" or "cuda"
         public int BatchSize { get; internal set; } = 1;
         public float ExtraMargin { get; internal set; } = 10f; // Additional margin for v15
-        public bool UseINT8 { get; internal set; } = false; // Enable INT8 quantization TODO: Int8 is not currently supported. Keeping it false for now.
-        
         // Disk caching configuration
         public bool EnableDiskCache = false; // Enable persistent disk caching for avatar processing
         public string CacheDirectory = ""; // Cache directory path (empty = auto-detect)

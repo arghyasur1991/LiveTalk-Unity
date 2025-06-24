@@ -114,9 +114,6 @@ namespace LiveTalk.Core
         private readonly bool _initialized = false;
         private bool _disposed = false;
         
-        // QUANTIZATION SUPPORT: INT8 configuration for CPU optimization
-        private readonly bool _useINT8 = false;
-        
         // Face analysis utility for SCRFD+1k3d68 face processing
         private readonly FaceAnalysis _faceAnalysis;
         
@@ -145,31 +142,11 @@ namespace LiveTalk.Core
         public static bool EnablePerformanceMonitoring { get; set; } = true;
         
         /// <summary>
-        /// Returns true if INT8 quantization is currently active (excluding VAE models for quality)
-        /// </summary>
-        public bool IsUsingINT8 => _useINT8;
-        
-        /// <summary>
-        /// Get the current quantization mode being used
-        /// </summary>
-        public string QuantizationMode
-        {
-            get
-            {
-                if (_useINT8) return "Optimal (INT8 for performance, FP32 for VAE quality)";
-                return "FP32 only";
-            }
-        }
-        
-        /// <summary>
         /// Initialize MuseTalk inference with specified configuration
         /// </summary>
         public MuseTalkInference(LiveTalkConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
-            
-            // QUANTIZATION: Initialize INT8 support based on config
-            _useINT8 = _config.UseINT8;
             
             try
             {

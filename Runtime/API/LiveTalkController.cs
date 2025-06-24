@@ -10,8 +10,6 @@ namespace LiveTalk.API
     public class LiveTalkController : MonoBehaviour
     {
         private DrivingFramesStream _drivingFramesStream;
-        private bool _frameProcessed = false;
-        private long _currentFrameIndex = 0;
         private long _totalFramesToProcess = 0;
 
         public DrivingFramesStream DrivingFramesStream => _drivingFramesStream;

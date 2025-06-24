@@ -307,7 +307,7 @@ namespace LiveTalk.Utils
             
             // Combine texture hashes with version and config parameters
             var combinedHash = string.Join("-", hashes);
-            var configHash = $"{version}_{_config.ExtraMargin}_{_config.UseINT8}";
+            var configHash = $"{version}";
             
             return $"{combinedHash}_{configHash}".Replace("/", "_").Replace("\\", "_");
         }

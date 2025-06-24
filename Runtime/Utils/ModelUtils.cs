@@ -190,105 +190,111 @@ namespace LiveTalk.Utils
             return options;
         }
 
+        private static InferenceSession LoadModelWithCoreML(LiveTalkConfig config, string modelPath, SessionOptions sessionOptions)
+        {
+            try
+            {
+                // Configure CoreML provider with caching support using dictionary API
+                string cacheDirectory = GetCoreMLCacheDirectory(config);
+                
+                // Ensure cache directory exists and is writable
+                EnsureCacheDirectoryExists(cacheDirectory);
+                
+                var coremlOptions = new Dictionary<string, string>
+                {
+                    ["ModelFormat"] = "MLProgram",
+                    ["MLComputeUnits"] = "CPUAndGPU",
+                    ["RequireStaticInputShapes"] = "0",
+                    ["EnableOnSubgraphs"] = "1",
+
+                    // ["SpecializationStrategy"] = "FastPrediction",
+                    // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
+                    // ["ProfileComputePlan"] = "0"
+                };
+                
+                if (!string.IsNullOrEmpty(cacheDirectory))
+                {
+                    coremlOptions["ModelCacheDirectory"] = cacheDirectory;
+                }
+                
+                sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
+                Debug.Log($"[ModelUtils] CoreML provider configured with caching (cache: {cacheDirectory})");
+                
+                // Try creating the session - if it fails due to cache corruption, retry
+                try
+                {
+                    var model = new InferenceSession(modelPath, sessionOptions);
+                    Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider: {modelPath}");
+                    return model;
+                }
+                catch (Exception sessionException)
+                {
+                    if (sessionException.Message.Contains("Manifest.json") || 
+                        sessionException.Message.Contains("coreml_cache") ||
+                        sessionException.Message.Contains("manifest does not exist"))
+                    {
+                        Debug.LogWarning($"[ModelUtils] CoreML cache corruption detected. Retrying: {sessionException.Message}");
+                        
+                        // wait for 1 second
+                        System.Threading.Thread.Sleep(1000);
+                        
+                        var model = new InferenceSession(modelPath, sessionOptions);
+                        Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider after retrying: {modelPath}");
+                        return model;
+                    }
+                    else
+                    {
+                        throw; // Re-throw if it's not a cache-related issue
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[ModelUtils] CoreML provider configuration failed: {e.Message}");
+                
+                // Fallback to old CoreML flags approach
+                try
+                {
+                    var fallbackOptions = CreateSessionOptions(config);
+                    fallbackOptions.AppendExecutionProvider_CoreML(
+                        CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
+                        CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
+                        CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
+                    
+                    var model = new InferenceSession(modelPath, fallbackOptions);
+                    Debug.Log("[ModelUtils] Using fallback CoreML provider (no caching)");
+                    return model;
+                }
+                catch (Exception fallbackException)
+                {
+                    Debug.LogWarning($"[ModelUtils] CoreML fallback also failed: {fallbackException.Message}. Using CPU provider.");
+                }
+            }
+            return null;
+        }
+
         public static InferenceSession LoadModel(LiveTalkConfig config, ModelConfig modelConfig)
         {
+            if (modelConfig.precision == Precision.INT8)
+            {
+                // Use CPU if INT8 is enabled
+                modelConfig.preferredExecutionProvider = ExecutionProvider.CPU;
+            }
+            
             string modelPath = GetModelPath(config, modelConfig);
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             
             var sessionOptions = CreateSessionOptions(config);
-            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML && 
-                !IsInt8Enabled(config, modelConfig)) // Use CoreML if INT8 is not enabled
+            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML) 
             {
-                try
-                {
-                    // Configure CoreML provider with caching support using dictionary API
-                    string cacheDirectory = GetCoreMLCacheDirectory(config);
-                    
-                    // Ensure cache directory exists and is writable
-                    EnsureCacheDirectoryExists(cacheDirectory);
-                    
-                    var coremlOptions = new Dictionary<string, string>
-                    {
-                        ["ModelFormat"] = "MLProgram",
-                        ["MLComputeUnits"] = "CPUAndGPU",
-                        ["RequireStaticInputShapes"] = "0",
-                        ["EnableOnSubgraphs"] = "1",
-
-                        // ["SpecializationStrategy"] = "FastPrediction",
-                        // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
-                        // ["ProfileComputePlan"] = "0"
-                    };
-                    
-                    if (!string.IsNullOrEmpty(cacheDirectory))
-                    {
-                        coremlOptions["ModelCacheDirectory"] = cacheDirectory;
-                    }
-                    
-                    sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
-                    Debug.Log($"[ModelUtils] CoreML provider configured with caching (cache: {cacheDirectory})");
-                    
-                    // Try creating the session - if it fails due to cache corruption, retry
-                    try
-                    {
-                        var model = new InferenceSession(modelPath, sessionOptions);
-                        Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider: {modelPath}");
-                        return model;
-                    }
-                    catch (Exception sessionException)
-                    {
-                        if (sessionException.Message.Contains("Manifest.json") || 
-                            sessionException.Message.Contains("coreml_cache") ||
-                            sessionException.Message.Contains("manifest does not exist"))
-                        {
-                            Debug.LogWarning($"[ModelUtils] CoreML cache corruption detected. Retrying: {sessionException.Message}");
-                            
-                            // wait for 1 second
-                            System.Threading.Thread.Sleep(1000);
-                            
-                            var model = new InferenceSession(modelPath, sessionOptions);
-                            Debug.Log($"[ModelUtils] Successfully loaded model with CoreML provider after retrying: {modelPath}");
-                            return model;
-                        }
-                        else
-                        {
-                            throw; // Re-throw if it's not a cache-related issue
-                        }
-                    }
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"[ModelUtils] CoreML provider configuration failed: {e.Message}");
-                    
-                    // Fallback to old CoreML flags approach
-                    try
-                    {
-                        var fallbackOptions = CreateSessionOptions(config);
-                        fallbackOptions.AppendExecutionProvider_CoreML(
-                            CoreMLFlags.COREML_FLAG_USE_CPU_AND_GPU | 
-                            CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM |
-                            CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
-                        
-                        var model = new InferenceSession(modelPath, fallbackOptions);
-                        Debug.Log("[ModelUtils] Using fallback CoreML provider (no caching)");
-                        return model;
-                    }
-                    catch (Exception fallbackException)
-                    {
-                        Debug.LogWarning($"[ModelUtils] CoreML fallback also failed: {fallbackException.Message}. Using CPU provider.");
-                    }
-                }
+                return LoadModelWithCoreML(config, modelPath, sessionOptions);
             }
             
             // Default CPU execution
             var cpuModel = new InferenceSession(modelPath, sessionOptions);
             Debug.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
             return cpuModel;
-        }
-
-        private static bool IsInt8Enabled(LiveTalkConfig config, ModelConfig modelConfig)
-        {
-            return config.UseINT8 && modelConfig.precision == Precision.INT8;
         }
 
         /// <summary>
