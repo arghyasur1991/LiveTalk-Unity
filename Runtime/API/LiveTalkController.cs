@@ -48,10 +48,27 @@ namespace LiveTalk.API
             {
                 Debug.Log($"[LiveTalkController] Frame ready: {frameIndex}");
                 
-                // Read the render texture
-                RenderTexture.active = source.targetTexture;
-                Texture2D frameTexture = new Texture2D(source.targetTexture.width, source.targetTexture.height, TextureFormat.RGB24, false);
-                frameTexture.ReadPixels(new Rect(0, 0, source.targetTexture.width, source.targetTexture.height), 0, 0);
+                // Check if the VideoPlayer texture is available
+                if (source.texture == null)
+                {
+                    Debug.LogWarning($"[LiveTalkController] VideoPlayer.texture is null for frame {frameIndex}");
+                    return;
+                }
+                
+                // Use VideoPlayer.texture directly instead of custom RenderTexture
+                RenderTexture videoTexture = source.texture as RenderTexture;
+                if (videoTexture == null)
+                {
+                    Debug.LogWarning($"[LiveTalkController] VideoPlayer.texture is not a RenderTexture for frame {frameIndex}");
+                    return;
+                }
+                
+                Debug.Log($"[LiveTalkController] Video texture size: {videoTexture.width}x{videoTexture.height}");
+                
+                // Read from the VideoPlayer's texture
+                RenderTexture.active = videoTexture;
+                Texture2D frameTexture = new Texture2D(videoTexture.width, videoTexture.height, TextureFormat.RGB24, false);
+                frameTexture.ReadPixels(new Rect(0, 0, videoTexture.width, videoTexture.height), 0, 0);
                 frameTexture.Apply();
                 RenderTexture.active = null;
                 
@@ -78,15 +95,6 @@ namespace LiveTalk.API
                     source.sendFrameReadyEvents = false;
                     source.frameReady -= OnFrameReady;
                     
-                    // Cleanup render texture
-                    if (source.targetTexture != null)
-                    {
-                        var renderTexture = source.targetTexture;
-                        source.targetTexture = null;
-                        renderTexture.Release();
-                        UnityEngine.Object.DestroyImmediate(renderTexture);
-                    }
-                    
                     _drivingFramesStream.LoadingFinished = true;
                     Debug.Log($"[LiveTalkController] Finished loading driving frames from video, {_drivingFramesStream.QueueCount} frames queued");
                 }
@@ -106,11 +114,7 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            // Setup VideoPlayer for frame extraction
-            RenderTexture renderTexture = new RenderTexture((int)videoPlayer.clip.width, (int)videoPlayer.clip.height, 0);
-            videoPlayer.targetTexture = renderTexture;
-            
-            // Prepare the video player
+            // Prepare the video player - don't set custom targetTexture, let VideoPlayer handle it
             videoPlayer.isLooping = false;
             videoPlayer.playOnAwake = false;
             videoPlayer.skipOnDrop = false;
@@ -118,16 +122,26 @@ namespace LiveTalk.API
             // Prepare and wait for video to be ready
             videoPlayer.Prepare();
             yield return new WaitUntil(() => videoPlayer.isPrepared);
+            
+            // Wait an additional frame to ensure everything is set up
+            yield return null;
 
             // Initialize frame processing variables
             _totalFramesToProcess = (long)videoPlayer.clip.frameCount;
             
-            // Enable frameReady events and subscribe to the event - following Unity docs pattern
+            Debug.Log($"[LiveTalkController] Video prepared. Frame count: {_totalFramesToProcess}, Video size: {videoPlayer.clip.width}x{videoPlayer.clip.height}");
+            
+            // Enable frameReady events and subscribe to the event
             videoPlayer.sendFrameReadyEvents = true;
             videoPlayer.frameReady += OnFrameReady;
             
             // Start playback - this will trigger frameReady events for each frame
             videoPlayer.Play();
+            
+            // Wait a frame after starting playback
+            yield return null;
+            
+            Debug.Log($"[LiveTalkController] VideoPlayer started. IsPlaying: {videoPlayer.isPlaying}");
             
             // Wait for all frames to be processed
             yield return new WaitUntil(() => stream.LoadingFinished);
