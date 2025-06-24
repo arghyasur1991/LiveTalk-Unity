@@ -23,16 +23,16 @@ namespace LiveTalk.Core
     internal class ModelConfig
     {
         public string modelName = "";
+        public string modelRelativePath = "";
         public ExecutionProvider preferredExecutionProvider = ExecutionProvider.CPU;
         public Precision precision = Precision.FP32;
-        public string version = "";
 
-        public ModelConfig(string modelName, ExecutionProvider preferredExecutionProvider, Precision precision, string version)
+        public ModelConfig(string modelName, string modelRelativePath, ExecutionProvider preferredExecutionProvider, Precision precision)
         {
             this.modelName = modelName;
+            this.modelRelativePath = modelRelativePath;
             this.preferredExecutionProvider = preferredExecutionProvider;            
             this.precision = precision;
-            this.version = version;
         }
     }
     internal struct Frame

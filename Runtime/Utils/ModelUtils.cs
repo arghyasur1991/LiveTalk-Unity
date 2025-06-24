@@ -310,19 +310,16 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
-        /// Get model file path with optimal quality/performance balance
-        /// QUALITY OPTIMIZATION: Automatically use FP32 for VAE models to preserve image quality
+        /// Get model file path
         /// </summary>
         public static string GetModelPath(LiveTalkConfig config, ModelConfig modelConfig)
         {
-            bool isVersionIndependent = modelConfig.version == "";
             string precisionSuffix = modelConfig.precision == Precision.FP32 ? "" : 
                                         $"_{modelConfig.precision.ToString().ToLower()}";
 
             string modelName = modelConfig.modelName;
-            modelName += isVersionIndependent ? "" : $"_{modelConfig.version}";
             modelName += precisionSuffix;
-            string modelPath = Path.Combine(config.ModelPath, $"{modelName}.onnx");
+            string modelPath = Path.Combine(config.ModelPath, modelConfig.modelRelativePath, $"{modelName}.onnx");
             if (!File.Exists(modelPath))
             {
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");

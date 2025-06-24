@@ -7,6 +7,7 @@ using UnityEngine;
 
 namespace LiveTalk.API
 {
+    using System.IO;
     using Core;
     using UnityEngine.Video;
     using Utils;
@@ -308,10 +309,14 @@ namespace LiveTalk.API
         /// <summary>
         /// Create an instance of the integrated API with default configuration
         /// </summary>
-        public static LiveTalkAPI Create(LiveTalkController avatarController, string modelPath = "LiveTalk")
+        public static LiveTalkAPI Create(LiveTalkController avatarController, string parentModelPath = "")
         {
-            modelPath = Application.streamingAssetsPath + "/" + modelPath;
-            var config = new LiveTalkConfig(modelPath);
+            if (string.IsNullOrEmpty(parentModelPath))
+            {
+                parentModelPath = Application.streamingAssetsPath;
+            }
+            
+            var config = new LiveTalkConfig(parentModelPath);
             return new LiveTalkAPI(config, avatarController);
         }
     }

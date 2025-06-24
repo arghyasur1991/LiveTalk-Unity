@@ -99,6 +99,7 @@ namespace LiveTalk.Core
     internal class MuseTalkInference : IDisposable
     {
         private static readonly DebugLogger Logger = new();
+        private static readonly string MODEL_RELATIVE_PATH = "MuseTalk";
         
         // ONNX Runtime sessions
         private Model _unet;
@@ -183,10 +184,10 @@ namespace LiveTalk.Core
         /// </summary>
         private void InitializeModels()
         {
-            _unet = new Model(_config, "unet", ExecutionProvider.CoreML, Precision.FP16, _config.Version);
-            _vaeEncoder = new Model(_config, "vae_encoder", ExecutionProvider.CoreML, Precision.FP16, _config.Version);
-            _vaeDecoder = new Model(_config, "vae_decoder", ExecutionProvider.CoreML, Precision.FP16, _config.Version);
-            _positionalEncoding = new Model(_config, "positional_encoding", ExecutionProvider.CPU, Precision.FP32, _config.Version);
+            _unet = new Model(_config, "unet", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _vaeEncoder = new Model(_config, "vae_encoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH, ExecutionProvider.CPU, Precision.FP32);
         }
 
         /// <summary>

@@ -80,7 +80,8 @@ namespace LiveTalk.Core
     internal class FaceAnalysis : IDisposable
     {
         private static readonly DebugLogger Logger = new();
-        
+        private static readonly string MODEL_RELATIVE_PATH_LIVE_PORTAIT = "LivePortrait";
+        private static readonly string MODEL_RELATIVE_PATH_MUSE_TALK = "MuseTalk";
         // ONNX Models
         private readonly Model _detFace;      // Face detection model
         private readonly Model _landmark2d106; // 106 landmark detection model
@@ -114,14 +115,12 @@ namespace LiveTalk.Core
             try
             {
                 // Load all required models
-                _detFace = new Model(_config, "det_10g_fixed", ExecutionProvider.CoreML);
-                _landmark2d106 = new Model(_config, "2d106det", ExecutionProvider.CoreML);
-                _landmarkRunner = new Model(_config, "landmark", ExecutionProvider.CoreML);
+                _detFace = new Model(_config, "det_10g", MODEL_RELATIVE_PATH_LIVE_PORTAIT, ExecutionProvider.CoreML);
+                _landmark2d106 = new Model(_config, "2d106det", MODEL_RELATIVE_PATH_LIVE_PORTAIT, ExecutionProvider.CoreML);
+                _landmarkRunner = new Model(_config, "landmark", MODEL_RELATIVE_PATH_LIVE_PORTAIT, ExecutionProvider.CoreML);
                 
-                // Load face parsing model (required for complete face analysis)
-                _faceParsing = new Model(_config, "face_parsing", ExecutionProvider.CoreML);
+                _faceParsing = new Model(_config, "face_parsing", MODEL_RELATIVE_PATH_MUSE_TALK, ExecutionProvider.CoreML);
                 
-                // Verify all models initialized (including face parsing)
                 bool allInitialized = _detFace != null && _landmark2d106 != null && _landmarkRunner != null && _faceParsing != null;
                 
                 if (!allInitialized)

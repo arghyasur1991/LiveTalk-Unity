@@ -36,7 +36,7 @@ namespace LiveTalk.Core
     internal class LivePortraitInference : IDisposable
     {
         private static readonly DebugLogger Logger = new();
-        
+        private static readonly string MODEL_RELATIVE_PATH = "LivePortrait";
         // LivePortrait ONNX models - matches Python models dict exactly
         private Model _appearanceFeatureExtractor;  // feature extraction
         private Model _motionExtractor;  // motion parameters
@@ -88,10 +88,10 @@ namespace LiveTalk.Core
         
         private void InitializeModels()
         {
-            _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor", ExecutionProvider.CoreML);
-            _motionExtractor = new Model(_config, "motion_extractor", ExecutionProvider.CoreML);
-            _stitching = new Model(_config, "stitching");
-            _warpingSpade = new Model(_config, "warping_spade", ExecutionProvider.CoreML);
+            _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
+            _motionExtractor = new Model(_config, "motion_extractor", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
+            _stitching = new Model(_config, "stitching", MODEL_RELATIVE_PATH);
+            _warpingSpade = new Model(_config, "warping_spade", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
             
             // Initialize consolidated face analysis
             _faceAnalysis = new FaceAnalysis(_config);

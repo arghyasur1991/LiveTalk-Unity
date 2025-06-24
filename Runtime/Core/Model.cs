@@ -22,11 +22,11 @@ namespace LiveTalk.Core
         public Model(
             LiveTalkConfig config, 
             string modelName, 
+            string modelRelativePath,
             ExecutionProvider preferredExecutionProvider = ExecutionProvider.CPU, 
-            Precision precision = Precision.FP32, 
-            string version = "")
+            Precision precision = Precision.FP32)
         {
-            _config = new ModelConfig(modelName, preferredExecutionProvider, precision, version);
+            _config = new ModelConfig(modelName, modelRelativePath, preferredExecutionProvider, precision);
             _loadTask = LoadModel(config);
         }
 

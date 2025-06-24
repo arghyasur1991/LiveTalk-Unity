@@ -37,7 +37,7 @@ namespace LiveTalk.Core
         /// </summary>
         public WhisperModel(LiveTalkConfig config)
         {
-            _model = new Model(config, "whisper_encoder", ExecutionProvider.CPU);
+            _model = new Model(config, "whisper_encoder", "MuseTalk", ExecutionProvider.CPU);
             _isInitialized = true;
         }
         

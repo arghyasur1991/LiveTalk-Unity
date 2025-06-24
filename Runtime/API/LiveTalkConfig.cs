@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace LiveTalk.API
 {
@@ -8,8 +9,8 @@ namespace LiveTalk.API
     [Serializable]
     public class LiveTalkConfig
     {
-        public string ModelPath = "LiveTalk";
-        public string Version = "v15"; // only v15 is supported
+        public string ModelPath = "";
+        public string Version = "v15"; // only v15 is supported. Not used for now.
         public string Device = "cpu"; // "cpu" or "cuda"
         public int BatchSize { get; internal set; } = 1;
         public float ExtraMargin { get; internal set; } = 10f; // Additional margin for v15
@@ -21,18 +22,9 @@ namespace LiveTalk.API
         public int CacheVersionNumber { get; internal set; } = 1; // Cache version for invalidation on format changes
         public bool CacheLatentsOnly = false; // Cache only latents (faster) vs full avatar data (slower but complete)
         
-        public LiveTalkConfig()
+        public LiveTalkConfig(string modelPath)
         {
-        }
-        
-        public LiveTalkConfig(string modelPath, string version = "v15")
-        {
-            if (version != "v15")
-            {
-                throw new NotSupportedException("Only v15 is supported");
-            }
-            ModelPath = modelPath;
-            Version = version;
+            ModelPath = Path.Combine(modelPath, "LiveTalk", "models");
         }
     }
 }
