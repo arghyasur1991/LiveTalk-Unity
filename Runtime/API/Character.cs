@@ -148,6 +148,7 @@ namespace LiveTalk.API
                         
                         while (!outputStream.Finished)
                         {
+                            // TODO use waitfornext
                             if (outputStream.TryGetNext(out Texture2D frame))
                             {
                                 generatedFrames.Add(frame);
@@ -155,7 +156,7 @@ namespace LiveTalk.API
                             await Task.Yield(); // Allow other operations to proceed
                         }
 
-                        // Collect any remaining frames
+                        // Collect any remaining frames TODO remove
                         while (outputStream.TryGetNext(out Texture2D remainingFrame))
                         {
                             generatedFrames.Add(remainingFrame);
@@ -163,7 +164,7 @@ namespace LiveTalk.API
 
                         Debug.Log($"[Character] Generated {generatedFrames.Count} frames for expression: {expression}");
 
-                        // Save generated frames as PNG files
+                        // Save generated frames as PNG files TODO do it when frame is availble loop
                         for (int i = 0; i < generatedFrames.Count; i++)
                         {
                             string frameFileName = Path.Combine(expressionFolder, $"{i:D5}.png");
@@ -171,7 +172,7 @@ namespace LiveTalk.API
                             await File.WriteAllBytesAsync(frameFileName, pngData);
                         }
 
-                        // Generate and save latents and face data for caching
+                        // Generate and save cache data
                         await GenerateAndSaveCacheData(expressionFolder, generatedFrames);
 
                         // Clean up generated textures
@@ -262,46 +263,290 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Generate and save cache data (latents and face data) for the processed frames
+        /// Generate and save cache data (latents and face data) for the processed frames using real MuseTalkInference
         /// </summary>
         private async Task GenerateAndSaveCacheData(string expressionFolder, List<Texture2D> frames)
         {
             try
             {
-                // This would typically involve running the frames through MuseTalk's avatar processing
-                // to generate latents and face data that can be cached for faster future processing
-                
-                // For now, we'll create placeholder cache files
-                // In a full implementation, this would extract latents using the VAE encoder
-                // and face data using the face analysis components
-                
-                var latentsFile = Path.Combine(expressionFolder, "latents.bin");
-                var facesFile = Path.Combine(expressionFolder, "faces.json");
-                
-                // Create placeholder latents (in a real implementation, this would be the actual latents)
-                var placeholderLatents = new float[frames.Count * 8 * 32 * 32]; // Example dimensions
-                var latentsBytes = new byte[placeholderLatents.Length * sizeof(float)];
-                Buffer.BlockCopy(placeholderLatents, 0, latentsBytes, 0, latentsBytes.Length);
-                await File.WriteAllBytesAsync(latentsFile, latentsBytes);
-                
-                // Create placeholder face data (in a real implementation, this would contain face landmarks and regions)
-                var faceData = new
+                Debug.Log($"[Character] Generating real cache data for {frames.Count} frames using MuseTalkInference");
+
+                // Create a temporary MuseTalkInference instance for processing
+                var liveTalkAPI = CharacterFactory._liveTalkAPI;
+                if (liveTalkAPI == null)
                 {
-                    frames = frames.Count,
-                    timestamp = DateTime.UtcNow,
-                    version = "1.0"
-                };
-                
-                string faceDataJson = Newtonsoft.Json.JsonConvert.SerializeObject(faceData, Newtonsoft.Json.Formatting.Indented);
-                await File.WriteAllTextAsync(facesFile, faceDataJson);
-                
-                Debug.Log($"[Character] Generated cache data for {frames.Count} frames");
+                    Debug.LogError("[Character] LiveTalkAPI not available for cache generation");
+                    return;
+                }
+
+                // Create a temporary MuseTalkInference instance with the same config as LiveTalkAPI
+                var config = new LiveTalk.API.LiveTalkConfig(Application.streamingAssetsPath);
+                var museTalkInference = new LiveTalk.Core.MuseTalkInference(config);
+
+                // Convert frames to avatar textures array for processing
+                var avatarTextures = frames.ToArray();
+
+                // Use MuseTalkInference to process the avatar images and extract real data
+                var avatarData = await ProcessAvatarImagesWithMuseTalk(museTalkInference, avatarTextures);
+
+                if (avatarData != null && avatarData.Latents.Count > 0)
+                {
+                    // Save real latents data
+                    await SaveLatentsToFile(expressionFolder, avatarData.Latents);
+
+                    // Save real face data
+                    await SaveFaceDataToFile(expressionFolder, avatarData.FaceRegions);
+
+                    Debug.Log($"[Character] Generated real cache data: {avatarData.Latents.Count} latents, {avatarData.FaceRegions.Count} face regions");
+                }
+                else
+                {
+                    throw new InvalidOperationException("Failed to generate avatar data using real MuseTalk processing. No fallback available.");
+                }
+
+                // Clean up
+                museTalkInference?.Dispose();
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Character] Error generating cache data: {ex.Message}");
+                Debug.LogError($"[Character] Error generating real cache data: {ex.Message}");
+                throw new InvalidOperationException($"Failed to generate real cache data: {ex.Message}. No fallback available.", ex);
             }
         }
+
+        /// <summary>
+        /// Process avatar images using MuseTalkInference pipeline to extract real latents and face data
+        /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
+        /// </summary>
+        private async Task<LiveTalk.Core.AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalk.Core.MuseTalkInference museTalkInference, Texture2D[] avatarTextures)
+        {
+            Debug.Log($"[Character] Processing {avatarTextures.Length} avatar textures using real MuseTalk pipeline");
+
+            // Use the actual MuseTalk ProcessAvatarImages method to get complete AvatarData
+            // This includes real face detection, segmentation, and latent generation
+            var method = museTalkInference.GetType()
+                .GetMethod("ProcessAvatarImages", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            if (method == null)
+            {
+                throw new InvalidOperationException("MuseTalkInference.ProcessAvatarImages method not found. Real MuseTalk implementation is required.");
+            }
+
+            var result = method.Invoke(museTalkInference, new object[] { avatarTextures });
+            if (!(result is Task<LiveTalk.Core.AvatarData> avatarDataTask))
+            {
+                throw new InvalidOperationException("MuseTalkInference.ProcessAvatarImages did not return expected Task<AvatarData>. Real MuseTalk implementation is required.");
+            }
+
+            var avatarData = await avatarDataTask;
+            if (avatarData?.FaceRegions?.Count == 0 || avatarData?.Latents?.Count == 0)
+            {
+                throw new InvalidOperationException($"Real MuseTalk processing failed to generate valid avatar data. FaceRegions: {avatarData?.FaceRegions?.Count ?? 0}, Latents: {avatarData?.Latents?.Count ?? 0}");
+            }
+
+            Debug.Log($"[Character] Real MuseTalk processing completed: {avatarData.Latents.Count} latents, {avatarData.FaceRegions.Count} face regions");
+            return avatarData;
+        }
+
+
+
+        /// <summary>
+        /// Save real latents data to binary file
+        /// </summary>
+        private async Task SaveLatentsToFile(string expressionFolder, List<float[]> latents)
+        {
+            try
+            {
+                var latentsFile = Path.Combine(expressionFolder, "latents.bin");
+                
+                // Calculate total size needed
+                int totalFloats = latents.Sum(latent => latent.Length);
+                var allLatents = new float[totalFloats];
+                
+                // Combine all latent arrays into one
+                int offset = 0;
+                foreach (var latent in latents)
+                {
+                    Array.Copy(latent, 0, allLatents, offset, latent.Length);
+                    offset += latent.Length;
+                }
+                
+                // Convert to bytes and save
+                var latentsBytes = new byte[allLatents.Length * sizeof(float)];
+                Buffer.BlockCopy(allLatents, 0, latentsBytes, 0, latentsBytes.Length);
+                await File.WriteAllBytesAsync(latentsFile, latentsBytes);
+                
+                Debug.Log($"[Character] Saved {latents.Count} latent arrays ({totalFloats} total floats) to {latentsFile}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Character] Error saving latents: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Save real face data to JSON file and save all precomputed textures
+        /// </summary>
+        private async Task SaveFaceDataToFile(string expressionFolder, List<LiveTalk.Core.FaceData> faceRegions)
+        {
+            try
+            {
+                var facesFile = Path.Combine(expressionFolder, "faces.json");
+                var texturesFolder = Path.Combine(expressionFolder, "textures");
+                
+                // Create texture subfolders
+                var subfolders = new[]
+                {
+                    "cropped", "original", "faceLarge", "segmentationMask",
+                    "maskSmall", "fullMask", "boundaryMask", "blurredMask"
+                };
+                
+                foreach (var subfolder in subfolders)
+                {
+                    Directory.CreateDirectory(Path.Combine(texturesFolder, subfolder));
+                }
+
+                Debug.Log($"[Character] Saving face data with precomputed textures for {faceRegions.Count} face regions");
+
+                // Process each face region and save all textures
+                var faceDataForJson = new List<object>();
+                
+                for (int faceIndex = 0; faceIndex < faceRegions.Count; faceIndex++)
+                {
+                    var face = faceRegions[faceIndex];
+                    
+                    // Save all precomputed textures for this face
+                    var texturePaths = await SaveFaceTextures(texturesFolder, face, faceIndex);
+                    
+                    // Create face data entry with texture file references
+                    var faceDataEntry = new
+                    {
+                        faceIndex = faceIndex,
+                        hasFace = face.HasFace,
+                        boundingBox = new
+                        {
+                            x = face.BoundingBox.x,
+                            y = face.BoundingBox.y,
+                            width = face.BoundingBox.width,
+                            height = face.BoundingBox.height
+                        },
+                        landmarks = face.Landmarks?.Select(l => new { x = l.x, y = l.y }).ToArray(),
+                        adjustedFaceBbox = new
+                        {
+                            x = face.AdjustedFaceBbox.x,
+                            y = face.AdjustedFaceBbox.y,
+                            z = face.AdjustedFaceBbox.z,
+                            w = face.AdjustedFaceBbox.w
+                        },
+                        cropBox = new
+                        {
+                            x = face.CropBox.x,
+                            y = face.CropBox.y,
+                            z = face.CropBox.z,
+                            w = face.CropBox.w
+                        },
+                        textureDimensions = new
+                        {
+                            croppedFace = new { width = face.CroppedFaceTexture.width, height = face.CroppedFaceTexture.height },
+                            original = new { width = face.OriginalTexture.width, height = face.OriginalTexture.height },
+                            faceLarge = new { width = face.FaceLarge.width, height = face.FaceLarge.height },
+                            segmentationMask = new { width = face.SegmentationMask.width, height = face.SegmentationMask.height },
+                            maskSmall = new { width = face.MaskSmall.width, height = face.MaskSmall.height },
+                            fullMask = new { width = face.FullMask.width, height = face.FullMask.height },
+                            boundaryMask = new { width = face.BoundaryMask.width, height = face.BoundaryMask.height },
+                            blurredMask = new { width = face.BlurredMask.width, height = face.BlurredMask.height }
+                        },
+                        // Reference to saved texture files
+                        textureFiles = texturePaths
+                    };
+                    
+                    faceDataForJson.Add(faceDataEntry);
+                }
+                
+                var faceDataJson = new
+                {
+                    faceRegions = faceDataForJson.ToArray(),
+                    frameCount = faceRegions.Count,
+                    timestamp = DateTime.UtcNow,
+                    version = "1.0-complete",
+                    description = "Complete face data with all precomputed textures saved as PNG files"
+                };
+                
+                string json = Newtonsoft.Json.JsonConvert.SerializeObject(faceDataJson, Newtonsoft.Json.Formatting.Indented);
+                await File.WriteAllTextAsync(facesFile, json);
+                
+                Debug.Log($"[Character] Saved complete face data with textures for {faceRegions.Count} face regions to {facesFile}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Character] Error saving face data with textures: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Save all precomputed textures for a single face region
+        /// </summary>
+        private async Task<Dictionary<string, string>> SaveFaceTextures(string texturesFolder, LiveTalk.Core.FaceData face, int faceIndex)
+        {
+            var texturePaths = new Dictionary<string, string>();
+            
+            try
+            {
+                // Define texture mappings: texture data -> folder name -> filename
+                var textureMap = new List<(LiveTalk.Core.Frame frame, string folder, string key)>
+                {
+                    (face.CroppedFaceTexture, "cropped", "croppedFace"),
+                    (face.OriginalTexture, "original", "original"),
+                    (face.FaceLarge, "faceLarge", "faceLarge"),
+                    (face.SegmentationMask, "segmentationMask", "segmentationMask"),
+                    (face.MaskSmall, "maskSmall", "maskSmall"),
+                    (face.FullMask, "fullMask", "fullMask"),
+                    (face.BoundaryMask, "boundaryMask", "boundaryMask"),
+                    (face.BlurredMask, "blurredMask", "blurredMask")
+                };
+
+                foreach (var (frame, folder, key) in textureMap)
+                {
+                    if (frame.data != null && frame.data.Length > 0)
+                    {
+                        string filename = $"face_{faceIndex:D3}.png";
+                        string folderPath = Path.Combine(texturesFolder, folder);
+                        string fullPath = Path.Combine(folderPath, filename);
+                        
+                        // Convert Frame to Texture2D and save as PNG
+                        var texture = LiveTalk.Utils.TextureUtils.FrameToTexture2D(frame);
+                        byte[] pngData = texture.EncodeToPNG();
+                        await File.WriteAllBytesAsync(fullPath, pngData);
+                        
+                        // Store relative path for JSON reference
+                        string relativePath = Path.Combine("textures", folder, filename).Replace('\\', '/');
+                        texturePaths[key] = relativePath;
+                        
+                        // Clean up texture
+                        UnityEngine.Object.DestroyImmediate(texture);
+                        
+                        Debug.Log($"[Character] Saved {key} texture: {relativePath} ({frame.width}x{frame.height})");
+                    }
+                    else
+                    {
+                        texturePaths[key] = null; // Mark as missing/empty
+                        Debug.LogWarning($"[Character] {key} texture data is null or empty for face {faceIndex}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Character] Error saving textures for face {faceIndex}: {ex.Message}");
+            }
+            
+            return texturePaths;
+        }
+
+
+
+
+
+
 
         /// <summary>
         /// Generate voice sample using SparkTTS with character parameters
@@ -323,7 +568,7 @@ namespace LiveTalk.API
                     gender: genderParam,
                     pitch: pitchParam,
                     speed: speedParam,
-                    referenceText: Intro ?? "Hello, I am a character in this mystery."
+                    referenceText: Intro ?? "Hello, I am a character in this mystery." // TODO use intro from character
                 );
 
                 if (characterVoice != null)
