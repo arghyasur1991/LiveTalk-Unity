@@ -103,9 +103,9 @@ namespace LiveTalk.API
     {
         private static readonly DebugLogger Logger = new();
         
-        private LivePortraitInference _livePortrait;
-        private MuseTalkInference _museTalk;
-        private LiveTalkConfig _config;
+        private readonly LivePortraitInference _livePortrait;
+        private readonly MuseTalkInference _museTalk;
+        private readonly LiveTalkConfig _config;
         private bool _disposed = false;
         private readonly LiveTalkController _avatarController;
         
