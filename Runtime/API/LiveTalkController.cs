@@ -21,7 +21,7 @@ namespace LiveTalk.API
             StartCoroutine(LoadDrivingFramesAsync(frameFiles, _drivingFramesStream));
         }
 
-        public void LoadDrivingFrames(VideoPlayer videoPlayer)
+        public void LoadDrivingFrames(VideoPlayer videoPlayer, int maxFrames = -1)
         {
             if (videoPlayer == null || videoPlayer.clip == null)
             {
@@ -35,9 +35,12 @@ namespace LiveTalk.API
                 return;
             }
 
-            _drivingFramesStream = new DrivingFramesStream((int)videoPlayer.clip.frameCount);
-            _drivingFramesStream.TotalExpectedFrames = (int)videoPlayer.clip.frameCount;
-            StartCoroutine(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream));
+            var frameCount = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+            _drivingFramesStream = new DrivingFramesStream(frameCount)
+            {
+                TotalExpectedFrames = frameCount
+            };
+            StartCoroutine(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream, maxFrames));
         }
 
         private void OnFrameReady(VideoPlayer source, long frameIndex)
@@ -75,12 +78,15 @@ namespace LiveTalk.API
                 rgbTexture.name = $"VideoFrame_{frameIndex:D6}";
                 
                 // Enqueue the frame
-                _drivingFramesStream.loadQueue.Enqueue(rgbTexture);
+                if (_drivingFramesStream.QueueCount < _drivingFramesStream.TotalExpectedFrames)
+                {
+                    _drivingFramesStream.loadQueue.Enqueue(rgbTexture);
+                }
                 
                 // Clean up original texture if different
                 if (rgbTexture != frameTexture)
                 {
-                    UnityEngine.Object.DestroyImmediate(frameTexture);
+                    DestroyImmediate(frameTexture);
                 }
                 
                 Debug.Log($"[LiveTalkController] Processed frame {frameIndex}, queue count: {_drivingFramesStream.QueueCount}");
@@ -103,7 +109,7 @@ namespace LiveTalk.API
             }
         }
 
-        private IEnumerator LoadDrivingFramesAsync(VideoPlayer videoPlayer, DrivingFramesStream stream)
+        private IEnumerator LoadDrivingFramesAsync(VideoPlayer videoPlayer, DrivingFramesStream stream, int maxFrames = -1)
         {
             if (videoPlayer == null || videoPlayer.clip == null)
             {
@@ -125,7 +131,7 @@ namespace LiveTalk.API
             yield return null;
 
             // Initialize frame processing variables
-            _totalFramesToProcess = (long)videoPlayer.clip.frameCount;
+            _totalFramesToProcess = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
             
             Debug.Log($"[LiveTalkController] Video prepared. Frame count: {_totalFramesToProcess}, Video size: {videoPlayer.clip.width}x{videoPlayer.clip.height}");
             

@@ -106,11 +106,8 @@ namespace LiveTalk.API
         private LivePortraitInference _livePortrait;
         private MuseTalkInference _museTalk;
         private LiveTalkConfig _config;
-        private bool _initialized = false;
         private bool _disposed = false;
         private readonly LiveTalkController _avatarController;
-        
-        public bool IsInitialized => _initialized;
         
         /// <summary>
         /// Initialize the integrated API with configuration
@@ -120,73 +117,39 @@ namespace LiveTalk.API
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _avatarController = avatarController ?? throw new ArgumentNullException(nameof(avatarController));
             
-            try
-            {
-                Logger.Log("[LivePortraitMuseTalkAPI] Initializing integrated workflow...");
-                
-                // Initialize LivePortrait inference
-                _livePortrait = new LivePortraitInference(_config);
-                
-                // Initialize MuseTalk inference
-                _museTalk = new MuseTalkInference(_config);
-                
-                // Verify both systems are initialized
-                if (!_livePortrait.IsInitialized)
-                {
-                    throw new InvalidOperationException("LivePortrait inference failed to initialize");
-                }
-                
-                if (!_museTalk.IsInitialized)
-                {
-                    throw new InvalidOperationException("MuseTalk inference failed to initialize");
-                }
-                
-                _initialized = true;
-                Logger.Log("[LivePortraitMuseTalkAPI] Successfully initialized integrated workflow");
-            }
-            catch (Exception e)
-            {
-                Logger.LogError($"[LivePortraitMuseTalkAPI] Failed to initialize: {e.Message}");
-                _initialized = false;
-            }
+            _livePortrait = new LivePortraitInference(_config);
+            _museTalk = new MuseTalkInference(_config);
         }
         
         /// <summary>
         /// Generate animated textures only using LivePortrait (SYNCHRONOUS) - List<Texture2D> overload
         /// </summary>
         public OutputStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, List<Texture2D> drivingFrames)
-        {
-            if (!_initialized)
-                throw new InvalidOperationException("API not initialized");
-                
+        {                
             if (sourceImage == null || drivingFrames == null)
                 throw new ArgumentException("Invalid input: source image and driving frames are required");
                 
             Logger.Log($"[LivePortraitMuseTalkAPI] Generating animated textures (SYNC): {drivingFrames.Count} driving frames");
             
-            var input = new LivePortraitInput
-            {
-                SourceImage = sourceImage,
-                DrivingFrames = drivingFrames
-            };
-
             var stream = new OutputStream(drivingFrames.Count);
-            _avatarController.StartCoroutine(_livePortrait.GenerateAsync(input, stream));
+            var drivingStream = new DrivingFramesStream(drivingFrames.Count);
+            foreach (var frame in drivingFrames)
+            {
+                drivingStream.loadQueue.Enqueue(frame);
+            }
+            _avatarController.StartCoroutine(_livePortrait.GenerateAsync(sourceImage, stream, drivingStream));
             return stream;
         }
 
         public OutputStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
-        {
-            if (!_initialized)
-                throw new InvalidOperationException("API not initialized");
-                
+        {                
             if (sourceImage == null || videoPlayer == null)
                 throw new ArgumentException("Invalid input: source image and video player are required");
 
             Logger.Log($"[LivePortraitMuseTalkAPI] Starting pipelined processing: {videoPlayer.clip.frameCount} driving frames");
-            
-            var stream = new OutputStream((int)videoPlayer.clip.frameCount);
-            _avatarController.LoadDrivingFrames(videoPlayer);
+            var frameCount = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+            var stream = new OutputStream(frameCount);
+            _avatarController.LoadDrivingFrames(videoPlayer, maxFrames);
             _avatarController.StartCoroutine(
                 _livePortrait.GenerateAsync(sourceImage, stream, _avatarController.DrivingFramesStream));
             return stream;
@@ -194,9 +157,6 @@ namespace LiveTalk.API
 
         public OutputStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
         {
-            if (!_initialized)
-                throw new InvalidOperationException("API not initialized");
-                
             if (sourceImage == null || string.IsNullOrEmpty(drivingFramesPath))
                 throw new ArgumentException("Invalid input: source image and driving frames path are required");
 
@@ -226,9 +186,6 @@ namespace LiveTalk.API
         /// <returns>MuseTalkStream for receiving frames as they're generated</returns>
         public OutputStream GenerateTalkingHeadAsync(Texture2D avatarTexture, string talkingHeadFolderPath, AudioClip audioClip)
         {
-            if (!_initialized)
-                throw new InvalidOperationException("Factory is not initialized. Call Initialize() first.");
-                
             if (_avatarController == null)
                 throw new InvalidOperationException("Avatar controller is required for streaming operations. Use constructor with AvatarController parameter.");
                 
@@ -262,8 +219,6 @@ namespace LiveTalk.API
         /// </summary>
         public string GetCacheInfo()
         {
-            if (!_initialized) return "API not initialized";
-            
             var livePortraitInfo = "LivePortrait: No cache info";
             var museTalkInfo = _museTalk?.GetCacheInfo() ?? "MuseTalk: No cache info";
             

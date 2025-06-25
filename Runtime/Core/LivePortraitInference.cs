@@ -45,8 +45,6 @@ namespace LiveTalk.Core
         
         // Face analysis (using consolidated FaceAnalysis class)
         private FaceAnalysis _faceAnalysis;
-
-        private Texture2D _debugImage = null;
         
         // Configuration
         private LiveTalkConfig _config;
@@ -66,9 +64,7 @@ namespace LiveTalk.Core
             _config = config ?? throw new ArgumentNullException(nameof(config));
             
             try
-            {
-                InitializeModels();
-                
+            {                
                 // Initialize prediction state - matches Python self.pred_info = {'lmk':None, 'x_d_0_info':None}
                 _predInfo = new LivePortraitPredInfo
                 {
@@ -77,7 +73,6 @@ namespace LiveTalk.Core
                 };
                 
                 _maskTemplate = ModelUtils.LoadMaskTemplate(_config);
-                _initialized = true;
             }
             catch (Exception e)
             {
@@ -158,60 +153,17 @@ namespace LiveTalk.Core
         }
         
         /// <summary>
-        /// Generate talking head animation - matches Python LivePortraitWrapper.execute
-        /// MAIN THREAD ONLY for correctness
-        /// </summary>
-        public IEnumerator GenerateAsync(LivePortraitInput input, OutputStream stream)
-        {
-            if (!_initialized)
-                throw new InvalidOperationException("LivePortrait inference not initialized");
-                
-            if (input?.SourceImage == null || input.DrivingFrames == null || input.DrivingFrames.Count == 0)
-                throw new ArgumentException("Invalid input: source image and driving frames are required");
-            
-            if (_maskTemplate.data == null)
-                throw new Exception("[LivePortraitInference] No mask template available");
-            
-            var srcFrame = TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(input.SourceImage));
-            var processSrcTask = ProcessSourceImageAsync(srcFrame);
-            yield return new WaitUntil(() => processSrcTask.IsCompleted);
-            var processResult = processSrcTask.Result;
-
-            var maxFrames = 0;
-
-            // For debugging, only generate 1 frame - matches Python: if frame_id > 0: break
-            for (int frameId = maxFrames; frameId < Mathf.Min(maxFrames + 25, input.DrivingFrames.Count); frameId++)
-            {
-                // Python: img_rgb = frame[:, :, ::-1]  # BGR -> RGB (Unity input is already RGB)
-                var imgRgb = input.DrivingFrames[frameId];
-                var imgRgbFrame = TextureUtils.Texture2DToFrame(imgRgb);
-                
-                var predictTask = ProcessNextFrameAsync(processResult, _predInfo, imgRgbFrame);
-                yield return new WaitUntil(() => predictTask.IsCompleted);
-                var (generatedFrame, updatedPredInfo) = predictTask.Result;
-                _predInfo = updatedPredInfo;
-                if (_debugImage != null)
-                {
-                    stream.queue.Enqueue(_debugImage);
-                }
-                else if (generatedFrame.data != null)
-                {
-                    var generatedImgTexture = TextureUtils.FrameToTexture2D(generatedFrame);
-                    Debug.Log($"[LivePortraitInference] Frame {frameId} generated");
-                    stream.queue.Enqueue(generatedImgTexture);
-                }
-                yield return null;
-            }
-        }
-
-        /// <summary>
-        /// Generate animated textures pipelined - matches Python LivePortraitMuseTalkAPI.execute
         /// </summary>
         public IEnumerator GenerateAsync(
             Texture2D sourceImage,
             OutputStream outputStream,
             DrivingFramesStream drivingStream)
         {
+            if (!_initialized)
+            {
+                InitializeModels();
+                _initialized = true;
+            }
             // Step 1: Start source image processing immediately (async)
             sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
             var srcImg = TextureUtils.Texture2DToFrame(sourceImage);

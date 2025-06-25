@@ -106,19 +106,13 @@ namespace LiveTalk.Core
         private Model _vaeEncoder;
         private Model _vaeDecoder;
         private Model _positionalEncoding;
-        
-        // Whisper model for audio feature extraction
-        private readonly WhisperModel _whisperModel;
+        private WhisperModel _whisperModel;
         
         // Configuration
         private LiveTalkConfig _config;
-        private readonly bool _initialized = false;
+        private bool _initialized = false;
         private bool _disposed = false;
-        
-        // Face analysis utility for SCRFD+1k3d68 face processing
-        private readonly FaceAnalysis _faceAnalysis;
-        
-        // Avatar data for blending
+        private FaceAnalysis _faceAnalysis;
         private AvatarData _avatarData;
         
         // Avatar animation segmentation cache
@@ -147,35 +141,15 @@ namespace LiveTalk.Core
         /// </summary>
         public MuseTalkInference(LiveTalkConfig config)
         {
-            _config = config ?? throw new ArgumentNullException(nameof(config));
-            
+            _config = config ?? throw new ArgumentNullException(nameof(config));            
             try
             {
-                InitializeModels();
-                _faceAnalysis = new FaceAnalysis(_config);
-                
-                // Initialize Whisper model for audio processing
-                _whisperModel = new WhisperModel(_config);
-                
-                // Initialize disk cache for persistent avatar processing results
-                try
-                {
-                    _diskCache = new AvatarDiskCache(_config);
-                    Logger.Log("[MuseTalkInference] Disk cache initialized successfully");
-                }
-                catch (Exception diskCacheEx)
-                {
-                    Logger.LogWarning($"[MuseTalkInference] Failed to initialize disk cache: {diskCacheEx.Message}. Proceeding without disk caching.");
-                    // _diskCache remains null, will be handled gracefully in code
-                }
-                
-                _initialized = true;
-                Logger.Log("[MuseTalkInference] Successfully initialized");
+                _diskCache = new AvatarDiskCache(_config);
+                Logger.Log("[MuseTalkInference] Disk cache initialized successfully");
             }
-            catch (Exception e)
+            catch (Exception diskCacheEx)
             {
-                Logger.LogError($"[MuseTalkInference] Failed to initialize: {e.Message}");
-                _initialized = false;
+                Logger.LogWarning($"[MuseTalkInference] Failed to initialize disk cache: {diskCacheEx.Message}. Proceeding without disk caching.");
             }
         }
         
@@ -188,6 +162,8 @@ namespace LiveTalk.Core
             _vaeEncoder = new Model(_config, "vae_encoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
             _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
             _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH, ExecutionProvider.CPU, Precision.FP32);
+            _faceAnalysis = new FaceAnalysis(_config);
+            _whisperModel = new WhisperModel(_config);
         }
 
         /// <summary>
@@ -198,7 +174,10 @@ namespace LiveTalk.Core
         public IEnumerator GenerateAsync(MuseTalkInput input, OutputStream stream)
         {
             if (!_initialized)
-                throw new InvalidOperationException("MuseTalk inference not initialized");
+            {
+                InitializeModels();
+                _initialized = true;
+            }
                 
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
