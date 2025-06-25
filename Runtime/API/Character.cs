@@ -6,6 +6,8 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
+using SparkTTS;
+using SparkTTS.Utils;
 
 namespace LiveTalk.API
 {
@@ -306,10 +308,6 @@ namespace LiveTalk.API
         /// </summary>
         private async Task GenerateVoiceSample(string voiceFolder)
         {
-            // TODO: Implement voice generation using SparkTTS
-            // This requires the SparkTTS assembly to be available in the LiveTalk-Unity project
-            // For now, we'll create a placeholder file
-            
             try
             {
                 // Convert enums to string parameters for SparkTTS
@@ -317,24 +315,63 @@ namespace LiveTalk.API
                 string pitchParam = ConvertPitchToString(Pitch);
                 string speedParam = ConvertSpeedToString(Speed);
 
-                Debug.Log($"[Character] Would generate voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
+                Debug.Log($"[Character] Generating voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
 
-                // Create a placeholder voice config file instead of actual audio
-                var voiceConfig = new
+                // Use SparkTTS CharacterVoiceFactory to create a voice
+                var voiceFactory = new CharacterVoiceFactory();
+                var characterVoice = await voiceFactory.CreateFromStyleAsync(
+                    gender: genderParam,
+                    pitch: pitchParam,
+                    speed: speedParam,
+                    referenceText: Intro ?? "Hello, I am a character in this mystery."
+                );
+
+                if (characterVoice != null)
                 {
-                    gender = genderParam,
-                    pitch = pitchParam,
-                    speed = speedParam,
-                    introText = Intro ?? "Hello, I am a character in this mystery.",
-                    timestamp = DateTime.UtcNow,
-                    note = "Placeholder - actual voice generation requires SparkTTS integration"
-                };
-                
-                string configPath = Path.Combine(voiceFolder, "voice_config.json");
-                string configJson = Newtonsoft.Json.JsonConvert.SerializeObject(voiceConfig, Newtonsoft.Json.Formatting.Indented);
-                await File.WriteAllTextAsync(configPath, configJson);
-                
-                Debug.Log($"[Character] Voice config saved to: {configPath}");
+                    // Generate the voice sample
+                    var audioClip = await characterVoice.GenerateSpeechAsync(
+                        Intro ?? "Hello, I am a character in this mystery."
+                    );
+
+                    if (audioClip != null)
+                    {
+                        // Convert AudioClip to WAV and save
+                        string samplePath = Path.Combine(voiceFolder, "sample.wav");
+                        await SaveAudioClipAsWAV(audioClip, samplePath);
+                        Debug.Log($"[Character] Voice sample saved to: {samplePath}");
+
+                        // Also save voice config for reference
+                        var voiceConfig = new
+                        {
+                            gender = genderParam,
+                            pitch = pitchParam,
+                            speed = speedParam,
+                            introText = Intro ?? "Hello, I am a character in this mystery.",
+                            timestamp = DateTime.UtcNow,
+                            audioFile = "sample.wav",
+                            sampleRate = audioClip.frequency,
+                            channels = audioClip.channels,
+                            length = audioClip.length
+                        };
+                        
+                        string configPath = Path.Combine(voiceFolder, "voice_config.json");
+                        string configJson = Newtonsoft.Json.JsonConvert.SerializeObject(voiceConfig, Newtonsoft.Json.Formatting.Indented);
+                        await File.WriteAllTextAsync(configPath, configJson);
+                    }
+                    else
+                    {
+                        Debug.LogError("[Character] Failed to generate voice sample audio");
+                    }
+
+                    // Clean up
+                    characterVoice.Dispose();
+                }
+                else
+                {
+                    Debug.LogError("[Character] Failed to create character voice");
+                }
+
+                voiceFactory.Dispose();
             }
             catch (Exception ex)
             {
@@ -388,14 +425,20 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Save AudioClip as WAV file
+        /// Save AudioClip as WAV file using SparkTTS AudioLoaderService
         /// </summary>
         private async Task SaveAudioClipAsWAV(AudioClip audioClip, string filePath)
         {
-            // TODO: Implement WAV saving when SparkTTS is available
-            // For now, this is a placeholder method
-            Debug.Log($"[Character] Would save audio clip to: {filePath}");
-            await Task.CompletedTask;
+            try
+            {
+                // Use SparkTTS AudioLoaderService to save the audio clip directly
+                await AudioLoaderService.SaveAudioClipToFile(audioClip, filePath);
+                Debug.Log($"[Character] Audio saved as WAV: {filePath} ({audioClip.samples} samples, {audioClip.frequency}Hz, {audioClip.channels} channels)");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Character] Error saving audio as WAV: {ex.Message}");
+            }
         }
     }
 

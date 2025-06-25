@@ -4,7 +4,8 @@
     "references": [
         "com.github.asus4.onnxruntime",
         "com.github.asus4.onnxruntime-extensions",
-        "com.unity.nuget.newtonsoft-json"
+        "com.unity.nuget.newtonsoft-json",
+        "SparkTTS.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
