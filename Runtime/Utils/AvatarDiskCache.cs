@@ -468,17 +468,17 @@ namespace LiveTalk.Utils
             
             if (!_config.CacheLatentsOnly)
             {
-                                    // Serialize face regions with texture data
-                    foreach (var faceData in avatarData.FaceRegions)
+                // Serialize face regions with texture data
+                foreach (var faceData in avatarData.FaceRegions)
+                {
+                    var serializableFace = new SerializableFaceData
                     {
-                        var serializableFace = new SerializableFaceData
-                        {
-                            HasFace = faceData.HasFace,
-                            BoundingBox = new SerializableRect(faceData.BoundingBox),
-                            Landmarks = faceData.Landmarks?.Select(v => new SerializableVector2(v)).ToArray(),
-                            AdjustedFaceBbox = new SerializableVector4(faceData.AdjustedFaceBbox),
-                            CropBox = new SerializableVector4(faceData.CropBox)
-                        };
+                        HasFace = faceData.HasFace,
+                        BoundingBox = new SerializableRect(faceData.BoundingBox),
+                        Landmarks = faceData.Landmarks?.Select(v => new SerializableVector2(v)).ToArray(),
+                        AdjustedFaceBbox = new SerializableVector4(faceData.AdjustedFaceBbox),
+                        CropBox = new SerializableVector4(faceData.CropBox)
+                    };
                     
                     // Convert byte arrays to base64 strings (no conversion needed since FaceData already has byte arrays)
                     if (faceData.CroppedFaceTexture.data != null)
