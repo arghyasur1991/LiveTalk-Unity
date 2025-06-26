@@ -49,42 +49,7 @@ namespace LiveTalk.Core
         }
     }
 
-    /// <summary>
-    /// Avatar animation cache key based on texture content hashes
-    /// </summary>
-    internal class AvatarAnimationKey
-    {
-        public string[] TextureHashes { get; set; }
-        public string Version { get; set; }
-        
-        public override bool Equals(object obj)
-        {
-            if (obj is AvatarAnimationKey other)
-            {
-                return Version == other.Version && 
-                       TextureHashes != null && other.TextureHashes != null &&
-                       TextureHashes.Length == other.TextureHashes.Length &&
-                       TextureHashes.SequenceEqual(other.TextureHashes);
-            }
-            return false;
-        }
-        
-        public override int GetHashCode()
-        {
-            unchecked
-            {
-                int hash = Version?.GetHashCode() ?? 0;
-                if (TextureHashes != null)
-                {
-                    foreach (var textureHash in TextureHashes)
-                    {
-                        hash = hash * 31 + (textureHash?.GetHashCode() ?? 0);
-                    }
-                }
-                return hash;
-            }
-        }
-    }
+
 
     /// <summary>
     /// Core MuseTalk inference engine that manages ONNX models for real-time talking head generation
@@ -115,12 +80,7 @@ namespace LiveTalk.Core
         private FaceAnalysis _faceAnalysis;
         private AvatarData _avatarData;
         
-        // Avatar animation segmentation cache
-        private static readonly Dictionary<AvatarAnimationKey, AvatarData> _avatarAnimationCache = new();
-        private const int MAX_CACHE_SIZE = 1000; // Limit cache size to prevent memory bloat
-        
-        // Disk cache for persistent avatar processing results
-        private readonly AvatarDiskCache _diskCache;
+
         
         // Reusable batch processing array (class-level for memory reuse)
         private float[] _reusableBatchArray = new float[0];
@@ -141,16 +101,7 @@ namespace LiveTalk.Core
         /// </summary>
         public MuseTalkInference(LiveTalkConfig config)
         {
-            _config = config ?? throw new ArgumentNullException(nameof(config));            
-            try
-            {
-                _diskCache = new AvatarDiskCache(_config);
-                Logger.Log("[MuseTalkInference] Disk cache initialized successfully");
-            }
-            catch (Exception diskCacheEx)
-            {
-                Logger.LogWarning($"[MuseTalkInference] Failed to initialize disk cache: {diskCacheEx.Message}. Proceeding without disk caching.");
-            }
+            _config = config ?? throw new ArgumentNullException(nameof(config));
         }
         
         /// <summary>
@@ -336,119 +287,22 @@ namespace LiveTalk.Core
             return FrameUtils.CropFrame(source, cropRect);
         }
         
-        /// <summary>
-        /// Create cache key for avatar animation sequence
-        /// </summary>
-        private AvatarAnimationKey CreateAvatarAnimationKey(Texture2D[] avatarTextures, string version)
-        {
-            var textureHashes = new string[avatarTextures.Length];
-            for (int i = 0; i < avatarTextures.Length; i++)
-            {
-                textureHashes[i] = TextureUtils.GenerateTextureHash(avatarTextures[i]);
-            }
-            
-            return new AvatarAnimationKey
-            {
-                TextureHashes = textureHashes,
-                Version = version
-            };
-        }
-        
-        /// <summary>
-        /// Manage cache size to prevent memory bloat
-        /// </summary>
-        private void ManageCacheSize()
-        {
-            if (_avatarAnimationCache.Count > MAX_CACHE_SIZE)
-            {
-                // Remove oldest entries (simple FIFO for now)
-                var keysToRemove = _avatarAnimationCache.Keys.Take(_avatarAnimationCache.Count - MAX_CACHE_SIZE + 1).ToList();
-                foreach (var key in keysToRemove)
-                {
-                    _avatarAnimationCache.Remove(key);
-                    Logger.Log($"[MuseTalkInference] Removed cached avatar animation to manage memory");
-                }
-            }
-        }
+
 
         /// <summary>
-        /// Process avatar images and extract face regions with landmarks
-        /// Matches Python's get_landmark_and_bbox functionality exactly
-        /// OPTIMIZED: Uses avatar animation caching for repeated sequences
-        /// ENHANCED: Added disk caching for persistent avatar processing results
+        /// Process avatar images and extract face regions with landmarks and latents
+        /// PUBLIC API for Character class - no caching, direct processing only
         /// </summary>
-        private async Task<AvatarData> ProcessAvatarImages(Texture2D[] avatarTextures)
+        public async Task<AvatarData> ProcessAvatarImages(Texture2D[] avatarTextures)
         {
-            // Generate cache keys for both in-memory and disk caching
-            var memoryCacheKey = CreateAvatarAnimationKey(avatarTextures, _config.Version);
-            var diskCacheKey = _diskCache?.GenerateAvatarCacheKey(avatarTextures, _config.Version);
-            
-            // Check in-memory cache first (fastest)
-            if (_avatarAnimationCache.TryGetValue(memoryCacheKey, out var cachedAvatarData))
+            if (!_initialized)
             {
-                Logger.Log($"[MuseTalkInference] Using in-memory cached avatar animation data for {avatarTextures.Length} textures - {cachedAvatarData.FaceRegions.Count} faces, {cachedAvatarData.Latents.Count} latents");
-                
-                // Validate cached data integrity
-                if (cachedAvatarData.Latents.Count == 0)
-                {
-                    Logger.LogWarning("[MuseTalkInference] Cached avatar data has no latents - removing from cache and reprocessing");
-                    _avatarAnimationCache.Remove(memoryCacheKey);
-                }
-                else
-                {
-                    _avatarData = cachedAvatarData;
-                    return cachedAvatarData;
-                }
+                InitializeModels();
+                _initialized = true;
             }
+
+            Logger.Log($"[MuseTalkInference] Processing {avatarTextures.Length} avatar textures");
             
-            // Check disk cache second (slower but persistent across sessions)
-            AvatarData diskCachedData = null;
-            if (_diskCache != null && !string.IsNullOrEmpty(diskCacheKey))
-            {
-                try
-                {
-                    diskCachedData = await _diskCache.TryLoadAvatarDataAsync(diskCacheKey);
-                    if (diskCachedData != null && diskCachedData.Latents.Count > 0)
-                    {
-                        Logger.Log($"[MuseTalkInference] Using disk cached avatar data for {avatarTextures.Length} textures - {diskCachedData.FaceRegions.Count} faces, {diskCachedData.Latents.Count} latents");
-                        
-                        // If disk cache only has latents but missing texture data, we need to reprocess face regions
-                        bool needsTextureReprocessing = false;
-                        if (diskCachedData.FaceRegions.Count > 0)
-                        {
-                            var firstFace = diskCachedData.FaceRegions[0];
-                            if (firstFace.OriginalTexture.data == null || firstFace.CroppedFaceTexture.data == null || 
-                                firstFace.BlurredMask.data == null || firstFace.FaceLarge.data == null)
-                            {
-                                needsTextureReprocessing = true;
-                                Logger.Log("[MuseTalkInference] Disk cache has latents but missing texture data, will reprocess face regions for blending");
-                            }
-                        }
-                        
-                        if (!needsTextureReprocessing)
-                        {
-                            // Complete cache hit - store in memory cache for faster future access
-                            ManageCacheSize();
-                            _avatarAnimationCache[memoryCacheKey] = diskCachedData;
-                            
-                            _avatarData = diskCachedData;
-                            return diskCachedData;
-                        }
-                        else
-                        {
-                            // Partial cache hit - we have latents but need to reprocess textures
-                            // This will be handled after face detection by using cached latents
-                            Logger.Log("[MuseTalkInference] Using cached latents but reprocessing face regions");
-                        }
-                    }
-                }
-                catch (Exception e)
-                {
-                    Logger.LogWarning($"[MuseTalkInference] Failed to load from disk cache: {e.Message}");
-                }
-            }
-            
-            Logger.Log($"[MuseTalkInference] Processing new avatar animation sequence with {avatarTextures.Length} textures");
             var avatarData = new AvatarData();
             var frames = new List<Frame>();
             foreach (var texture in avatarTextures)
@@ -485,7 +339,7 @@ namespace LiveTalk.Core
                         // Pre-compute segmentation mask and cached data for blending
                         var segmentationData = await PrecomputeSegmentationData(originalFrame, bbox);
                     
-                        // Create face data for this region using byte arrays
+                        // Create face data for this region
                         var faceData = new FaceData
                         {
                             HasFace = true,
@@ -505,19 +359,8 @@ namespace LiveTalk.Core
                         
                         avatarData.FaceRegions.Add(faceData);
                         
-                        // Get latents for UNet - use cached latents if available
-                        float[] latents;
-                        if (diskCachedData != null && i < diskCachedData.Latents.Count)
-                        {
-                            // Use cached latents from disk
-                            latents = diskCachedData.Latents[i];
-                            Logger.Log($"[MuseTalkInference] Using cached latents for face region {i}");
-                        }
-                        else
-                        {
-                            // Generate new latents
-                            latents = await GetLatentsForUNet(croppedFrame);
-                        }
+                        // Generate latents using VAE encoder
+                        var latents = await GetLatentsForUNet(croppedFrame);
                         avatarData.Latents.Add(latents);
                     }
                     catch (Exception e)
@@ -543,23 +386,6 @@ namespace LiveTalk.Core
             if (avatarData.Latents.Count != avatarData.FaceRegions.Count)
             {
                 Logger.LogWarning($"[MuseTalkInference] Latent count ({avatarData.Latents.Count}) does not match face region count ({avatarData.FaceRegions.Count}). Some faces may have failed processing.");
-            }
-            // Cache the processed avatar animation for reuse
-            ManageCacheSize();
-            _avatarAnimationCache[memoryCacheKey] = avatarData;
-            
-            // Save to disk cache for persistent storage
-            if (_diskCache != null && !string.IsNullOrEmpty(diskCacheKey))
-            {
-                try
-                {
-                    await _diskCache.SaveAvatarDataAsync(diskCacheKey, avatarData);
-                    Logger.Log($"[MuseTalkInference] Saved avatar data to disk cache: {diskCacheKey}");
-                }
-                catch (Exception e)
-                {
-                    Logger.LogWarning($"[MuseTalkInference] Failed to save to disk cache: {e.Message}");
-                }
             }
 
             _avatarData = avatarData;
@@ -1124,60 +950,7 @@ namespace LiveTalk.Core
             return blendedTextures;
         }
         
-        /// <summary>
-        /// Clear the avatar animation cache (useful for memory management)
-        /// REFACTORED: No texture cleanup needed since we use byte arrays now
-        /// </summary>
-        public static void ClearAvatarAnimationCache()
-        {
-            // No need to destroy textures since we use byte arrays now
-            // The garbage collector will handle the byte arrays automatically
-            _avatarAnimationCache.Clear();
-            Logger.Log("[MuseTalkInference] Cleared avatar animation cache");
-        }
-        
-        /// <summary>
-        /// Clear the disk cache (useful for troubleshooting or storage management)
-        /// </summary>
-        public async Task ClearDiskCacheAsync()
-        {
-            if (_diskCache != null)
-            {
-                await _diskCache.ClearCache();
-                Logger.Log("[MuseTalkInference] Cleared disk cache");
-            }
-        }
-        
-        /// <summary>
-        /// Get disk cache statistics (if disk cache is enabled)
-        /// </summary>
-        public CacheStatistics GetDiskCacheStatistics()
-        {
-            return _diskCache?.GetCacheStatistics();
-        }
-        
-        /// <summary>
-        /// Check if disk cache is enabled and functional
-        /// </summary>
-        public bool IsDiskCacheEnabled => _config.EnableDiskCache && _diskCache != null;
-        
-        /// <summary>
-        /// Get cache information for debugging
-        /// </summary>
-        public string GetCacheInfo()
-        {
-            var memoryEntries = _avatarAnimationCache.Count;
-            var diskStats = GetDiskCacheStatistics();
-            
-            if (diskStats != null)
-            {
-                return $"Memory Cache: {memoryEntries} entries | Disk Cache: {diskStats.TotalEntries} entries, {diskStats.TotalSizeMB:F1}MB, {diskStats.HitRate:P1} hit rate";
-            }
-            else
-            {
-                return $"Memory Cache: {memoryEntries} entries | Disk Cache: Disabled";
-            }
-        }
+
 
         public void Dispose()
         {
@@ -1190,7 +963,6 @@ namespace LiveTalk.Core
                 _whisperModel?.Dispose();
                 _faceAnalysis?.Dispose();
                 _reusableUNetResult?.Dispose();
-                _diskCache?.Dispose();
                 
                 _disposed = true;
                 Logger.Log("[MuseTalkInference] Disposed");

@@ -101,7 +101,11 @@ namespace LiveTalk.API
             string characterId = GenerateCharacterHash();
             string characterFolder = Path.Combine(saveLocation, characterId);
             
-            // Create main character folder
+            // Create main character folder (clean slate approach)
+            if (Directory.Exists(characterFolder))
+            {
+                Directory.Delete(characterFolder, true);
+            }
             Directory.CreateDirectory(characterFolder);
             
             // Create subfolder structure
@@ -143,34 +147,41 @@ namespace LiveTalk.API
                         // Generate animated textures using LivePortrait
                         var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(Image, videoPlayer);
 
-                        // Wait for processing to complete and collect frames
+                        // Process and save frames as they become available
                         var generatedFrames = new List<Texture2D>();
+                        int frameIndex = 0;
                         
                         while (!outputStream.Finished)
                         {
-                            // TODO use waitfornext
                             if (outputStream.TryGetNext(out Texture2D frame))
                             {
+                                // Save frame immediately to disk
+                                string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
+                                byte[] pngData = frame.EncodeToPNG();
+                                await File.WriteAllBytesAsync(frameFileName, pngData);
+                                
+                                // Keep reference for cache generation
                                 generatedFrames.Add(frame);
+                                frameIndex++;
                             }
-                            await Task.Yield(); // Allow other operations to proceed
+                            else
+                            {
+                                await Task.Yield(); // Allow other operations to proceed
+                            }
                         }
 
-                        // Collect any remaining frames TODO remove
+                        // Collect any remaining frames
                         while (outputStream.TryGetNext(out Texture2D remainingFrame))
                         {
-                            generatedFrames.Add(remainingFrame);
-                        }
-
-                        Debug.Log($"[Character] Generated {generatedFrames.Count} frames for expression: {expression}");
-
-                        // Save generated frames as PNG files TODO do it when frame is availble loop
-                        for (int i = 0; i < generatedFrames.Count; i++)
-                        {
-                            string frameFileName = Path.Combine(expressionFolder, $"{i:D5}.png");
-                            byte[] pngData = generatedFrames[i].EncodeToPNG();
+                            string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
+                            byte[] pngData = remainingFrame.EncodeToPNG();
                             await File.WriteAllBytesAsync(frameFileName, pngData);
+                            
+                            generatedFrames.Add(remainingFrame);
+                            frameIndex++;
                         }
+
+                        Debug.Log($"[Character] Generated and saved {generatedFrames.Count} frames for expression: {expression}");
 
                         // Generate and save cache data
                         await GenerateAndSaveCacheData(expressionFolder, generatedFrames);
@@ -315,30 +326,16 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Process avatar images using MuseTalkInference pipeline to extract real latents and face data
+        /// Process avatar images using MuseTalkInference public API to extract real latents and face data
         /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
         /// </summary>
         private async Task<LiveTalk.Core.AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalk.Core.MuseTalkInference museTalkInference, Texture2D[] avatarTextures)
         {
             Debug.Log($"[Character] Processing {avatarTextures.Length} avatar textures using real MuseTalk pipeline");
 
-            // Use the actual MuseTalk ProcessAvatarImages method to get complete AvatarData
-            // This includes real face detection, segmentation, and latent generation
-            var method = museTalkInference.GetType()
-                .GetMethod("ProcessAvatarImages", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            if (method == null)
-            {
-                throw new InvalidOperationException("MuseTalkInference.ProcessAvatarImages method not found. Real MuseTalk implementation is required.");
-            }
-
-            var result = method.Invoke(museTalkInference, new object[] { avatarTextures });
-            if (!(result is Task<LiveTalk.Core.AvatarData> avatarDataTask))
-            {
-                throw new InvalidOperationException("MuseTalkInference.ProcessAvatarImages did not return expected Task<AvatarData>. Real MuseTalk implementation is required.");
-            }
-
-            var avatarData = await avatarDataTask;
+            // Use the public MuseTalk ProcessAvatarImages API directly - no reflection needed
+            var avatarData = await museTalkInference.ProcessAvatarImages(avatarTextures);
+            
             if (avatarData?.FaceRegions?.Count == 0 || avatarData?.Latents?.Count == 0)
             {
                 throw new InvalidOperationException($"Real MuseTalk processing failed to generate valid avatar data. FaceRegions: {avatarData?.FaceRegions?.Count ?? 0}, Latents: {avatarData?.Latents?.Count ?? 0}");
@@ -568,7 +565,7 @@ namespace LiveTalk.API
                     gender: genderParam,
                     pitch: pitchParam,
                     speed: speedParam,
-                    referenceText: Intro ?? "Hello, I am a character in this mystery." // TODO use intro from character
+                    referenceText: Intro ?? "Hello, I am a character in this mystery."
                 );
 
                 if (characterVoice != null)

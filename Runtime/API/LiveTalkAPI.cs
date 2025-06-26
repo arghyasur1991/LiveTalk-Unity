@@ -214,30 +214,7 @@ namespace LiveTalk.API
         }
 
 
-        /// <summary>
-        /// Get cache information for debugging and monitoring
-        /// </summary>
-        public string GetCacheInfo()
-        {
-            var livePortraitInfo = "LivePortrait: No cache info";
-            var museTalkInfo = _museTalk?.GetCacheInfo() ?? "MuseTalk: No cache info";
-            
-            return $"{livePortraitInfo} | {museTalkInfo}";
-        }
-        
-        /// <summary>
-        /// Clear all caches to free memory
-        /// </summary>
-        public async Task ClearCachesAsync()
-        {
-            if (_museTalk != null)
-            {
-                await _museTalk.ClearDiskCacheAsync();
-                MuseTalkInference.ClearAvatarAnimationCache();
-            }
-            
-            Logger.Log("[LivePortraitMuseTalkAPI] Cleared all caches");
-        }
+
         
         public void Dispose()
         {
