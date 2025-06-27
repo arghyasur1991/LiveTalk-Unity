@@ -195,61 +195,7 @@ namespace LiveTalk.API
 
             Debug.Log($"[Character] Avatar creation completed for {Name}");
         }
-
-        /// <summary>
-        /// Generate speech using the character's saved data and voice
-        /// </summary>
-        /// <param name="text">Text to speak</param>
-        /// <param name="expressionIndex">Expression to use (0-6: talk-neutral, approve, disapprove, smile, sad, surprised, confused)</param>
-        /// <returns>OutputStream for generated talking head frames</returns>
-        public OutputStream Speak(string text, int expressionIndex = 0)
-        {
-            if (!IsDataLoaded)
-            {
-                throw new InvalidOperationException("Character data not loaded. Use CharacterFactory.LoadCharacterAsync() first.");
-            }
-
-            if (string.IsNullOrEmpty(text))
-            {
-                throw new ArgumentException("Text cannot be null or empty.");
-            }
-
-            if (!LoadedExpressions.ContainsKey(expressionIndex))
-            {
-                throw new ArgumentException($"Expression index {expressionIndex} not available. Available expressions: {string.Join(", ", LoadedExpressions.Keys)}");
-            }
-
-            if (LoadedVoice == null)
-            {
-                throw new InvalidOperationException("Character voice not loaded.");
-            }
-
-            var liveTalkAPI = CharacterFactory._liveTalkAPI;
-            if (liveTalkAPI == null)
-            {
-                throw new InvalidOperationException("CharacterFactory not initialized. Call CharacterFactory.Initialize() first.");
-            }
-
-            Debug.Log($"[Character] {Name} speaking: \"{text}\" with expression {expressionIndex}");
-
-            // Generate audio using the loaded character voice
-            var audioClip = LoadedVoice.GenerateSpeechAsync(text).Result;
-            if (audioClip == null)
-            {
-                throw new InvalidOperationException("Failed to generate speech audio.");
-            }
-
-            // Use the preloaded expression data for MuseTalk
-            var expressionData = LoadedExpressions[expressionIndex];
-            
-            // Generate talking head using MuseTalk with preloaded data
-            return liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                expressionData.Latents,
-                expressionData.FaceRegions,
-                audioClip
-            );
-        }
-
+        
         /// <summary>
         /// Generate speech asynchronously using coroutines
         /// </summary>
