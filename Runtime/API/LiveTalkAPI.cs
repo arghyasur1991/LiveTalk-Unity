@@ -26,9 +26,6 @@ namespace LiveTalk.API
 
         public bool Finished { get; internal set; }
 
-        /// Non-blocking poll. Returns false if no frame is ready yet.
-        public bool TryGetNext(out Texture2D tex) => queue.TryDequeue(out tex);
-
         /// Yield instruction that waits until the *next* frame exists,
         /// then exposes it through the .Texture property.
         public FrameAwaiter WaitForNext() => new(queue);
@@ -108,6 +105,9 @@ namespace LiveTalk.API
         private readonly LiveTalkConfig _config;
         private bool _disposed = false;
         private readonly LiveTalkController _avatarController;
+
+        internal MuseTalkInference MuseTalk { get { return _museTalk; } }
+        internal LivePortraitInference LivePortrait { get { return _livePortrait; } }
         
         /// <summary>
         /// Initialize the integrated API with configuration

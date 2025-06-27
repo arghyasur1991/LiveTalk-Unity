@@ -17,6 +17,11 @@ namespace LiveTalk.API
         Female
     }
 
+    internal class ProcessFramesResult
+    {
+        public List<Texture2D> GeneratedFrames { get; set; } = new List<Texture2D>();
+    }
+
     public enum Pitch
     {
         VeryLow,
@@ -60,7 +65,7 @@ namespace LiveTalk.API
             Intro = intro;
         }
 
-        public async Task CreateAvatarAsync()
+        public System.Collections.IEnumerator CreateAvatarAsync()
         {
             // Get the LiveTalkAPI instance
             var liveTalkAPI = CharacterFactory._liveTalkAPI;
@@ -118,13 +123,15 @@ namespace LiveTalk.API
                 intro = Intro
             };
             string characterConfigJson = JsonUtility.ToJson(characterConfig);
-            File.WriteAllText(Path.Combine(characterFolder, "character.json"), characterConfigJson);
+            var writeConfigTask = File.WriteAllTextAsync(Path.Combine(characterFolder, "character.json"), characterConfigJson);
+            yield return new WaitUntil(() => writeConfigTask.IsCompleted);
 
             // Save image (convert to uncompressed format if needed)
             string imagePath = Path.Combine(characterFolder, "image.png");
             var uncompressedImage = LiveTalk.Utils.TextureUtils.ConvertToUncompressedTexture(Image);
             byte[] imageBytes = uncompressedImage.EncodeToPNG();
-            await File.WriteAllBytesAsync(imagePath, imageBytes);
+            var writeImageTask = File.WriteAllBytesAsync(imagePath, imageBytes);
+            yield return new WaitUntil(() => writeImageTask.IsCompleted);
             
             // Clean up temporary texture if we created one
             if (uncompressedImage != Image)
@@ -151,86 +158,84 @@ namespace LiveTalk.API
 
                 Debug.Log($"[Character] Processing expression: {expression} (index: {expressionIndex})");
 
-                try
+                // Load the driving video for this expression
+                VideoClip drivingVideo = LoadDrivingVideoForExpression(expression);
+                if (drivingVideo == null)
                 {
-                    // Load the driving video for this expression
-                    VideoClip drivingVideo = LoadDrivingVideoForExpression(expression);
-                    if (drivingVideo == null)
-                    {
-                        Debug.LogWarning($"[Character] Could not load driving video for expression: {expression}");
-                        continue;
-                    }
-
-                    // Create a temporary VideoPlayer to process the driving frames
-                    var tempGO = new GameObject("TempVideoPlayer");
-                    try
-                    {
-                        var videoPlayer = tempGO.AddComponent<VideoPlayer>();
-                        videoPlayer.clip = drivingVideo;
-
-                        // Generate animated textures using LivePortrait
-                        var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(Image, videoPlayer);
-
-                        // Process and save frames as they become available
-                        var generatedFrames = new List<Texture2D>();
-                        int frameIndex = 0;
-                        
-                        while (!outputStream.Finished)
-                        {
-                            if (outputStream.TryGetNext(out Texture2D frame))
-                            {
-                                // Save frame immediately to disk
-                                string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
-                                byte[] pngData = frame.EncodeToPNG();
-                                await File.WriteAllBytesAsync(frameFileName, pngData);
-                                
-                                // Keep reference for cache generation
-                                generatedFrames.Add(frame);
-                                frameIndex++;
-                            }
-                            else
-                            {
-                                await Task.Yield(); // Allow other operations to proceed
-                            }
-                        }
-
-                        // Collect any remaining frames
-                        while (outputStream.TryGetNext(out Texture2D remainingFrame))
-                        {
-                            string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
-                            byte[] pngData = remainingFrame.EncodeToPNG();
-                            await File.WriteAllBytesAsync(frameFileName, pngData);
-                            
-                            generatedFrames.Add(remainingFrame);
-                            frameIndex++;
-                        }
-
-                        Debug.Log($"[Character] Generated and saved {generatedFrames.Count} frames for expression: {expression}");
-
-                        // Generate and save cache data
-                        await GenerateAndSaveCacheData(expressionFolder, generatedFrames);
-
-                        // Clean up generated textures
-                        foreach (var frame in generatedFrames)
-                        {
-                            UnityEngine.Object.DestroyImmediate(frame);
-                        }
-                    }
-                    finally
-                    {
-                        UnityEngine.Object.DestroyImmediate(tempGO);
-                    }
+                    Debug.LogWarning($"[Character] Could not load driving video for expression: {expression}");
+                    continue;
                 }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[Character] Error processing expression {expression}: {ex.Message}");
-                }
+
+                // Process this expression with coroutines outside try-catch
+                yield return ProcessExpressionCoroutine(expression, expressionIndex, drivingVideo, expressionFolder, liveTalkAPI);
             }
 
             // Step 3: Generate voice sample using SparkTTS
-            await GenerateVoiceSample(voiceFolder);
+            var voiceTask = GenerateVoiceSample(voiceFolder);
+            yield return new UnityEngine.WaitUntil(() => voiceTask.IsCompleted);
 
             Debug.Log($"[Character] Avatar creation completed for {Name}");
+        }
+
+        /// <summary>
+        /// Process a single expression with coroutines to handle frame streaming
+        /// </summary>
+        private System.Collections.IEnumerator ProcessExpressionCoroutine(string expression, int expressionIndex, VideoClip drivingVideo, string expressionFolder, LiveTalkAPI liveTalkAPI)
+        {
+            // Create a temporary VideoPlayer to process the driving frames
+            var tempGO = new GameObject("TempVideoPlayer");
+            var videoPlayer = tempGO.AddComponent<VideoPlayer>();
+            videoPlayer.clip = drivingVideo;
+
+            // Generate animated textures using LivePortrait
+            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(Image, videoPlayer);
+
+            // Process frames
+            var processResult = new ProcessFramesResult();
+            yield return ProcessFramesCoroutine(outputStream, expressionFolder, processResult);
+
+            Debug.Log($"[Character] Generated and saved {processResult.GeneratedFrames.Count} frames for expression: {expression}");
+
+            // Generate and save cache data
+            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult.GeneratedFrames);
+            yield return new WaitUntil(() => cacheTask.IsCompleted);
+
+            // Clean up generated textures
+            foreach (var frame in processResult.GeneratedFrames)
+            {
+                UnityEngine.Object.DestroyImmediate(frame);
+            }
+
+            // Clean up temp GameObject
+            UnityEngine.Object.DestroyImmediate(tempGO);
+        }
+
+        /// <summary>
+        /// Process frame stream using coroutines
+        /// </summary>
+        private System.Collections.IEnumerator ProcessFramesCoroutine(OutputStream outputStream, string expressionFolder, ProcessFramesResult result)
+        {
+            int frameIndex = 0;
+            
+            // Process frames as they become available using coroutine pattern
+            while (!outputStream.Finished)
+            {
+                var awaiter = outputStream.WaitForNext();
+                yield return awaiter;
+                
+                if (awaiter.Texture != null)
+                {
+                    // Save frame immediately to disk
+                    string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
+                    byte[] pngData = awaiter.Texture.EncodeToPNG();
+                    var writeTask = File.WriteAllBytesAsync(frameFileName, pngData);
+                    yield return new UnityEngine.WaitUntil(() => writeTask.IsCompleted);
+                    
+                    // Keep reference for cache generation
+                    result.GeneratedFrames.Add(awaiter.Texture);
+                    frameIndex++;
+                }
+            }
         }
 
         /// <summary>
@@ -289,15 +294,11 @@ namespace LiveTalk.API
                     return;
                 }
 
-                // Create a temporary MuseTalkInference instance with the same config as LiveTalkAPI
-                var config = new LiveTalk.API.LiveTalkConfig(Application.streamingAssetsPath);
-                var museTalkInference = new LiveTalk.Core.MuseTalkInference(config);
-
                 // Convert frames to avatar textures array for processing
                 var avatarTextures = frames.ToArray();
 
                 // Use MuseTalkInference to process the avatar images and extract real data
-                var avatarData = await ProcessAvatarImagesWithMuseTalk(museTalkInference, avatarTextures);
+                var avatarData = await ProcessAvatarImagesWithMuseTalk(liveTalkAPI, avatarTextures);
 
                 if (avatarData != null && avatarData.Latents.Count > 0)
                 {
@@ -313,9 +314,6 @@ namespace LiveTalk.API
                 {
                     throw new InvalidOperationException("Failed to generate avatar data using real MuseTalk processing. No fallback available.");
                 }
-
-                // Clean up
-                museTalkInference?.Dispose();
             }
             catch (Exception ex)
             {
@@ -328,12 +326,12 @@ namespace LiveTalk.API
         /// Process avatar images using MuseTalkInference public API to extract real latents and face data
         /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
         /// </summary>
-        private async Task<LiveTalk.Core.AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalk.Core.MuseTalkInference museTalkInference, Texture2D[] avatarTextures)
+        private async Task<LiveTalk.Core.AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, Texture2D[] avatarTextures)
         {
             Debug.Log($"[Character] Processing {avatarTextures.Length} avatar textures using real MuseTalk pipeline");
 
             // Use the public MuseTalk ProcessAvatarImages API directly - no reflection needed
-            var avatarData = await museTalkInference.ProcessAvatarImages(avatarTextures);
+            var avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(avatarTextures);
             
             if (avatarData?.FaceRegions?.Count == 0 || avatarData?.Latents?.Count == 0)
             {
@@ -343,8 +341,6 @@ namespace LiveTalk.API
             Debug.Log($"[Character] Real MuseTalk processing completed: {avatarData.Latents.Count} latents, {avatarData.FaceRegions.Count} face regions");
             return avatarData;
         }
-
-
 
         /// <summary>
         /// Save real latents data to binary file
@@ -694,22 +690,25 @@ namespace LiveTalk.API
             }
         }
 
-        public static async Task<Character> CreateCharacterAsync(
+        public static System.Collections.IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
             Texture2D image,
             Pitch pitch,
             Speed speed,
-            string intro)
+            string intro,
+            System.Action<Character> onComplete,
+            System.Action<System.Exception> onError)
         {
             if (!_initialized)
             {
-                throw new Exception("CharacterFactory not initialized. Call Initialize() first.");
+                onError?.Invoke(new System.Exception("CharacterFactory not initialized. Call Initialize() first."));
+                yield break;
             }
 
             var character = new Character(name, gender, image, pitch, speed, intro);
-            await character.CreateAvatarAsync();
-            return character;
+            yield return character.CreateAvatarAsync();
+            onComplete?.Invoke(character);
         }
     }
 }
