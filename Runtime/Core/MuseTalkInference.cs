@@ -161,6 +161,58 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
+        /// Generate talking head video frames using preloaded avatar data for fast inference
+        /// Skips avatar processing and uses precomputed latents and face data
+        /// </summary>
+        public IEnumerator GenerateWithPreloadedDataAsync(
+            MuseTalkInput input, 
+            List<float[]> preloadedLatents, 
+            List<FaceData> preloadedFaceData, 
+            OutputStream stream)
+        {
+            if (!_initialized)
+            {
+                InitializeModels();
+                _initialized = true;
+            }
+                
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+                
+            if (preloadedLatents == null || preloadedLatents.Count == 0)
+                throw new ArgumentException("Preloaded latents are required");
+                
+            if (preloadedFaceData == null || preloadedFaceData.Count == 0)
+                throw new ArgumentException("Preloaded face data are required");
+                
+            Logger.Log($"[MuseTalkInference] === STARTING MUSETALK PRELOADED DATA GENERATION ===");
+            Logger.Log($"[MuseTalkInference] Version: {_config.Version}, Batch Size: {input.BatchSize}");
+            Logger.Log($"[MuseTalkInference] Preloaded Data: {preloadedLatents.Count} latents, {preloadedFaceData.Count} face regions, Audio: {input.AudioClip.name} ({input.AudioClip.length:F2}s)");
+            
+            // Create avatar data from preloaded components
+            var avatarData = new AvatarData
+            {
+                Latents = preloadedLatents,
+                FaceRegions = preloadedFaceData
+            };
+            
+            // Step 1: Process audio and extract features (same as normal workflow)
+            Logger.Log("[MuseTalkInference] STAGE 1: Processing audio...");
+            var audioTask = ProcessAudio(input.AudioClip);
+            yield return new WaitUntil(() => audioTask.IsCompleted);
+            var audioFeatures = audioTask.Result;
+            stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
+            Logger.Log($"[MuseTalkInference] Stage 1 completed - Generated {audioFeatures.FeatureChunks.Count} audio chunks");
+            
+            // Step 2: Generate video frames using preloaded data (streaming mode)
+            Logger.Log("[MuseTalkInference] STAGE 2: Generating video frames with preloaded data (streaming)...");
+            yield return GenerateFramesStreaming(avatarData, audioFeatures, input.BatchSize, stream);
+            
+            stream.Finished = true;
+            Logger.Log($"[MuseTalkInference] === PRELOADED DATA GENERATION COMPLETED ===");
+        }
+
+        /// <summary>
         /// Pre-compute segmentation data that can be cached and reused for all frames
         /// This includes face_large crop, BiSeNet segmentation mask, and all blending masks
         /// REFACTORED: Uses byte arrays internally for better memory efficiency

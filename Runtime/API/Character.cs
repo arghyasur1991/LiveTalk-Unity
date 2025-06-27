@@ -50,6 +50,24 @@ namespace LiveTalk.API
         public Speed Speed { get; internal set; }
         public string Intro { get; internal set; }
         internal static string saveLocation;
+        
+        // Loaded character data for inference
+        public bool IsDataLoaded { get; internal set; } = false;
+        internal string CharacterFolder { get; set; }
+        public Dictionary<int, ExpressionData> LoadedExpressions { get; internal set; } = new Dictionary<int, ExpressionData>();
+        internal SparkTTS.CharacterVoice LoadedVoice { get; set; }
+        
+        /// <summary>
+        /// Data for a specific expression including frames, latents, and face data
+        /// </summary>
+        public class ExpressionData
+        {
+            public List<Texture2D> Frames { get; set; } = new List<Texture2D>();
+            public List<float[]> Latents { get; set; } = new List<float[]>();
+            internal List<LiveTalk.Core.FaceData> FaceRegions { get; set; } = new List<LiveTalk.Core.FaceData>();
+            public string ExpressionName { get; set; }
+            public int FaceRegionCount => FaceRegions?.Count ?? 0;
+        }
         internal Character(
             string name,
             Gender gender,
@@ -176,6 +194,139 @@ namespace LiveTalk.API
             yield return new WaitUntil(() => voiceTask.IsCompleted);
 
             Debug.Log($"[Character] Avatar creation completed for {Name}");
+        }
+
+        /// <summary>
+        /// Generate speech using the character's saved data and voice
+        /// </summary>
+        /// <param name="text">Text to speak</param>
+        /// <param name="expressionIndex">Expression to use (0-6: talk-neutral, approve, disapprove, smile, sad, surprised, confused)</param>
+        /// <returns>OutputStream for generated talking head frames</returns>
+        public OutputStream Speak(string text, int expressionIndex = 0)
+        {
+            if (!IsDataLoaded)
+            {
+                throw new InvalidOperationException("Character data not loaded. Use CharacterFactory.LoadCharacterAsync() first.");
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                throw new ArgumentException("Text cannot be null or empty.");
+            }
+
+            if (!LoadedExpressions.ContainsKey(expressionIndex))
+            {
+                throw new ArgumentException($"Expression index {expressionIndex} not available. Available expressions: {string.Join(", ", LoadedExpressions.Keys)}");
+            }
+
+            if (LoadedVoice == null)
+            {
+                throw new InvalidOperationException("Character voice not loaded.");
+            }
+
+            var liveTalkAPI = CharacterFactory._liveTalkAPI;
+            if (liveTalkAPI == null)
+            {
+                throw new InvalidOperationException("CharacterFactory not initialized. Call CharacterFactory.Initialize() first.");
+            }
+
+            Debug.Log($"[Character] {Name} speaking: \"{text}\" with expression {expressionIndex}");
+
+            // Generate audio using the loaded character voice
+            var audioClip = LoadedVoice.GenerateSpeechAsync(text).Result;
+            if (audioClip == null)
+            {
+                throw new InvalidOperationException("Failed to generate speech audio.");
+            }
+
+            // Use the preloaded expression data for MuseTalk
+            var expressionData = LoadedExpressions[expressionIndex];
+            
+            // Generate talking head using MuseTalk with preloaded data
+            // For now, use the existing API - we'll need to add the preloaded data method
+            return liveTalkAPI.GenerateTalkingHeadAsync(
+                expressionData.Frames[0], // Use first frame as avatar
+                "", // No folder path needed since we have frames
+                audioClip
+            );
+        }
+
+        /// <summary>
+        /// Generate speech asynchronously using coroutines
+        /// </summary>
+        /// <param name="text">Text to speak</param>
+        /// <param name="expressionIndex">Expression to use</param>
+        /// <param name="onComplete">Callback when audio generation is complete</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        /// <returns>Coroutine for audio generation, then OutputStream for video frames</returns>
+        public System.Collections.IEnumerator SpeakAsync(
+            string text, 
+            int expressionIndex = 0,
+            System.Action<OutputStream> onComplete = null,
+            System.Action<System.Exception> onError = null)
+        {
+            if (!IsDataLoaded)
+            {
+                onError?.Invoke(new InvalidOperationException("Character data not loaded. Use CharacterFactory.LoadCharacterAsync() first."));
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                onError?.Invoke(new ArgumentException("Text cannot be null or empty."));
+                yield break;
+            }
+
+            if (!LoadedExpressions.ContainsKey(expressionIndex))
+            {
+                onError?.Invoke(new ArgumentException($"Expression index {expressionIndex} not available. Available expressions: {string.Join(", ", LoadedExpressions.Keys)}"));
+                yield break;
+            }
+
+            if (LoadedVoice == null)
+            {
+                onError?.Invoke(new InvalidOperationException("Character voice not loaded."));
+                yield break;
+            }
+
+            var liveTalkAPI = CharacterFactory._liveTalkAPI;
+            if (liveTalkAPI == null)
+            {
+                onError?.Invoke(new InvalidOperationException("CharacterFactory not initialized. Call CharacterFactory.Initialize() first."));
+                yield break;
+            }
+
+            Debug.Log($"[Character] {Name} speaking async: \"{text}\" with expression {expressionIndex}");
+
+            // Generate audio using the loaded character voice
+            var audioTask = LoadedVoice.GenerateSpeechAsync(text);
+            yield return new UnityEngine.WaitUntil(() => audioTask.IsCompleted);
+
+            if (audioTask.IsFaulted)
+            {
+                onError?.Invoke(audioTask.Exception?.InnerException ?? new System.Exception("Failed to generate speech audio."));
+                yield break;
+            }
+
+            var audioClip = audioTask.Result;
+            if (audioClip == null)
+            {
+                onError?.Invoke(new InvalidOperationException("Generated audio clip is null."));
+                yield break;
+            }
+
+            // Use the preloaded expression data for MuseTalk
+            var expressionData = LoadedExpressions[expressionIndex];
+            
+            // Generate talking head using MuseTalk with preloaded data
+            // For now, use the existing API - we'll need to add the preloaded data method
+            var outputStream = liveTalkAPI.GenerateTalkingHeadAsync(
+                expressionData.Frames[0], // Use first frame as avatar
+                "", // No folder path needed since we have frames
+                audioClip
+            );
+
+            onComplete?.Invoke(outputStream);
         }
 
         /// <summary>
@@ -710,5 +861,448 @@ namespace LiveTalk.API
             yield return character.CreateAvatarAsync();
             onComplete?.Invoke(character);
         }
+
+        /// <summary>
+        /// Load a character from the saveLocation using the character GUID
+        /// </summary>
+        /// <param name="characterId">The GUID/hash of the character to load</param>
+        /// <param name="onComplete">Callback when character is successfully loaded</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        public static System.Collections.IEnumerator LoadCharacterAsync(
+            string characterId,
+            System.Action<Character> onComplete,
+            System.Action<System.Exception> onError)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new System.Exception("CharacterFactory not initialized. Call Initialize() first."));
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(characterId))
+            {
+                onError?.Invoke(new System.ArgumentException("Character ID cannot be null or empty."));
+                yield break;
+            }
+
+            string characterFolder = Path.Combine(Character.saveLocation, characterId);
+            if (!Directory.Exists(characterFolder))
+            {
+                onError?.Invoke(new System.IO.DirectoryNotFoundException($"Character folder not found: {characterFolder}"));
+                yield break;
+            }
+
+            Character loadedCharacter = null;
+            System.Exception loadError = null;
+
+            // Load character data in a coroutine
+            yield return LoadCharacterDataCoroutine(characterFolder, 
+                (character) => loadedCharacter = character,
+                (error) => loadError = error);
+
+            if (loadError != null)
+            {
+                onError?.Invoke(loadError);
+            }
+            else if (loadedCharacter != null)
+            {
+                onComplete?.Invoke(loadedCharacter);
+            }
+            else
+            {
+                onError?.Invoke(new System.Exception("Failed to load character: Unknown error"));
+            }
+        }
+
+        /// <summary>
+        /// Get all available character IDs from the saveLocation
+        /// </summary>
+        /// <returns>Array of character GUIDs/hashes</returns>
+        public static string[] GetAvailableCharacterIds()
+        {
+            if (!_initialized || string.IsNullOrEmpty(Character.saveLocation))
+            {
+                return new string[0];
+            }
+
+            try
+            {
+                if (!Directory.Exists(Character.saveLocation))
+                {
+                    return new string[0];
+                }
+
+                var directories = Directory.GetDirectories(Character.saveLocation);
+                var characterIds = new List<string>();
+
+                foreach (var dir in directories)
+                {
+                    string dirName = Path.GetFileName(dir);
+                    string characterConfigPath = Path.Combine(dir, "character.json");
+                    
+                    // Only include directories that have a character.json file
+                    if (File.Exists(characterConfigPath))
+                    {
+                        characterIds.Add(dirName);
+                    }
+                }
+
+                return characterIds.ToArray();
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[CharacterFactory] Error getting available character IDs: {ex.Message}");
+                return new string[0];
+            }
+        }
+
+        /// <summary>
+        /// Load character data from the character folder
+        /// </summary>
+        private static System.Collections.IEnumerator LoadCharacterDataCoroutine(
+            string characterFolder,
+            System.Action<Character> onComplete,
+            System.Action<System.Exception> onError)
+        {
+            // Load character.json
+            string configPath = Path.Combine(characterFolder, "character.json");
+            if (!File.Exists(configPath))
+            {
+                onError?.Invoke(new System.IO.FileNotFoundException($"Character config file not found: {configPath}"));
+                yield break;
+            }
+
+            var readConfigTask = File.ReadAllTextAsync(configPath);
+            yield return new UnityEngine.WaitUntil(() => readConfigTask.IsCompleted);
+
+            if (readConfigTask.IsFaulted)
+            {
+                onError?.Invoke(readConfigTask.Exception?.InnerException ?? new System.Exception("Failed to read character config"));
+                yield break;
+            }
+
+            // Parse character config
+            var configJson = readConfigTask.Result;
+            CharacterConfig config;
+            try
+            {
+                config = JsonConvert.DeserializeObject<CharacterConfig>(configJson);
+            }
+            catch (System.Exception ex)
+            {
+                onError?.Invoke(new System.Exception($"Failed to parse character config: {ex.Message}"));
+                yield break;
+            }
+
+            // Load character image
+            string imagePath = Path.Combine(characterFolder, "image.png");
+            if (!File.Exists(imagePath))
+            {
+                onError?.Invoke(new System.IO.FileNotFoundException($"Character image not found: {imagePath}"));
+                yield break;
+            }
+
+            var readImageTask = File.ReadAllBytesAsync(imagePath);
+            yield return new UnityEngine.WaitUntil(() => readImageTask.IsCompleted);
+
+            if (readImageTask.IsFaulted)
+            {
+                onError?.Invoke(readImageTask.Exception?.InnerException ?? new System.Exception("Failed to read character image"));
+                yield break;
+            }
+
+            // Create texture from image bytes
+            var imageBytes = readImageTask.Result;
+            var texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
+            if (!texture.LoadImage(imageBytes))
+            {
+                onError?.Invoke(new System.Exception("Failed to load character image into texture"));
+                yield break;
+            }
+
+            // Create character object
+            var character = new Character(
+                config.name,
+                config.gender,
+                texture,
+                config.pitch,
+                config.speed,
+                config.intro
+            );
+
+            // Set character folder for data loading
+            character.CharacterFolder = characterFolder;
+
+            // Load all character data (expressions, voice, etc.)
+            yield return LoadCharacterDataContents(character);
+
+            onComplete?.Invoke(character);
+        }
+
+        /// <summary>
+        /// Load all character data including expressions, voice, and precomputed data
+        /// </summary>
+        private static System.Collections.IEnumerator LoadCharacterDataContents(Character character)
+        {
+            Debug.Log($"[CharacterFactory] Loading character data for {character.Name}");
+
+            // Load expressions data
+            yield return LoadExpressionsData(character);
+
+            // Load voice data
+            yield return LoadVoiceData(character);
+
+            character.IsDataLoaded = true;
+            Debug.Log($"[CharacterFactory] Character data loaded successfully for {character.Name}");
+        }
+
+        /// <summary>
+        /// Load all expression data (frames, latents, face data)
+        /// </summary>
+        private static System.Collections.IEnumerator LoadExpressionsData(Character character)
+        {
+            string drivingFramesFolder = System.IO.Path.Combine(character.CharacterFolder, "drivingFrames");
+            if (!System.IO.Directory.Exists(drivingFramesFolder))
+            {
+                Debug.LogWarning($"[CharacterFactory] No driving frames folder found: {drivingFramesFolder}");
+                yield break;
+            }
+
+            var expressionFolders = System.IO.Directory.GetDirectories(drivingFramesFolder);
+            Debug.Log($"[CharacterFactory] Found {expressionFolders.Length} expression folders");
+
+            for (int i = 0; i < expressionFolders.Length; i++)
+            {
+                string expressionFolder = expressionFolders[i];
+                string folderName = System.IO.Path.GetFileName(expressionFolder);
+                
+                // Extract expression index from folder name (expression-0, expression-1, etc.)
+                if (folderName.StartsWith("expression-") && int.TryParse(folderName.Substring(11), out int expressionIndex))
+                {
+                    var expressionData = new Character.ExpressionData();
+                    expressionData.ExpressionName = GetExpressionName(expressionIndex);
+
+                    // Load frames
+                    yield return LoadExpressionFrames(expressionFolder, expressionData);
+
+                    // Load latents
+                    yield return LoadExpressionLatents(expressionFolder, expressionData);
+
+                    // Load face data
+                    yield return LoadExpressionFaceData(expressionFolder, expressionData);
+
+                    character.LoadedExpressions[expressionIndex] = expressionData;
+                    Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Frames.Count} frames, {expressionData.Latents.Count} latents, {expressionData.FaceRegions.Count} face regions");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Load frames for a specific expression
+        /// </summary>
+        private static System.Collections.IEnumerator LoadExpressionFrames(string expressionFolder, Character.ExpressionData expressionData)
+        {
+            var frameFiles = System.IO.Directory.GetFiles(expressionFolder, "*.png")
+                .Where(f => System.IO.Path.GetFileName(f).StartsWith("00"))
+                .OrderBy(f => f)
+                .ToArray();
+
+            foreach (string frameFile in frameFiles)
+            {
+                var readTask = System.IO.File.ReadAllBytesAsync(frameFile);
+                yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+
+                if (!readTask.IsFaulted)
+                {
+                    var frameBytes = readTask.Result;
+                    var texture = new Texture2D(2, 2);
+                    if (texture.LoadImage(frameBytes))
+                    {
+                        expressionData.Frames.Add(texture);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Load latents for a specific expression
+        /// </summary>
+        private static System.Collections.IEnumerator LoadExpressionLatents(string expressionFolder, Character.ExpressionData expressionData)
+        {
+            string latentsFile = System.IO.Path.Combine(expressionFolder, "latents.bin");
+            if (!System.IO.File.Exists(latentsFile))
+            {
+                Debug.LogWarning($"[CharacterFactory] No latents file found: {latentsFile}");
+                yield break;
+            }
+
+            var readTask = System.IO.File.ReadAllBytesAsync(latentsFile);
+            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+
+            if (!readTask.IsFaulted)
+            {
+                var latentsBytes = readTask.Result;
+                
+                // Convert bytes back to float array
+                var allLatents = new float[latentsBytes.Length / sizeof(float)];
+                System.Buffer.BlockCopy(latentsBytes, 0, allLatents, 0, latentsBytes.Length);
+
+                // Split back into individual latent arrays (assuming each latent is 8*32*32 = 8192 floats)
+                const int latentSize = 8 * 32 * 32; // 8192 floats per latent
+                int numLatents = allLatents.Length / latentSize;
+
+                for (int i = 0; i < numLatents; i++)
+                {
+                    var latent = new float[latentSize];
+                    System.Array.Copy(allLatents, i * latentSize, latent, 0, latentSize);
+                    expressionData.Latents.Add(latent);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Load face data for a specific expression
+        /// </summary>
+        private static System.Collections.IEnumerator LoadExpressionFaceData(string expressionFolder, Character.ExpressionData expressionData)
+        {
+            string facesFile = System.IO.Path.Combine(expressionFolder, "faces.json");
+            if (!System.IO.File.Exists(facesFile))
+            {
+                Debug.LogWarning($"[CharacterFactory] No faces file found: {facesFile}");
+                yield break;
+            }
+
+            var readTask = System.IO.File.ReadAllTextAsync(facesFile);
+            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+
+            if (!readTask.IsFaulted)
+            {
+                var facesJson = readTask.Result;
+                ParseFaceDataJson(facesJson, expressionData);
+            }
+        }
+
+        /// <summary>
+        /// Load voice data for the character
+        /// </summary>
+        private static System.Collections.IEnumerator LoadVoiceData(Character character)
+        {
+            string voiceFolder = System.IO.Path.Combine(character.CharacterFolder, "voice");
+            string voiceConfigFile = System.IO.Path.Combine(voiceFolder, "voice_config.json");
+            
+            if (!System.IO.File.Exists(voiceConfigFile))
+            {
+                Debug.LogWarning($"[CharacterFactory] No voice config found: {voiceConfigFile}");
+                yield break;
+            }
+
+            var readTask = System.IO.File.ReadAllTextAsync(voiceConfigFile);
+            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+
+            if (!readTask.IsFaulted)
+            {
+                var configJson = readTask.Result;
+                yield return LoadVoiceFromConfig(configJson, character);
+            }
+        }
+
+        /// <summary>
+        /// Get expression name from index
+        /// </summary>
+        private static string GetExpressionName(int index)
+        {
+            var expressions = new string[] { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
+            return index < expressions.Length ? expressions[index] : $"expression-{index}";
+        }
+
+        /// <summary>
+        /// Parse face data JSON safely
+        /// </summary>
+        private static void ParseFaceDataJson(string facesJson, Character.ExpressionData expressionData)
+        {
+            try
+            {
+                // Parse the JSON and reconstruct face data
+                var faceDataJson = JsonConvert.DeserializeObject<dynamic>(facesJson);
+                var faceRegions = faceDataJson.faceRegions;
+
+                foreach (var faceRegion in faceRegions)
+                {
+                    // For now, create minimal face data structure
+                    // In a full implementation, we'd load all the saved textures
+                    var faceData = new LiveTalk.Core.FaceData
+                    {
+                        HasFace = (bool)faceRegion.hasFace,
+                        BoundingBox = new Rect(
+                            (float)faceRegion.boundingBox.x,
+                            (float)faceRegion.boundingBox.y,
+                            (float)faceRegion.boundingBox.width,
+                            (float)faceRegion.boundingBox.height
+                        )
+                        // TODO: Load all saved textures from the texture files
+                    };
+
+                    expressionData.FaceRegions.Add(faceData);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[CharacterFactory] Error parsing face data: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load voice from config JSON
+        /// </summary>
+        private static System.Collections.IEnumerator LoadVoiceFromConfig(string configJson, Character character)
+        {
+            dynamic voiceConfig = null;
+            
+            try
+            {
+                voiceConfig = JsonConvert.DeserializeObject<dynamic>(configJson);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[CharacterFactory] Error parsing voice config: {ex.Message}");
+                yield break;
+            }
+
+            if (voiceConfig != null)
+            {
+                // Recreate the character voice with the same parameters
+                var characterVoiceTask = _characterVoiceFactory.CreateFromStyleAsync(
+                    gender: (string)voiceConfig.gender,
+                    pitch: (string)voiceConfig.pitch,
+                    speed: (string)voiceConfig.speed,
+                    referenceText: (string)voiceConfig.introText
+                );
+                
+                yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
+                
+                if (!characterVoiceTask.IsFaulted)
+                {
+                    character.LoadedVoice = characterVoiceTask.Result;
+                    Debug.Log($"[CharacterFactory] Voice loaded for {character.Name}");
+                }
+                else
+                {
+                    Debug.LogError($"[CharacterFactory] Failed to load voice: {characterVoiceTask.Exception?.Message}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Configuration data structure for loading characters
+    /// </summary>
+    [System.Serializable]
+    internal class CharacterConfig
+    {
+        public string name;
+        public Gender gender;
+        public Pitch pitch;
+        public Speed speed;
+        public string intro;
     }
 }
