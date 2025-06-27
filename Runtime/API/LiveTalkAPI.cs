@@ -147,7 +147,8 @@ namespace LiveTalk.API
                 throw new ArgumentException("Invalid input: source image and video player are required");
 
             Logger.Log($"[LivePortraitMuseTalkAPI] Starting pipelined processing: {videoPlayer.clip.frameCount} driving frames");
-            var frameCount = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+            var frameCount = maxFrames == -1 ? (int)videoPlayer.clip.frameCount :
+                                     Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
             var stream = new OutputStream(frameCount);
             _avatarController.LoadDrivingFrames(videoPlayer, maxFrames);
             _avatarController.StartCoroutine(

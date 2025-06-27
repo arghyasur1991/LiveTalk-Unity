@@ -34,8 +34,8 @@ namespace LiveTalk.API
                 Debug.LogError("[LiveTalkController] VideoPlayer clip has no frames");
                 return;
             }
-
-            var frameCount = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+            var frameCount = maxFrames == -1 ? (int)videoPlayer.clip.frameCount :
+                                     Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
             _drivingFramesStream = new DrivingFramesStream(frameCount)
             {
                 TotalExpectedFrames = frameCount
@@ -131,7 +131,8 @@ namespace LiveTalk.API
             yield return null;
 
             // Initialize frame processing variables
-            _totalFramesToProcess = Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+            _totalFramesToProcess = maxFrames == -1 ? (int)videoPlayer.clip.frameCount :
+                                     Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
             
             Debug.Log($"[LiveTalkController] Video prepared. Frame count: {_totalFramesToProcess}, Video size: {videoPlayer.clip.width}x{videoPlayer.clip.height}");
             

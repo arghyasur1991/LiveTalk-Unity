@@ -151,7 +151,7 @@ namespace LiveTalk.API
             // Step 2: Generate driving frames for each expression
             var expressions = new string[] { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
             
-            for (int expressionIndex = 0; expressionIndex < 0; expressionIndex++)
+            for (int expressionIndex = 0; expressionIndex < 1 /*expressions.Length*/; expressionIndex++)
             {
                 string expression = expressions[expressionIndex];
                 string expressionFolder = Path.Combine(drivingFramesFolder, $"expression-{expressionIndex}");
@@ -181,12 +181,22 @@ namespace LiveTalk.API
         /// <summary>
         /// Process a single expression with coroutines to handle frame streaming
         /// </summary>
-        private System.Collections.IEnumerator ProcessExpressionCoroutine(string expression, int expressionIndex, VideoClip drivingVideo, string expressionFolder, LiveTalkAPI liveTalkAPI)
+        private System.Collections.IEnumerator ProcessExpressionCoroutine(
+            string expression, 
+            int expressionIndex, 
+            VideoClip drivingVideo, 
+            string expressionFolder, 
+            LiveTalkAPI liveTalkAPI)
         {
             // Create a temporary VideoPlayer to process the driving frames
             var tempGO = new GameObject("TempVideoPlayer");
             var videoPlayer = tempGO.AddComponent<VideoPlayer>();
             videoPlayer.clip = drivingVideo;
+            videoPlayer.isLooping = false;
+            videoPlayer.playOnAwake = false;
+            videoPlayer.skipOnDrop = false;
+            videoPlayer.Prepare();
+            yield return new WaitUntil(() => videoPlayer.isPrepared);
 
             // Generate animated textures using LivePortrait
             var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(Image, videoPlayer);
