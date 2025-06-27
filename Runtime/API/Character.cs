@@ -9,6 +9,7 @@ using UnityEngine.Video;
 using SparkTTS;
 using SparkTTS.Utils;
 using Newtonsoft.Json;
+using LiveTalk.Utils;
 
 namespace LiveTalk.API
 {
@@ -243,10 +244,10 @@ namespace LiveTalk.API
             var expressionData = LoadedExpressions[expressionIndex];
             
             // Generate talking head using MuseTalk with preloaded data
-            // For now, use the existing API - we'll need to add the preloaded data method
-            return liveTalkAPI.GenerateTalkingHeadAsync(
-                expressionData.Frames[0], // Use first frame as avatar
-                "", // No folder path needed since we have frames
+            return liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
+                expressionData.Frames.ToArray(),
+                expressionData.Latents,
+                expressionData.FaceRegions,
                 audioClip
             );
         }
@@ -319,10 +320,10 @@ namespace LiveTalk.API
             var expressionData = LoadedExpressions[expressionIndex];
             
             // Generate talking head using MuseTalk with preloaded data
-            // For now, use the existing API - we'll need to add the preloaded data method
-            var outputStream = liveTalkAPI.GenerateTalkingHeadAsync(
-                expressionData.Frames[0], // Use first frame as avatar
-                "", // No folder path needed since we have frames
+            var outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
+                expressionData.Frames.ToArray(),
+                expressionData.Latents,
+                expressionData.FaceRegions,
                 audioClip
             );
 
@@ -387,7 +388,7 @@ namespace LiveTalk.API
                 
                 if (awaiter.Texture != null)
                 {
-                    // Save frame immediately to disk
+                    // Save LivePortrait generated frames as numbered PNGs (these are the driving frames)
                     string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
                     byte[] pngData = awaiter.Texture.EncodeToPNG();
                     var writeTask = File.WriteAllBytesAsync(frameFileName, pngData);
@@ -548,10 +549,10 @@ namespace LiveTalk.API
                 var facesFile = Path.Combine(expressionFolder, "faces.json");
                 var texturesFolder = Path.Combine(expressionFolder, "textures");
                 
-                // Create texture subfolders
+                // Create texture subfolders (removed "original" to eliminate redundancy)
                 var subfolders = new[]
                 {
-                    "cropped", "original", "faceLarge", "segmentationMask",
+                    "cropped", "faceLarge", "segmentationMask",
                     "maskSmall", "fullMask", "boundaryMask", "blurredMask"
                 };
                 
@@ -647,10 +648,10 @@ namespace LiveTalk.API
             try
             {
                 // Define texture mappings: texture data -> folder name -> filename
+                // Note: Removed "original" to eliminate redundancy - driving frames are saved as numbered PNGs
                 var textureMap = new List<(LiveTalk.Core.Frame frame, string folder, string key)>
                 {
                     (face.CroppedFaceTexture, "cropped", "croppedFace"),
-                    (face.OriginalTexture, "original", "original"),
                     (face.FaceLarge, "faceLarge", "faceLarge"),
                     (face.SegmentationMask, "segmentationMask", "segmentationMask"),
                     (face.MaskSmall, "maskSmall", "maskSmall"),
@@ -1047,7 +1048,7 @@ namespace LiveTalk.API
             Debug.Log($"[CharacterFactory] Loading character data for {character.Name}");
 
             // Load expressions data
-            // yield return LoadExpressionsData(character);
+            yield return LoadExpressionsData(character);
 
             // Load voice data
             yield return LoadVoiceData(character);
@@ -1098,7 +1099,7 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Load frames for a specific expression
+        /// Load frames for a specific expression from numbered PNGs
         /// </summary>
         private static System.Collections.IEnumerator LoadExpressionFrames(string expressionFolder, Character.ExpressionData expressionData)
         {
@@ -1118,7 +1119,7 @@ namespace LiveTalk.API
                     var texture = new Texture2D(2, 2);
                     if (texture.LoadImage(frameBytes))
                     {
-                        expressionData.Frames.Add(texture);
+                        expressionData.Frames.Add(TextureUtils.ConvertTexture2DToRGB24(texture));
                     }
                 }
             }
@@ -1178,7 +1179,7 @@ namespace LiveTalk.API
             if (!readTask.IsFaulted)
             {
                 var facesJson = readTask.Result;
-                ParseFaceDataJson(facesJson, expressionData);
+                ParseFaceDataJson(facesJson, expressionData, expressionFolder);
             }
         }
 
@@ -1257,9 +1258,9 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Parse face data JSON safely
+        /// Parse face data JSON and load all associated textures
         /// </summary>
-        private static void ParseFaceDataJson(string facesJson, Character.ExpressionData expressionData)
+        private static void ParseFaceDataJson(string facesJson, Character.ExpressionData expressionData, string expressionFolder)
         {
             try
             {
@@ -1270,7 +1271,7 @@ namespace LiveTalk.API
                 {
                     foreach (var faceRegion in faceDataJson.faceRegions)
                     {
-                        // Create minimal face data structure
+                        // Create complete face data structure with all loaded textures
                         var faceData = new LiveTalk.Core.FaceData
                         {
                             HasFace = faceRegion.hasFace,
@@ -1279,9 +1280,23 @@ namespace LiveTalk.API
                                 faceRegion.boundingBox.y,
                                 faceRegion.boundingBox.width,
                                 faceRegion.boundingBox.height
+                            ),
+                            AdjustedFaceBbox = new UnityEngine.Vector4(
+                                faceRegion.adjustedFaceBbox.x,
+                                faceRegion.adjustedFaceBbox.y,
+                                faceRegion.adjustedFaceBbox.z,
+                                faceRegion.adjustedFaceBbox.w
+                            ),
+                            CropBox = new UnityEngine.Vector4(
+                                faceRegion.cropBox.x,
+                                faceRegion.cropBox.y,
+                                faceRegion.cropBox.z,
+                                faceRegion.cropBox.w
                             )
-                            // TODO: Load all saved textures from the texture files
                         };
+
+                        // Load all saved textures from the texture files
+                        LoadFaceTextures(faceData, faceRegion, expressionFolder);
 
                         expressionData.FaceRegions.Add(faceData);
                     }
@@ -1290,6 +1305,105 @@ namespace LiveTalk.API
             catch (System.Exception ex)
             {
                 Debug.LogError($"[CharacterFactory] Error parsing face data: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load all face textures from saved files
+        /// </summary>
+        private static void LoadFaceTextures(LiveTalk.Core.FaceData faceData, FaceRegionData faceRegion, string expressionFolder)
+        {
+            try
+            {
+                // Load cropped face texture
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.croppedFace))
+                {
+                    string croppedPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.croppedFace);
+                    faceData.CroppedFaceTexture = LoadTextureAsFrame(croppedPath);
+                }
+
+                // Load face large texture
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.faceLarge))
+                {
+                    string faceLargePath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.faceLarge);
+                    faceData.FaceLarge = LoadTextureAsFrame(faceLargePath);
+                }
+
+                // Load segmentation mask
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.segmentationMask))
+                {
+                    string segmentationPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.segmentationMask);
+                    faceData.SegmentationMask = LoadTextureAsFrame(segmentationPath);
+                }
+
+                // Load mask small
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.maskSmall))
+                {
+                    string maskSmallPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.maskSmall);
+                    faceData.MaskSmall = LoadTextureAsFrame(maskSmallPath);
+                }
+
+                // Load full mask
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.fullMask))
+                {
+                    string fullMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.fullMask);
+                    faceData.FullMask = LoadTextureAsFrame(fullMaskPath);
+                }
+
+                // Load boundary mask
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.boundaryMask))
+                {
+                    string boundaryMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.boundaryMask);
+                    faceData.BoundaryMask = LoadTextureAsFrame(boundaryMaskPath);
+                }
+
+                // Load blurred mask
+                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.blurredMask))
+                {
+                    string blurredMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.blurredMask);
+                    faceData.BlurredMask = LoadTextureAsFrame(blurredMaskPath);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[CharacterFactory] Error loading face textures: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load a texture file and convert it to Frame format
+        /// </summary>
+        private static LiveTalk.Core.Frame LoadTextureAsFrame(string texturePath)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(texturePath))
+                {
+                    Debug.LogWarning($"[CharacterFactory] Texture file not found: {texturePath}");
+                    return new LiveTalk.Core.Frame(); // Return empty frame
+                }
+
+                byte[] textureBytes = System.IO.File.ReadAllBytes(texturePath);
+                var texture = new Texture2D(2, 2);
+                
+                if (texture.LoadImage(textureBytes))
+                {
+                    // Convert texture to Frame format
+                    var frame = TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(texture));
+                    UnityEngine.Object.DestroyImmediate(texture); // Clean up temporary texture
+                    return frame;
+                }
+                else
+                {
+                    Debug.LogError($"[CharacterFactory] Failed to load image from: {texturePath}");
+                    UnityEngine.Object.DestroyImmediate(texture);
+                    return new LiveTalk.Core.Frame();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[CharacterFactory] Error loading texture {texturePath}: {ex.Message}");
+                return new LiveTalk.Core.Frame();
             }
         }
 
@@ -1323,6 +1437,9 @@ namespace LiveTalk.API
     {
         public bool hasFace;
         public BoundingBoxData boundingBox;
+        public BoundingBoxData adjustedFaceBbox;
+        public BoundingBoxData cropBox;
+        public TextureFilesData textureFiles;
     }
 
     [System.Serializable]
@@ -1332,5 +1449,19 @@ namespace LiveTalk.API
         public float y;
         public float width;
         public float height;
+        public float z; // For Vector4 data
+        public float w; // For Vector4 data
+    }
+
+    [System.Serializable]
+    internal class TextureFilesData
+    {
+        public string croppedFace;
+        public string faceLarge;
+        public string segmentationMask;
+        public string maskSmall;
+        public string fullMask;
+        public string boundaryMask;
+        public string blurredMask;
     }
 }
