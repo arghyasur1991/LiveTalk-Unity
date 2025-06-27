@@ -261,7 +261,7 @@ namespace LiveTalk.API
         public System.Collections.IEnumerator SpeakAsync(
             string text, 
             int expressionIndex = 0,
-            System.Action<OutputStream> onComplete = null,
+            System.Action<OutputStream, AudioClip> onComplete = null,
             System.Action<System.Exception> onError = null)
         {
             if (!IsDataLoaded)
@@ -324,7 +324,7 @@ namespace LiveTalk.API
                 audioClip
             );
 
-            onComplete?.Invoke(outputStream);
+            onComplete?.Invoke(outputStream, audioClip);
         }
 
         /// <summary>
