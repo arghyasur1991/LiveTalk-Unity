@@ -1047,7 +1047,7 @@ namespace LiveTalk.API
             Debug.Log($"[CharacterFactory] Loading character data for {character.Name}");
 
             // Load expressions data
-            yield return LoadExpressionsData(character);
+            // yield return LoadExpressionsData(character);
 
             // Load voice data
             yield return LoadVoiceData(character);
@@ -1226,33 +1226,19 @@ namespace LiveTalk.API
             var audioClip = loadAudioTask.Result;
             if (audioClip != null)
             {
-                // Parse voice config for parameters
-                dynamic voiceConfig = null;
-                try
+                // Create character voice from the loaded reference sample
+                var characterVoiceTask = _characterVoiceFactory.CreateFromReferenceAsync(audioClip);
+                
+                yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
+                
+                if (!characterVoiceTask.IsFaulted)
                 {
-                    voiceConfig = JsonConvert.DeserializeObject<dynamic>(readConfigTask.Result);
+                    character.LoadedVoice = characterVoiceTask.Result;
+                    Debug.Log($"[CharacterFactory] Voice loaded from reference sample for {character.Name}");
                 }
-                catch (System.Exception ex)
+                else
                 {
-                    Debug.LogError($"[CharacterFactory] Error parsing voice config: {ex.Message}");
-                }
-
-                if (voiceConfig != null)
-                {
-                    // Create character voice from the loaded reference sample
-                    var characterVoiceTask = _characterVoiceFactory.CreateFromReferenceAsync(audioClip);
-                    
-                    yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
-                    
-                    if (!characterVoiceTask.IsFaulted)
-                    {
-                        character.LoadedVoice = characterVoiceTask.Result;
-                        Debug.Log($"[CharacterFactory] Voice loaded from reference sample for {character.Name}");
-                    }
-                    else
-                    {
-                        Debug.LogError($"[CharacterFactory] Failed to create voice from reference: {characterVoiceTask.Exception?.Message}");
-                    }
+                    Debug.LogError($"[CharacterFactory] Failed to create voice from reference: {characterVoiceTask.Exception?.Message}");
                 }
             }
             else
@@ -1277,27 +1263,28 @@ namespace LiveTalk.API
         {
             try
             {
-                // Parse the JSON and reconstruct face data
-                var faceDataJson = JsonConvert.DeserializeObject<dynamic>(facesJson);
-                var faceRegions = faceDataJson.faceRegions;
-
-                foreach (var faceRegion in faceRegions)
+                // Parse the JSON using a proper data structure instead of dynamic
+                var faceDataJson = JsonConvert.DeserializeObject<FaceDataContainer>(facesJson);
+                
+                if (faceDataJson?.faceRegions != null)
                 {
-                    // For now, create minimal face data structure
-                    // In a full implementation, we'd load all the saved textures
-                    var faceData = new LiveTalk.Core.FaceData
+                    foreach (var faceRegion in faceDataJson.faceRegions)
                     {
-                        HasFace = (bool)faceRegion.hasFace,
-                        BoundingBox = new Rect(
-                            (float)faceRegion.boundingBox.x,
-                            (float)faceRegion.boundingBox.y,
-                            (float)faceRegion.boundingBox.width,
-                            (float)faceRegion.boundingBox.height
-                        )
-                        // TODO: Load all saved textures from the texture files
-                    };
+                        // Create minimal face data structure
+                        var faceData = new LiveTalk.Core.FaceData
+                        {
+                            HasFace = faceRegion.hasFace,
+                            BoundingBox = new Rect(
+                                faceRegion.boundingBox.x,
+                                faceRegion.boundingBox.y,
+                                faceRegion.boundingBox.width,
+                                faceRegion.boundingBox.height
+                            )
+                            // TODO: Load all saved textures from the texture files
+                        };
 
-                    expressionData.FaceRegions.Add(faceData);
+                        expressionData.FaceRegions.Add(faceData);
+                    }
                 }
             }
             catch (System.Exception ex)
@@ -1320,5 +1307,30 @@ namespace LiveTalk.API
         public Pitch pitch;
         public Speed speed;
         public string intro;
+    }
+
+    /// <summary>
+    /// Data structures for face data JSON deserialization
+    /// </summary>
+    [System.Serializable]
+    internal class FaceDataContainer
+    {
+        public FaceRegionData[] faceRegions;
+    }
+
+    [System.Serializable]
+    internal class FaceRegionData
+    {
+        public bool hasFace;
+        public BoundingBoxData boundingBox;
+    }
+
+    [System.Serializable]
+    internal class BoundingBoxData
+    {
+        public float x;
+        public float y;
+        public float width;
+        public float height;
     }
 }
