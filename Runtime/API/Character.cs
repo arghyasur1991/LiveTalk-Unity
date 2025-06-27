@@ -1183,26 +1183,81 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Load voice data for the character
+        /// Load voice data for the character from the saved reference sample
         /// </summary>
         private static System.Collections.IEnumerator LoadVoiceData(Character character)
         {
             string voiceFolder = System.IO.Path.Combine(character.CharacterFolder, "voice");
+            string voiceSampleFile = System.IO.Path.Combine(voiceFolder, "sample.wav");
             string voiceConfigFile = System.IO.Path.Combine(voiceFolder, "voice_config.json");
             
+            if (!System.IO.File.Exists(voiceSampleFile))
+            {
+                Debug.LogWarning($"[CharacterFactory] No voice sample found: {voiceSampleFile}");
+                yield break;
+            }
+
             if (!System.IO.File.Exists(voiceConfigFile))
             {
                 Debug.LogWarning($"[CharacterFactory] No voice config found: {voiceConfigFile}");
                 yield break;
             }
 
-            var readTask = System.IO.File.ReadAllTextAsync(voiceConfigFile);
-            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+            // Read the voice config for metadata
+            var readConfigTask = System.IO.File.ReadAllTextAsync(voiceConfigFile);
+            yield return new UnityEngine.WaitUntil(() => readConfigTask.IsCompleted);
 
-            if (!readTask.IsFaulted)
+            if (readConfigTask.IsFaulted)
             {
-                var configJson = readTask.Result;
-                yield return LoadVoiceFromConfig(configJson, character);
+                Debug.LogError($"[CharacterFactory] Failed to read voice config: {readConfigTask.Exception?.Message}");
+                yield break;
+            }
+
+                        // Load the reference audio sample using AudioLoaderService
+            var loadAudioTask = AudioLoaderService.LoadAudioClipAsync(voiceSampleFile);
+            yield return new UnityEngine.WaitUntil(() => loadAudioTask.IsCompleted);
+            
+            if (loadAudioTask.IsFaulted)
+            {
+                Debug.LogError($"[CharacterFactory] Failed to load audio sample: {loadAudioTask.Exception?.Message}");
+                yield break;
+            }
+            
+            var audioClip = loadAudioTask.Result;
+            if (audioClip != null)
+            {
+                // Parse voice config for parameters
+                dynamic voiceConfig = null;
+                try
+                {
+                    voiceConfig = JsonConvert.DeserializeObject<dynamic>(readConfigTask.Result);
+                }
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[CharacterFactory] Error parsing voice config: {ex.Message}");
+                }
+
+                if (voiceConfig != null)
+                {
+                    // Create character voice from the loaded reference sample
+                    var characterVoiceTask = _characterVoiceFactory.CreateFromReferenceAsync(audioClip);
+                    
+                    yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
+                    
+                    if (!characterVoiceTask.IsFaulted)
+                    {
+                        character.LoadedVoice = characterVoiceTask.Result;
+                        Debug.Log($"[CharacterFactory] Voice loaded from reference sample for {character.Name}");
+                    }
+                    else
+                    {
+                        Debug.LogError($"[CharacterFactory] Failed to create voice from reference: {characterVoiceTask.Exception?.Message}");
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogError($"[CharacterFactory] Failed to load audio clip from: {voiceSampleFile}");
             }
         }
 
@@ -1251,46 +1306,7 @@ namespace LiveTalk.API
             }
         }
 
-        /// <summary>
-        /// Load voice from config JSON
-        /// </summary>
-        private static System.Collections.IEnumerator LoadVoiceFromConfig(string configJson, Character character)
-        {
-            dynamic voiceConfig = null;
-            
-            try
-            {
-                voiceConfig = JsonConvert.DeserializeObject<dynamic>(configJson);
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[CharacterFactory] Error parsing voice config: {ex.Message}");
-                yield break;
-            }
 
-            if (voiceConfig != null)
-            {
-                // Recreate the character voice with the same parameters
-                var characterVoiceTask = _characterVoiceFactory.CreateFromStyleAsync(
-                    gender: (string)voiceConfig.gender,
-                    pitch: (string)voiceConfig.pitch,
-                    speed: (string)voiceConfig.speed,
-                    referenceText: (string)voiceConfig.introText
-                );
-                
-                yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
-                
-                if (!characterVoiceTask.IsFaulted)
-                {
-                    character.LoadedVoice = characterVoiceTask.Result;
-                    Debug.Log($"[CharacterFactory] Voice loaded for {character.Name}");
-                }
-                else
-                {
-                    Debug.LogError($"[CharacterFactory] Failed to load voice: {characterVoiceTask.Exception?.Message}");
-                }
-            }
-        }
     }
 
     /// <summary>
