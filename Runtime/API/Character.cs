@@ -63,9 +63,8 @@ namespace LiveTalk.API
         /// </summary>
         public class ExpressionData
         {
-            public List<Texture2D> Frames { get; set; } = new List<Texture2D>();
             public List<float[]> Latents { get; set; } = new List<float[]>();
-            internal List<LiveTalk.Core.FaceData> FaceRegions { get; set; } = new List<LiveTalk.Core.FaceData>();
+            internal List<Core.FaceData> FaceRegions { get; set; } = new List<Core.FaceData>();
             public string ExpressionName { get; set; }
             public int FaceRegionCount => FaceRegions?.Count ?? 0;
         }
@@ -245,7 +244,6 @@ namespace LiveTalk.API
             
             // Generate talking head using MuseTalk with preloaded data
             return liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                expressionData.Frames.ToArray(),
                 expressionData.Latents,
                 expressionData.FaceRegions,
                 audioClip
@@ -321,7 +319,6 @@ namespace LiveTalk.API
             
             // Generate talking head using MuseTalk with preloaded data
             var outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                expressionData.Frames.ToArray(),
                 expressionData.Latents,
                 expressionData.FaceRegions,
                 audioClip
@@ -1083,17 +1080,17 @@ namespace LiveTalk.API
                     var expressionData = new Character.ExpressionData();
                     expressionData.ExpressionName = GetExpressionName(expressionIndex);
 
-                    // Load frames
-                    yield return LoadExpressionFrames(expressionFolder, expressionData);
-
                     // Load latents
                     yield return LoadExpressionLatents(expressionFolder, expressionData);
 
                     // Load face data
                     yield return LoadExpressionFaceData(expressionFolder, expressionData);
 
+                    // Load frames
+                    yield return LoadExpressionFrames(expressionFolder, expressionData);
+
                     character.LoadedExpressions[expressionIndex] = expressionData;
-                    Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Frames.Count} frames, {expressionData.Latents.Count} latents, {expressionData.FaceRegions.Count} face regions");
+                    Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Latents.Count} latents, {expressionData.FaceRegions.Count} face regions");
                 }
             }
         }
@@ -1108,8 +1105,9 @@ namespace LiveTalk.API
                 .OrderBy(f => f)
                 .ToArray();
 
-            foreach (string frameFile in frameFiles)
+            for (int i = 0; i < frameFiles.Length; i++)
             {
+                string frameFile = frameFiles[i];
                 var readTask = System.IO.File.ReadAllBytesAsync(frameFile);
                 yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
 
@@ -1119,7 +1117,8 @@ namespace LiveTalk.API
                     var texture = new Texture2D(2, 2);
                     if (texture.LoadImage(frameBytes))
                     {
-                        expressionData.Frames.Add(TextureUtils.ConvertTexture2DToRGB24(texture));
+                        expressionData.FaceRegions[i].OriginalTexture = 
+                                TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(texture));
                     }
                 }
             }

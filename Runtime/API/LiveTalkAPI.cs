@@ -218,22 +218,17 @@ namespace LiveTalk.API
         /// Generate talking head video with preloaded character data for fast inference
         /// Uses precomputed frames, latents, and face data to skip avatar processing
         /// </summary>
-        /// <param name="preloadedFrames">Preloaded driving frames</param>
         /// <param name="preloadedLatents">Preloaded latent vectors</param>
         /// <param name="preloadedFaceData">Preloaded face analysis data</param>
         /// <param name="audioClip">Speech audio clip</param>
         /// <returns>OutputStream for receiving frames as they're generated</returns>
         internal OutputStream GenerateTalkingHeadWithPreloadedData(
-            Texture2D[] preloadedFrames, 
             List<float[]> preloadedLatents, 
-            List<LiveTalk.Core.FaceData> preloadedFaceData, 
+            List<FaceData> preloadedFaceData, 
             AudioClip audioClip)
         {
             if (_avatarController == null)
                 throw new InvalidOperationException("Avatar controller is required for streaming operations. Use constructor with AvatarController parameter.");
-                
-            if (preloadedFrames == null || preloadedFrames.Length == 0)
-                throw new ArgumentException("Preloaded frames are required");
                 
             if (preloadedLatents == null || preloadedLatents.Count == 0)
                 throw new ArgumentException("Preloaded latents are required");
@@ -245,20 +240,13 @@ namespace LiveTalk.API
                 throw new ArgumentException("Audio clip is required");
                 
             Logger.Log($"[LiveTalkAPI] Starting preloaded data generation: {audioClip.name} ({audioClip.length:F2}s)");
-            Logger.Log($"[LiveTalkAPI] Using preloaded data: {preloadedFrames.Length} frames, {preloadedLatents.Count} latents, {preloadedFaceData.Count} face regions");
-
-            // Create MuseTalk input with preloaded data
-            var input = new MuseTalkInput(preloadedFrames, audioClip)
-            {
-                BatchSize = _config.BatchSize
-            };
             
             // Estimate frame count based on audio length (approximation)
             int estimatedFrames = Mathf.CeilToInt(audioClip.length * 25f); // ~25 FPS estimate
             var stream = new OutputStream(estimatedFrames);
             
             // Generate using MuseTalk with preloaded avatar data
-            _avatarController.StartCoroutine(_museTalk.GenerateWithPreloadedDataAsync(input, preloadedLatents, preloadedFaceData, stream));
+            _avatarController.StartCoroutine(_museTalk.GenerateWithPreloadedDataAsync(audioClip, preloadedLatents, preloadedFaceData, stream));
             return stream;
         }
 

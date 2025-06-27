@@ -165,7 +165,7 @@ namespace LiveTalk.Core
         /// Skips avatar processing and uses precomputed latents and face data
         /// </summary>
         public IEnumerator GenerateWithPreloadedDataAsync(
-            MuseTalkInput input, 
+            AudioClip audioClip, 
             List<float[]> preloadedLatents, 
             List<FaceData> preloadedFaceData, 
             OutputStream stream)
@@ -176,9 +176,6 @@ namespace LiveTalk.Core
                 _initialized = true;
             }
                 
-            if (input == null)
-                throw new ArgumentNullException(nameof(input));
-                
             if (preloadedLatents == null || preloadedLatents.Count == 0)
                 throw new ArgumentException("Preloaded latents are required");
                 
@@ -186,8 +183,7 @@ namespace LiveTalk.Core
                 throw new ArgumentException("Preloaded face data are required");
                 
             Logger.Log($"[MuseTalkInference] === STARTING MUSETALK PRELOADED DATA GENERATION ===");
-            Logger.Log($"[MuseTalkInference] Version: {_config.Version}, Batch Size: {input.BatchSize}");
-            Logger.Log($"[MuseTalkInference] Preloaded Data: {preloadedLatents.Count} latents, {preloadedFaceData.Count} face regions, Audio: {input.AudioClip.name} ({input.AudioClip.length:F2}s)");
+            Logger.Log($"[MuseTalkInference] Preloaded Data: {preloadedLatents.Count} latents, {preloadedFaceData.Count} face regions, Audio: {audioClip.name} ({audioClip.length:F2}s)");
             
             // Create avatar data from preloaded components
             var avatarData = new AvatarData
@@ -198,7 +194,7 @@ namespace LiveTalk.Core
             
             // Step 1: Process audio and extract features (same as normal workflow)
             Logger.Log("[MuseTalkInference] STAGE 1: Processing audio...");
-            var audioTask = ProcessAudio(input.AudioClip);
+            var audioTask = ProcessAudio(audioClip);
             yield return new WaitUntil(() => audioTask.IsCompleted);
             var audioFeatures = audioTask.Result;
             stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
@@ -206,7 +202,7 @@ namespace LiveTalk.Core
             
             // Step 2: Generate video frames using preloaded data (streaming mode)
             Logger.Log("[MuseTalkInference] STAGE 2: Generating video frames with preloaded data (streaming)...");
-            yield return GenerateFramesStreaming(avatarData, audioFeatures, input.BatchSize, stream);
+            yield return GenerateFramesStreaming(avatarData, audioFeatures, 1, stream);
             
             stream.Finished = true;
             Logger.Log($"[MuseTalkInference] === PRELOADED DATA GENERATION COMPLETED ===");
@@ -625,7 +621,7 @@ namespace LiveTalk.Core
                 Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
                 yield break;
             }
-            
+            _avatarData = avatarData;            
             Logger.Log($"[MuseTalkInference] Processing {numFrames} frames in {numBatches} batches of {batchSize}");
             
             // Create cycled latent list for smooth animation
