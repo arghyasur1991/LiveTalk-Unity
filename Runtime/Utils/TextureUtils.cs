@@ -185,6 +185,67 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
+        /// Convert compressed texture to uncompressed format for PNG encoding
+        /// </summary>
+        public static Texture2D ConvertToUncompressedTexture(Texture2D source)
+        {
+            if (source == null)
+                throw new ArgumentNullException(nameof(source));
+
+            // Check if texture is already in a format that supports EncodeToPNG
+            if (source.format == TextureFormat.RGBA32 || 
+                source.format == TextureFormat.RGB24 || 
+                source.format == TextureFormat.ARGB32)
+            {
+                return source; // Already uncompressed
+            }
+
+            // Create a new uncompressed texture
+            Texture2D uncompressed = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false);
+            
+            // Use Graphics.CopyTexture if possible for better performance
+            if (SystemInfo.copyTextureSupport != UnityEngine.Rendering.CopyTextureSupport.None)
+            {
+                try
+                {
+                    // Create a temporary RenderTexture
+                    RenderTexture tempRT = RenderTexture.GetTemporary(source.width, source.height, 0, RenderTextureFormat.ARGB32);
+                    Graphics.Blit(source, tempRT);
+                    
+                    // Read from RenderTexture to uncompressed texture
+                    RenderTexture.active = tempRT;
+                    uncompressed.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
+                    uncompressed.Apply();
+                    RenderTexture.active = null;
+                    
+                    // Clean up
+                    RenderTexture.ReleaseTemporary(tempRT);
+                    
+                    return uncompressed;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[TextureUtils] Graphics.Blit failed, falling back to pixel copy: {ex.Message}");
+                }
+            }
+            
+            // Fallback: try to get pixels directly (may not work with all compressed formats)
+            try
+            {
+                Color[] pixels = source.GetPixels();
+                uncompressed.SetPixels(pixels);
+                uncompressed.Apply();
+                return uncompressed;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[TextureUtils] Failed to convert texture format: {ex.Message}");
+                UnityEngine.Object.DestroyImmediate(uncompressed);
+                throw new InvalidOperationException($"Cannot convert texture format {source.format} to uncompressed format for PNG encoding. Please use an uncompressed texture format.", ex);
+            }
+        }
+
+        /// <summary>
         /// Generate a content-based hash for a texture
         /// </summary>
         public static string GenerateTextureHash(Texture2D texture)

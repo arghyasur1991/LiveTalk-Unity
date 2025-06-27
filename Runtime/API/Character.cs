@@ -107,6 +107,30 @@ namespace LiveTalk.API
                 Directory.Delete(characterFolder, true);
             }
             Directory.CreateDirectory(characterFolder);
+
+            // Add json for character config
+            var characterConfig = new
+            {
+                name = Name,
+                gender = Gender,
+                pitch = Pitch,
+                speed = Speed, 
+                intro = Intro
+            };
+            string characterConfigJson = JsonUtility.ToJson(characterConfig);
+            File.WriteAllText(Path.Combine(characterFolder, "character.json"), characterConfigJson);
+
+            // Save image (convert to uncompressed format if needed)
+            string imagePath = Path.Combine(characterFolder, "image.png");
+            var uncompressedImage = LiveTalk.Utils.TextureUtils.ConvertToUncompressedTexture(Image);
+            byte[] imageBytes = uncompressedImage.EncodeToPNG();
+            await File.WriteAllBytesAsync(imagePath, imageBytes);
+            
+            // Clean up temporary texture if we created one
+            if (uncompressedImage != Image)
+            {
+                UnityEngine.Object.DestroyImmediate(uncompressedImage);
+            }
             
             // Create subfolder structure
             string drivingFramesFolder = Path.Combine(characterFolder, "drivingFrames");
@@ -216,34 +240,9 @@ namespace LiveTalk.API
         {
             string nameHash = Name?.GetHashCode().ToString("X8") ?? "00000000";
             string genderHash = Gender.ToString().GetHashCode().ToString("X8");
-            string imageHash = GenerateImageHash();
+            string imageHash = Image != null ? LiveTalk.Utils.TextureUtils.GenerateTextureHash(Image) : "00000000";
             
             return $"{nameHash}_{genderHash}_{imageHash}";
-        }
-
-        /// <summary>
-        /// Generate a hash for the character image
-        /// </summary>
-        private string GenerateImageHash()
-        {
-            if (Image == null) 
-                return "00000000";
-
-            unchecked
-            {
-                int hash = Image.width.GetHashCode();
-                hash = hash * 31 + Image.height.GetHashCode();
-                hash = hash * 31 + Image.format.GetHashCode();
-                
-                // Sample a few pixels for content-based hashing
-                var pixels = Image.GetPixels(0, 0, Math.Min(32, Image.width), Math.Min(32, Image.height));
-                for (int i = 0; i < Math.Min(100, pixels.Length); i += 10)
-                {
-                    hash = hash * 31 + pixels[i].GetHashCode();
-                }
-                
-                return hash.ToString("X8");
-            }
         }
 
         /// <summary>
@@ -538,12 +537,6 @@ namespace LiveTalk.API
             
             return texturePaths;
         }
-
-
-
-
-
-
 
         /// <summary>
         /// Generate voice sample using SparkTTS with character parameters
