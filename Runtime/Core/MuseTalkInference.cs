@@ -166,8 +166,7 @@ namespace LiveTalk.Core
         /// </summary>
         public IEnumerator GenerateWithPreloadedDataAsync(
             AudioClip audioClip, 
-            List<float[]> preloadedLatents, 
-            List<FaceData> preloadedFaceData, 
+            AvatarData avatarData, 
             OutputStream stream)
         {
             if (!_initialized)
@@ -176,21 +175,7 @@ namespace LiveTalk.Core
                 _initialized = true;
             }
                 
-            if (preloadedLatents == null || preloadedLatents.Count == 0)
-                throw new ArgumentException("Preloaded latents are required");
-                
-            if (preloadedFaceData == null || preloadedFaceData.Count == 0)
-                throw new ArgumentException("Preloaded face data are required");
-                
             Logger.Log($"[MuseTalkInference] === STARTING MUSETALK PRELOADED DATA GENERATION ===");
-            Logger.Log($"[MuseTalkInference] Preloaded Data: {preloadedLatents.Count} latents, {preloadedFaceData.Count} face regions, Audio: {audioClip.name} ({audioClip.length:F2}s)");
-            
-            // Create avatar data from preloaded components
-            var avatarData = new AvatarData
-            {
-                Latents = preloadedLatents,
-                FaceRegions = preloadedFaceData
-            };
             
             // Step 1: Process audio and extract features (same as normal workflow)
             Logger.Log("[MuseTalkInference] STAGE 1: Processing audio...");

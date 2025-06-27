@@ -1,18 +1,19 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
 using SparkTTS;
 using SparkTTS.Utils;
 using Newtonsoft.Json;
-using LiveTalk.Utils;
 
 namespace LiveTalk.API
 {
+    using Core;
+    using Utils;
     public enum Gender
     {
         Male,
@@ -55,18 +56,16 @@ namespace LiveTalk.API
         // Loaded character data for inference
         public bool IsDataLoaded { get; internal set; } = false;
         internal string CharacterFolder { get; set; }
-        public Dictionary<int, ExpressionData> LoadedExpressions { get; internal set; } = new Dictionary<int, ExpressionData>();
-        internal SparkTTS.CharacterVoice LoadedVoice { get; set; }
+        internal Dictionary<int, ExpressionData> LoadedExpressions { get; set; } = new Dictionary<int, ExpressionData>();
+        internal CharacterVoice LoadedVoice { get; set; }
         
         /// <summary>
         /// Data for a specific expression including frames, latents, and face data
         /// </summary>
-        public class ExpressionData
+        internal class ExpressionData
         {
-            public List<float[]> Latents { get; set; } = new List<float[]>();
-            internal List<Core.FaceData> FaceRegions { get; set; } = new List<Core.FaceData>();
+            public AvatarData Data { get; set; } = new AvatarData();
             public string ExpressionName { get; set; }
-            public int FaceRegionCount => FaceRegions?.Count ?? 0;
         }
         internal Character(
             string name,
@@ -84,7 +83,7 @@ namespace LiveTalk.API
             Intro = intro;
         }
 
-        public System.Collections.IEnumerator CreateAvatarAsync()
+        public IEnumerator CreateAvatarAsync()
         {
             // Get the LiveTalkAPI instance
             var liveTalkAPI = CharacterFactory._liveTalkAPI;
@@ -147,7 +146,7 @@ namespace LiveTalk.API
 
             // Save image (convert to uncompressed format if needed)
             string imagePath = Path.Combine(characterFolder, "image.png");
-            var uncompressedImage = LiveTalk.Utils.TextureUtils.ConvertToUncompressedTexture(Image);
+            var uncompressedImage = TextureUtils.ConvertToUncompressedTexture(Image);
             byte[] imageBytes = uncompressedImage.EncodeToPNG();
             var writeImageTask = File.WriteAllBytesAsync(imagePath, imageBytes);
             yield return new WaitUntil(() => writeImageTask.IsCompleted);
@@ -195,7 +194,7 @@ namespace LiveTalk.API
 
             Debug.Log($"[Character] Avatar creation completed for {Name}");
         }
-        
+
         /// <summary>
         /// Generate speech asynchronously using coroutines
         /// </summary>
@@ -204,11 +203,11 @@ namespace LiveTalk.API
         /// <param name="onComplete">Callback when audio generation is complete</param>
         /// <param name="onError">Callback when an error occurs</param>
         /// <returns>Coroutine for audio generation, then OutputStream for video frames</returns>
-        public System.Collections.IEnumerator SpeakAsync(
+        public IEnumerator SpeakAsync(
             string text, 
             int expressionIndex = 0,
-            System.Action<OutputStream, AudioClip> onComplete = null,
-            System.Action<System.Exception> onError = null)
+            Action<OutputStream, AudioClip> onComplete = null,
+            Action<Exception> onError = null)
         {
             if (!IsDataLoaded)
             {
@@ -245,11 +244,11 @@ namespace LiveTalk.API
 
             // Generate audio using the loaded character voice
             var audioTask = LoadedVoice.GenerateSpeechAsync(text);
-            yield return new UnityEngine.WaitUntil(() => audioTask.IsCompleted);
+            yield return new WaitUntil(() => audioTask.IsCompleted);
 
             if (audioTask.IsFaulted)
             {
-                onError?.Invoke(audioTask.Exception?.InnerException ?? new System.Exception("Failed to generate speech audio."));
+                onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
                 yield break;
             }
 
@@ -265,8 +264,7 @@ namespace LiveTalk.API
             
             // Generate talking head using MuseTalk with preloaded data
             var outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                expressionData.Latents,
-                expressionData.FaceRegions,
+                expressionData.Data,
                 audioClip
             );
 
@@ -276,7 +274,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Process a single expression with coroutines to handle frame streaming
         /// </summary>
-        private System.Collections.IEnumerator ProcessExpressionCoroutine(
+        private IEnumerator ProcessExpressionCoroutine(
             string expression, 
             int expressionIndex, 
             VideoClip drivingVideo, 
@@ -319,7 +317,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Process frame stream using coroutines
         /// </summary>
-        private System.Collections.IEnumerator ProcessFramesCoroutine(OutputStream outputStream, string expressionFolder, ProcessFramesResult result)
+        private IEnumerator ProcessFramesCoroutine(OutputStream outputStream, string expressionFolder, ProcessFramesResult result)
         {
             int frameIndex = 0;
             
@@ -335,7 +333,7 @@ namespace LiveTalk.API
                     string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
                     byte[] pngData = awaiter.Texture.EncodeToPNG();
                     var writeTask = File.WriteAllBytesAsync(frameFileName, pngData);
-                    yield return new UnityEngine.WaitUntil(() => writeTask.IsCompleted);
+                    yield return new WaitUntil(() => writeTask.IsCompleted);
                     
                     // Keep reference for cache generation
                     result.GeneratedFrames.Add(awaiter.Texture);
@@ -351,7 +349,7 @@ namespace LiveTalk.API
         {
             string nameHash = Name?.GetHashCode().ToString("X8") ?? "00000000";
             string genderHash = Gender.ToString().GetHashCode().ToString("X8");
-            string imageHash = Image != null ? LiveTalk.Utils.TextureUtils.GenerateTextureHash(Image) : "00000000";
+            string imageHash = Image != null ? TextureUtils.GenerateTextureHash(Image) : "00000000";
             
             return $"{nameHash}_{genderHash}_{imageHash}";
         }
@@ -432,7 +430,7 @@ namespace LiveTalk.API
         /// Process avatar images using MuseTalkInference public API to extract real latents and face data
         /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
         /// </summary>
-        private async Task<LiveTalk.Core.AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, Texture2D[] avatarTextures)
+        private async Task<AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, Texture2D[] avatarTextures)
         {
             Debug.Log($"[Character] Processing {avatarTextures.Length} avatar textures using real MuseTalk pipeline");
 
@@ -485,7 +483,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Save real face data to JSON file and save all precomputed textures
         /// </summary>
-        private async Task SaveFaceDataToFile(string expressionFolder, List<LiveTalk.Core.FaceData> faceRegions)
+        private async Task SaveFaceDataToFile(string expressionFolder, List<FaceData> faceRegions)
         {
             try
             {
@@ -570,7 +568,7 @@ namespace LiveTalk.API
                     description = "Complete face data with all precomputed textures saved as PNG files"
                 };
                 
-                string json = Newtonsoft.Json.JsonConvert.SerializeObject(faceDataJson, Newtonsoft.Json.Formatting.Indented);
+                string json = JsonConvert.SerializeObject(faceDataJson, Formatting.Indented);
                 await File.WriteAllTextAsync(facesFile, json);
                 
                 Debug.Log($"[Character] Saved complete face data with textures for {faceRegions.Count} face regions to {facesFile}");
@@ -584,7 +582,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Save all precomputed textures for a single face region
         /// </summary>
-        private async Task<Dictionary<string, string>> SaveFaceTextures(string texturesFolder, LiveTalk.Core.FaceData face, int faceIndex)
+        private async Task<Dictionary<string, string>> SaveFaceTextures(string texturesFolder, FaceData face, int faceIndex)
         {
             var texturePaths = new Dictionary<string, string>();
             
@@ -592,7 +590,7 @@ namespace LiveTalk.API
             {
                 // Define texture mappings: texture data -> folder name -> filename
                 // Note: Removed "original" to eliminate redundancy - driving frames are saved as numbered PNGs
-                var textureMap = new List<(LiveTalk.Core.Frame frame, string folder, string key)>
+                var textureMap = new List<(Frame frame, string folder, string key)>
                 {
                     (face.CroppedFaceTexture, "cropped", "croppedFace"),
                     (face.FaceLarge, "faceLarge", "faceLarge"),
@@ -612,7 +610,7 @@ namespace LiveTalk.API
                         string fullPath = Path.Combine(folderPath, filename);
                         
                         // Convert Frame to Texture2D and save as PNG
-                        var texture = LiveTalk.Utils.TextureUtils.FrameToTexture2D(frame);
+                        var texture = TextureUtils.FrameToTexture2D(frame);
                         byte[] pngData = texture.EncodeToPNG();
                         await File.WriteAllBytesAsync(fullPath, pngData);
                         
@@ -686,7 +684,7 @@ namespace LiveTalk.API
                     };
                     
                     string configPath = Path.Combine(voiceFolder, "voice_config.json");
-                    string configJson = Newtonsoft.Json.JsonConvert.SerializeObject(voiceConfig, Newtonsoft.Json.Formatting.Indented);
+                    string configJson = JsonConvert.SerializeObject(voiceConfig, Formatting.Indented);
                     await File.WriteAllTextAsync(configPath, configJson);
                 }
                 else
@@ -785,19 +783,19 @@ namespace LiveTalk.API
             }
         }
 
-        public static System.Collections.IEnumerator CreateCharacterAsync(
+        public static IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
             Texture2D image,
             Pitch pitch,
             Speed speed,
             string intro,
-            System.Action<Character> onComplete,
-            System.Action<System.Exception> onError)
+            Action<Character> onComplete,
+            Action<Exception> onError)
         {
             if (!_initialized)
             {
-                onError?.Invoke(new System.Exception("CharacterFactory not initialized. Call Initialize() first."));
+                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
                 yield break;
             }
 
@@ -812,32 +810,32 @@ namespace LiveTalk.API
         /// <param name="characterId">The GUID/hash of the character to load</param>
         /// <param name="onComplete">Callback when character is successfully loaded</param>
         /// <param name="onError">Callback when an error occurs</param>
-        public static System.Collections.IEnumerator LoadCharacterAsync(
+        public static IEnumerator LoadCharacterAsync(
             string characterId,
-            System.Action<Character> onComplete,
-            System.Action<System.Exception> onError)
+            Action<Character> onComplete,
+            Action<Exception> onError)
         {
             if (!_initialized)
             {
-                onError?.Invoke(new System.Exception("CharacterFactory not initialized. Call Initialize() first."));
+                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
                 yield break;
             }
 
             if (string.IsNullOrEmpty(characterId))
             {
-                onError?.Invoke(new System.ArgumentException("Character ID cannot be null or empty."));
+                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
                 yield break;
             }
 
             string characterFolder = Path.Combine(Character.saveLocation, characterId);
             if (!Directory.Exists(characterFolder))
             {
-                onError?.Invoke(new System.IO.DirectoryNotFoundException($"Character folder not found: {characterFolder}"));
+                onError?.Invoke(new DirectoryNotFoundException($"Character folder not found: {characterFolder}"));
                 yield break;
             }
 
             Character loadedCharacter = null;
-            System.Exception loadError = null;
+            Exception loadError = null;
 
             // Load character data in a coroutine
             yield return LoadCharacterDataCoroutine(characterFolder, 
@@ -854,7 +852,7 @@ namespace LiveTalk.API
             }
             else
             {
-                onError?.Invoke(new System.Exception("Failed to load character: Unknown error"));
+                onError?.Invoke(new Exception("Failed to load character: Unknown error"));
             }
         }
 
@@ -893,7 +891,7 @@ namespace LiveTalk.API
 
                 return characterIds.ToArray();
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 Debug.LogError($"[CharacterFactory] Error getting available character IDs: {ex.Message}");
                 return new string[0];
@@ -903,25 +901,25 @@ namespace LiveTalk.API
         /// <summary>
         /// Load character data from the character folder
         /// </summary>
-        private static System.Collections.IEnumerator LoadCharacterDataCoroutine(
+        private static IEnumerator LoadCharacterDataCoroutine(
             string characterFolder,
-            System.Action<Character> onComplete,
-            System.Action<System.Exception> onError)
+            Action<Character> onComplete,
+            Action<Exception> onError)
         {
             // Load character.json
             string configPath = Path.Combine(characterFolder, "character.json");
             if (!File.Exists(configPath))
             {
-                onError?.Invoke(new System.IO.FileNotFoundException($"Character config file not found: {configPath}"));
+                onError?.Invoke(new FileNotFoundException($"Character config file not found: {configPath}"));
                 yield break;
             }
 
             var readConfigTask = File.ReadAllTextAsync(configPath);
-            yield return new UnityEngine.WaitUntil(() => readConfigTask.IsCompleted);
+            yield return new WaitUntil(() => readConfigTask.IsCompleted);
 
             if (readConfigTask.IsFaulted)
             {
-                onError?.Invoke(readConfigTask.Exception?.InnerException ?? new System.Exception("Failed to read character config"));
+                onError?.Invoke(readConfigTask.Exception?.InnerException ?? new Exception("Failed to read character config"));
                 yield break;
             }
 
@@ -932,9 +930,9 @@ namespace LiveTalk.API
             {
                 config = JsonConvert.DeserializeObject<CharacterConfig>(configJson);
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                onError?.Invoke(new System.Exception($"Failed to parse character config: {ex.Message}"));
+                onError?.Invoke(new Exception($"Failed to parse character config: {ex.Message}"));
                 yield break;
             }
 
@@ -942,16 +940,16 @@ namespace LiveTalk.API
             string imagePath = Path.Combine(characterFolder, "image.png");
             if (!File.Exists(imagePath))
             {
-                onError?.Invoke(new System.IO.FileNotFoundException($"Character image not found: {imagePath}"));
+                onError?.Invoke(new FileNotFoundException($"Character image not found: {imagePath}"));
                 yield break;
             }
 
             var readImageTask = File.ReadAllBytesAsync(imagePath);
-            yield return new UnityEngine.WaitUntil(() => readImageTask.IsCompleted);
+            yield return new WaitUntil(() => readImageTask.IsCompleted);
 
             if (readImageTask.IsFaulted)
             {
-                onError?.Invoke(readImageTask.Exception?.InnerException ?? new System.Exception("Failed to read character image"));
+                onError?.Invoke(readImageTask.Exception?.InnerException ?? new Exception("Failed to read character image"));
                 yield break;
             }
 
@@ -960,7 +958,7 @@ namespace LiveTalk.API
             var texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
             if (!texture.LoadImage(imageBytes))
             {
-                onError?.Invoke(new System.Exception("Failed to load character image into texture"));
+                onError?.Invoke(new Exception("Failed to load character image into texture"));
                 yield break;
             }
 
@@ -986,7 +984,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Load all character data including expressions, voice, and precomputed data
         /// </summary>
-        private static System.Collections.IEnumerator LoadCharacterDataContents(Character character)
+        private static IEnumerator LoadCharacterDataContents(Character character)
         {
             Debug.Log($"[CharacterFactory] Loading character data for {character.Name}");
 
@@ -1003,22 +1001,22 @@ namespace LiveTalk.API
         /// <summary>
         /// Load all expression data (frames, latents, face data)
         /// </summary>
-        private static System.Collections.IEnumerator LoadExpressionsData(Character character)
+        private static IEnumerator LoadExpressionsData(Character character)
         {
-            string drivingFramesFolder = System.IO.Path.Combine(character.CharacterFolder, "drivingFrames");
-            if (!System.IO.Directory.Exists(drivingFramesFolder))
+            string drivingFramesFolder = Path.Combine(character.CharacterFolder, "drivingFrames");
+            if (!Directory.Exists(drivingFramesFolder))
             {
                 Debug.LogWarning($"[CharacterFactory] No driving frames folder found: {drivingFramesFolder}");
                 yield break;
             }
 
-            var expressionFolders = System.IO.Directory.GetDirectories(drivingFramesFolder);
+            var expressionFolders = Directory.GetDirectories(drivingFramesFolder);
             Debug.Log($"[CharacterFactory] Found {expressionFolders.Length} expression folders");
 
             for (int i = 0; i < expressionFolders.Length; i++)
             {
                 string expressionFolder = expressionFolders[i];
-                string folderName = System.IO.Path.GetFileName(expressionFolder);
+                string folderName = Path.GetFileName(expressionFolder);
                 
                 // Extract expression index from folder name (expression-0, expression-1, etc.)
                 if (folderName.StartsWith("expression-") && int.TryParse(folderName.Substring(11), out int expressionIndex))
@@ -1036,7 +1034,7 @@ namespace LiveTalk.API
                     yield return LoadExpressionFrames(expressionFolder, expressionData);
 
                     character.LoadedExpressions[expressionIndex] = expressionData;
-                    Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Latents.Count} latents, {expressionData.FaceRegions.Count} face regions");
+                    Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");
                 }
             }
         }
@@ -1044,18 +1042,18 @@ namespace LiveTalk.API
         /// <summary>
         /// Load frames for a specific expression from numbered PNGs
         /// </summary>
-        private static System.Collections.IEnumerator LoadExpressionFrames(string expressionFolder, Character.ExpressionData expressionData)
+        private static IEnumerator LoadExpressionFrames(string expressionFolder, Character.ExpressionData expressionData)
         {
-            var frameFiles = System.IO.Directory.GetFiles(expressionFolder, "*.png")
-                .Where(f => System.IO.Path.GetFileName(f).StartsWith("00"))
+            var frameFiles = Directory.GetFiles(expressionFolder, "*.png")
+                .Where(f => Path.GetFileName(f).StartsWith("00"))
                 .OrderBy(f => f)
                 .ToArray();
 
             for (int i = 0; i < frameFiles.Length; i++)
             {
                 string frameFile = frameFiles[i];
-                var readTask = System.IO.File.ReadAllBytesAsync(frameFile);
-                yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+                var readTask = File.ReadAllBytesAsync(frameFile);
+                yield return new WaitUntil(() => readTask.IsCompleted);
 
                 if (!readTask.IsFaulted)
                 {
@@ -1063,7 +1061,7 @@ namespace LiveTalk.API
                     var texture = new Texture2D(2, 2);
                     if (texture.LoadImage(frameBytes))
                     {
-                        expressionData.FaceRegions[i].OriginalTexture = 
+                        expressionData.Data.FaceRegions[i].OriginalTexture = 
                                 TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(texture));
                     }
                 }
@@ -1073,17 +1071,17 @@ namespace LiveTalk.API
         /// <summary>
         /// Load latents for a specific expression
         /// </summary>
-        private static System.Collections.IEnumerator LoadExpressionLatents(string expressionFolder, Character.ExpressionData expressionData)
+        private static IEnumerator LoadExpressionLatents(string expressionFolder, Character.ExpressionData expressionData)
         {
-            string latentsFile = System.IO.Path.Combine(expressionFolder, "latents.bin");
-            if (!System.IO.File.Exists(latentsFile))
+            string latentsFile = Path.Combine(expressionFolder, "latents.bin");
+            if (!File.Exists(latentsFile))
             {
                 Debug.LogWarning($"[CharacterFactory] No latents file found: {latentsFile}");
                 yield break;
             }
 
-            var readTask = System.IO.File.ReadAllBytesAsync(latentsFile);
-            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+            var readTask = File.ReadAllBytesAsync(latentsFile);
+            yield return new WaitUntil(() => readTask.IsCompleted);
 
             if (!readTask.IsFaulted)
             {
@@ -1091,7 +1089,7 @@ namespace LiveTalk.API
                 
                 // Convert bytes back to float array
                 var allLatents = new float[latentsBytes.Length / sizeof(float)];
-                System.Buffer.BlockCopy(latentsBytes, 0, allLatents, 0, latentsBytes.Length);
+                Buffer.BlockCopy(latentsBytes, 0, allLatents, 0, latentsBytes.Length);
 
                 // Split back into individual latent arrays (assuming each latent is 8*32*32 = 8192 floats)
                 const int latentSize = 8 * 32 * 32; // 8192 floats per latent
@@ -1100,8 +1098,8 @@ namespace LiveTalk.API
                 for (int i = 0; i < numLatents; i++)
                 {
                     var latent = new float[latentSize];
-                    System.Array.Copy(allLatents, i * latentSize, latent, 0, latentSize);
-                    expressionData.Latents.Add(latent);
+                    Array.Copy(allLatents, i * latentSize, latent, 0, latentSize);
+                    expressionData.Data.Latents.Add(latent);
                 }
             }
         }
@@ -1109,17 +1107,17 @@ namespace LiveTalk.API
         /// <summary>
         /// Load face data for a specific expression
         /// </summary>
-        private static System.Collections.IEnumerator LoadExpressionFaceData(string expressionFolder, Character.ExpressionData expressionData)
+        private static IEnumerator LoadExpressionFaceData(string expressionFolder, Character.ExpressionData expressionData)
         {
-            string facesFile = System.IO.Path.Combine(expressionFolder, "faces.json");
-            if (!System.IO.File.Exists(facesFile))
+            string facesFile = Path.Combine(expressionFolder, "faces.json");
+            if (!File.Exists(facesFile))
             {
                 Debug.LogWarning($"[CharacterFactory] No faces file found: {facesFile}");
                 yield break;
             }
 
-            var readTask = System.IO.File.ReadAllTextAsync(facesFile);
-            yield return new UnityEngine.WaitUntil(() => readTask.IsCompleted);
+            var readTask = File.ReadAllTextAsync(facesFile);
+            yield return new WaitUntil(() => readTask.IsCompleted);
 
             if (!readTask.IsFaulted)
             {
@@ -1131,27 +1129,27 @@ namespace LiveTalk.API
         /// <summary>
         /// Load voice data for the character from the saved reference sample
         /// </summary>
-        private static System.Collections.IEnumerator LoadVoiceData(Character character)
+        private static IEnumerator LoadVoiceData(Character character)
         {
-            string voiceFolder = System.IO.Path.Combine(character.CharacterFolder, "voice");
-            string voiceSampleFile = System.IO.Path.Combine(voiceFolder, "sample.wav");
-            string voiceConfigFile = System.IO.Path.Combine(voiceFolder, "voice_config.json");
+            string voiceFolder = Path.Combine(character.CharacterFolder, "voice");
+            string voiceSampleFile = Path.Combine(voiceFolder, "sample.wav");
+            string voiceConfigFile = Path.Combine(voiceFolder, "voice_config.json");
             
-            if (!System.IO.File.Exists(voiceSampleFile))
+            if (!File.Exists(voiceSampleFile))
             {
                 Debug.LogWarning($"[CharacterFactory] No voice sample found: {voiceSampleFile}");
                 yield break;
             }
 
-            if (!System.IO.File.Exists(voiceConfigFile))
+            if (!File.Exists(voiceConfigFile))
             {
                 Debug.LogWarning($"[CharacterFactory] No voice config found: {voiceConfigFile}");
                 yield break;
             }
 
             // Read the voice config for metadata
-            var readConfigTask = System.IO.File.ReadAllTextAsync(voiceConfigFile);
-            yield return new UnityEngine.WaitUntil(() => readConfigTask.IsCompleted);
+            var readConfigTask = File.ReadAllTextAsync(voiceConfigFile);
+            yield return new WaitUntil(() => readConfigTask.IsCompleted);
 
             if (readConfigTask.IsFaulted)
             {
@@ -1161,7 +1159,7 @@ namespace LiveTalk.API
 
                         // Load the reference audio sample using AudioLoaderService
             var loadAudioTask = AudioLoaderService.LoadAudioClipAsync(voiceSampleFile);
-            yield return new UnityEngine.WaitUntil(() => loadAudioTask.IsCompleted);
+            yield return new WaitUntil(() => loadAudioTask.IsCompleted);
             
             if (loadAudioTask.IsFaulted)
             {
@@ -1175,7 +1173,7 @@ namespace LiveTalk.API
                 // Create character voice from the loaded reference sample
                 var characterVoiceTask = _characterVoiceFactory.CreateFromReferenceAsync(audioClip);
                 
-                yield return new UnityEngine.WaitUntil(() => characterVoiceTask.IsCompleted);
+                yield return new WaitUntil(() => characterVoiceTask.IsCompleted);
                 
                 if (!characterVoiceTask.IsFaulted)
                 {
@@ -1217,7 +1215,7 @@ namespace LiveTalk.API
                     foreach (var faceRegion in faceDataJson.faceRegions)
                     {
                         // Create complete face data structure with all loaded textures
-                        var faceData = new LiveTalk.Core.FaceData
+                        var faceData = new FaceData
                         {
                             HasFace = faceRegion.hasFace,
                             BoundingBox = new Rect(
@@ -1226,13 +1224,13 @@ namespace LiveTalk.API
                                 faceRegion.boundingBox.width,
                                 faceRegion.boundingBox.height
                             ),
-                            AdjustedFaceBbox = new UnityEngine.Vector4(
+                            AdjustedFaceBbox = new Vector4(
                                 faceRegion.adjustedFaceBbox.x,
                                 faceRegion.adjustedFaceBbox.y,
                                 faceRegion.adjustedFaceBbox.z,
                                 faceRegion.adjustedFaceBbox.w
                             ),
-                            CropBox = new UnityEngine.Vector4(
+                            CropBox = new Vector4(
                                 faceRegion.cropBox.x,
                                 faceRegion.cropBox.y,
                                 faceRegion.cropBox.z,
@@ -1243,11 +1241,11 @@ namespace LiveTalk.API
                         // Load all saved textures from the texture files
                         LoadFaceTextures(faceData, faceRegion, expressionFolder);
 
-                        expressionData.FaceRegions.Add(faceData);
+                        expressionData.Data.FaceRegions.Add(faceData);
                     }
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 Debug.LogError($"[CharacterFactory] Error parsing face data: {ex.Message}");
             }
@@ -1256,60 +1254,60 @@ namespace LiveTalk.API
         /// <summary>
         /// Load all face textures from saved files
         /// </summary>
-        private static void LoadFaceTextures(LiveTalk.Core.FaceData faceData, FaceRegionData faceRegion, string expressionFolder)
+        private static void LoadFaceTextures(FaceData faceData, FaceRegionData faceRegion, string expressionFolder)
         {
             try
             {
                 // Load cropped face texture
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.croppedFace))
                 {
-                    string croppedPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.croppedFace);
+                    string croppedPath = Path.Combine(expressionFolder, faceRegion.textureFiles.croppedFace);
                     faceData.CroppedFaceTexture = LoadTextureAsFrame(croppedPath);
                 }
 
                 // Load face large texture
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.faceLarge))
                 {
-                    string faceLargePath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.faceLarge);
+                    string faceLargePath = Path.Combine(expressionFolder, faceRegion.textureFiles.faceLarge);
                     faceData.FaceLarge = LoadTextureAsFrame(faceLargePath);
                 }
 
                 // Load segmentation mask
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.segmentationMask))
                 {
-                    string segmentationPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.segmentationMask);
+                    string segmentationPath = Path.Combine(expressionFolder, faceRegion.textureFiles.segmentationMask);
                     faceData.SegmentationMask = LoadTextureAsFrame(segmentationPath);
                 }
 
                 // Load mask small
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.maskSmall))
                 {
-                    string maskSmallPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.maskSmall);
+                    string maskSmallPath = Path.Combine(expressionFolder, faceRegion.textureFiles.maskSmall);
                     faceData.MaskSmall = LoadTextureAsFrame(maskSmallPath);
                 }
 
                 // Load full mask
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.fullMask))
                 {
-                    string fullMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.fullMask);
+                    string fullMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.fullMask);
                     faceData.FullMask = LoadTextureAsFrame(fullMaskPath);
                 }
 
                 // Load boundary mask
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.boundaryMask))
                 {
-                    string boundaryMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.boundaryMask);
+                    string boundaryMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.boundaryMask);
                     faceData.BoundaryMask = LoadTextureAsFrame(boundaryMaskPath);
                 }
 
                 // Load blurred mask
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.blurredMask))
                 {
-                    string blurredMaskPath = System.IO.Path.Combine(expressionFolder, faceRegion.textureFiles.blurredMask);
+                    string blurredMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.blurredMask);
                     faceData.BlurredMask = LoadTextureAsFrame(blurredMaskPath);
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 Debug.LogError($"[CharacterFactory] Error loading face textures: {ex.Message}");
             }
@@ -1318,17 +1316,17 @@ namespace LiveTalk.API
         /// <summary>
         /// Load a texture file and convert it to Frame format
         /// </summary>
-        private static LiveTalk.Core.Frame LoadTextureAsFrame(string texturePath)
+        private static Frame LoadTextureAsFrame(string texturePath)
         {
             try
             {
-                if (!System.IO.File.Exists(texturePath))
+                if (!File.Exists(texturePath))
                 {
                     Debug.LogWarning($"[CharacterFactory] Texture file not found: {texturePath}");
-                    return new LiveTalk.Core.Frame(); // Return empty frame
+                    return new Frame(); // Return empty frame
                 }
 
-                byte[] textureBytes = System.IO.File.ReadAllBytes(texturePath);
+                byte[] textureBytes = File.ReadAllBytes(texturePath);
                 var texture = new Texture2D(2, 2);
                 
                 if (texture.LoadImage(textureBytes))
@@ -1342,13 +1340,13 @@ namespace LiveTalk.API
                 {
                     Debug.LogError($"[CharacterFactory] Failed to load image from: {texturePath}");
                     UnityEngine.Object.DestroyImmediate(texture);
-                    return new LiveTalk.Core.Frame();
+                    return new Frame();
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 Debug.LogError($"[CharacterFactory] Error loading texture {texturePath}: {ex.Message}");
-                return new LiveTalk.Core.Frame();
+                return new Frame();
             }
         }
 
@@ -1358,7 +1356,7 @@ namespace LiveTalk.API
     /// <summary>
     /// Configuration data structure for loading characters
     /// </summary>
-    [System.Serializable]
+    [Serializable]
     internal class CharacterConfig
     {
         public string name;
@@ -1371,13 +1369,13 @@ namespace LiveTalk.API
     /// <summary>
     /// Data structures for face data JSON deserialization
     /// </summary>
-    [System.Serializable]
+    [Serializable]
     internal class FaceDataContainer
     {
         public FaceRegionData[] faceRegions;
     }
 
-    [System.Serializable]
+    [Serializable]
     internal class FaceRegionData
     {
         public bool hasFace;
@@ -1387,7 +1385,7 @@ namespace LiveTalk.API
         public TextureFilesData textureFiles;
     }
 
-    [System.Serializable]
+    [Serializable]
     internal class BoundingBoxData
     {
         public float x;
@@ -1398,7 +1396,7 @@ namespace LiveTalk.API
         public float w; // For Vector4 data
     }
 
-    [System.Serializable]
+    [Serializable]
     internal class TextureFilesData
     {
         public string croppedFace;

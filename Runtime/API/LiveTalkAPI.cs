@@ -223,19 +223,11 @@ namespace LiveTalk.API
         /// <param name="audioClip">Speech audio clip</param>
         /// <returns>OutputStream for receiving frames as they're generated</returns>
         internal OutputStream GenerateTalkingHeadWithPreloadedData(
-            List<float[]> preloadedLatents, 
-            List<FaceData> preloadedFaceData, 
+            AvatarData avatarData, 
             AudioClip audioClip)
         {
             if (_avatarController == null)
                 throw new InvalidOperationException("Avatar controller is required for streaming operations. Use constructor with AvatarController parameter.");
-                
-            if (preloadedLatents == null || preloadedLatents.Count == 0)
-                throw new ArgumentException("Preloaded latents are required");
-                
-            if (preloadedFaceData == null || preloadedFaceData.Count == 0)
-                throw new ArgumentException("Preloaded face data is required");
-                
             if (audioClip == null)
                 throw new ArgumentException("Audio clip is required");
                 
@@ -246,7 +238,7 @@ namespace LiveTalk.API
             var stream = new OutputStream(estimatedFrames);
             
             // Generate using MuseTalk with preloaded avatar data
-            _avatarController.StartCoroutine(_museTalk.GenerateWithPreloadedDataAsync(audioClip, preloadedLatents, preloadedFaceData, stream));
+            _avatarController.StartCoroutine(_museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, stream));
             return stream;
         }
 
