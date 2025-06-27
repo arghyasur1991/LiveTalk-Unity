@@ -8,6 +8,7 @@ using UnityEngine;
 using UnityEngine.Video;
 using SparkTTS;
 using SparkTTS.Utils;
+using Newtonsoft.Json;
 
 namespace LiveTalk.API
 {
@@ -122,7 +123,7 @@ namespace LiveTalk.API
                 speed = Speed, 
                 intro = Intro
             };
-            string characterConfigJson = JsonUtility.ToJson(characterConfig);
+            string characterConfigJson = JsonConvert.SerializeObject(characterConfig, Formatting.Indented);
             var writeConfigTask = File.WriteAllTextAsync(Path.Combine(characterFolder, "character.json"), characterConfigJson);
             yield return new WaitUntil(() => writeConfigTask.IsCompleted);
 
@@ -150,7 +151,7 @@ namespace LiveTalk.API
             // Step 2: Generate driving frames for each expression
             var expressions = new string[] { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
             
-            for (int expressionIndex = 0; expressionIndex < expressions.Length; expressionIndex++)
+            for (int expressionIndex = 0; expressionIndex < 0; expressionIndex++)
             {
                 string expression = expressions[expressionIndex];
                 string expressionFolder = Path.Combine(drivingFramesFolder, $"expression-{expressionIndex}");
@@ -172,7 +173,7 @@ namespace LiveTalk.API
 
             // Step 3: Generate voice sample using SparkTTS
             var voiceTask = GenerateVoiceSample(voiceFolder);
-            yield return new UnityEngine.WaitUntil(() => voiceTask.IsCompleted);
+            yield return new WaitUntil(() => voiceTask.IsCompleted);
 
             Debug.Log($"[Character] Avatar creation completed for {Name}");
         }
@@ -539,74 +540,61 @@ namespace LiveTalk.API
         /// </summary>
         private async Task GenerateVoiceSample(string voiceFolder)
         {
-            try
+            // Convert enums to string parameters for SparkTTS
+            string genderParam = ConvertGenderToString(Gender);
+            string pitchParam = ConvertPitchToString(Pitch);
+            string speedParam = ConvertSpeedToString(Speed);
+
+            Debug.Log($"[Character] Generating voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
+
+            var characterVoice = await CharacterFactory._characterVoiceFactory.CreateFromStyleAsync(
+                gender: genderParam,
+                pitch: pitchParam,
+                speed: speedParam,
+                referenceText: Intro ?? "Hello, I am a character."
+            );
+
+            if (characterVoice != null)
             {
-                // Convert enums to string parameters for SparkTTS
-                string genderParam = ConvertGenderToString(Gender);
-                string pitchParam = ConvertPitchToString(Pitch);
-                string speedParam = ConvertSpeedToString(Speed);
+                // Generate the voice sample
+                var audioClip = characterVoice.ReferenceClip;
 
-                Debug.Log($"[Character] Generating voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
-
-                // Use SparkTTS CharacterVoiceFactory to create a voice
-                var voiceFactory = new CharacterVoiceFactory();
-                var characterVoice = await voiceFactory.CreateFromStyleAsync(
-                    gender: genderParam,
-                    pitch: pitchParam,
-                    speed: speedParam,
-                    referenceText: Intro ?? "Hello, I am a character in this mystery."
-                );
-
-                if (characterVoice != null)
+                if (audioClip != null)
                 {
-                    // Generate the voice sample
-                    var audioClip = await characterVoice.GenerateSpeechAsync(
-                        Intro ?? "Hello, I am a character in this mystery."
-                    );
+                    // Convert AudioClip to WAV and save
+                    string samplePath = Path.Combine(voiceFolder, "sample.wav");
+                    await SaveAudioClipAsWAV(audioClip, samplePath);
+                    Debug.Log($"[Character] Voice sample saved to: {samplePath}");
 
-                    if (audioClip != null)
+                    // Also save voice config for reference
+                    var voiceConfig = new
                     {
-                        // Convert AudioClip to WAV and save
-                        string samplePath = Path.Combine(voiceFolder, "sample.wav");
-                        await SaveAudioClipAsWAV(audioClip, samplePath);
-                        Debug.Log($"[Character] Voice sample saved to: {samplePath}");
-
-                        // Also save voice config for reference
-                        var voiceConfig = new
-                        {
-                            gender = genderParam,
-                            pitch = pitchParam,
-                            speed = speedParam,
-                            introText = Intro ?? "Hello, I am a character in this mystery.",
-                            timestamp = DateTime.UtcNow,
-                            audioFile = "sample.wav",
-                            sampleRate = audioClip.frequency,
-                            channels = audioClip.channels,
-                            length = audioClip.length
-                        };
-                        
-                        string configPath = Path.Combine(voiceFolder, "voice_config.json");
-                        string configJson = Newtonsoft.Json.JsonConvert.SerializeObject(voiceConfig, Newtonsoft.Json.Formatting.Indented);
-                        await File.WriteAllTextAsync(configPath, configJson);
-                    }
-                    else
-                    {
-                        Debug.LogError("[Character] Failed to generate voice sample audio");
-                    }
-
-                    // Clean up
-                    characterVoice.Dispose();
+                        gender = genderParam,
+                        pitch = pitchParam,
+                        speed = speedParam,
+                        introText = Intro ?? "Hello, I am a character in this mystery.",
+                        timestamp = DateTime.UtcNow,
+                        audioFile = "sample.wav",
+                        sampleRate = audioClip.frequency,
+                        channels = audioClip.channels,
+                        length = audioClip.length
+                    };
+                    
+                    string configPath = Path.Combine(voiceFolder, "voice_config.json");
+                    string configJson = Newtonsoft.Json.JsonConvert.SerializeObject(voiceConfig, Newtonsoft.Json.Formatting.Indented);
+                    await File.WriteAllTextAsync(configPath, configJson);
                 }
                 else
                 {
-                    Debug.LogError("[Character] Failed to create character voice");
+                    Debug.LogError("[Character] Failed to generate voice sample audio");
                 }
 
-                voiceFactory.Dispose();
+                // Clean up
+                characterVoice.Dispose();
             }
-            catch (Exception ex)
+            else
             {
-                Debug.LogError($"[Character] Error generating voice sample: {ex.Message}");
+                Debug.LogError("[Character] Failed to create character voice");
             }
         }
 
@@ -676,6 +664,7 @@ namespace LiveTalk.API
     public static class CharacterFactory
     {
         internal static LiveTalkAPI _liveTalkAPI = null;
+        internal static CharacterVoiceFactory _characterVoiceFactory = null;
         private static bool _initialized = false;
 
         public static void Initialize(
@@ -686,6 +675,7 @@ namespace LiveTalk.API
             {
                 _liveTalkAPI = LivePortraitMuseTalkFactory.Create(avatarController);
                 Character.saveLocation = saveLocation;
+                _characterVoiceFactory = new CharacterVoiceFactory();
                 _initialized = true;
             }
         }
