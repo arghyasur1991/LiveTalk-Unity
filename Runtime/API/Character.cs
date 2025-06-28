@@ -1072,52 +1072,10 @@ namespace LiveTalk.API
                     var elapsed2b = start2.Elapsed;
                     Debug.Log($"[CharacterFactory] Face data loaded in {elapsed2b.TotalMilliseconds - elapsed2a.TotalMilliseconds} milliseconds");
 
-                    // Load frames
-                    // yield return LoadExpressionFrames(expressionFolder, expressionData);
-
-                    var elapsed2c = start2.Elapsed;
-                    Debug.Log($"[CharacterFactory] Frames loaded in {elapsed2c.TotalMilliseconds - elapsed2b.TotalMilliseconds} milliseconds");
-
                     character.LoadedExpressions[expressionIndex] = expressionData;
                     Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");
                 }
             }
-        }
-
-        private static void LoadImageFromBytes(Character.ExpressionData expressionData, byte[] frameBytes, int i)
-        {
-            var frameBytesSpan = new ReadOnlySpan<byte>(frameBytes);
-            var texture = new Texture2D(2, 2);
-            if (ImageConversion.LoadImage(texture, frameBytesSpan, false))
-            {
-                Debug.Log($"[CharacterFactory] Loaded frame {i} width {texture.width} height {texture.height}");
-                expressionData.Data.FaceRegions[i].OriginalTexture = 
-                    TextureUtils.Texture2DToFrame(TextureUtils.ConvertTexture2DToRGB24(texture));
-            }
-        }
-
-        /// <summary>
-        /// Load frames for a specific expression from numbered PNGs
-        /// </summary>
-        private static IEnumerator LoadExpressionFrames(string expressionFolder, Character.ExpressionData expressionData)
-        {
-            var frameFiles = Directory.GetFiles(expressionFolder, "*.png")
-                .Where(f => Path.GetFileName(f).StartsWith("00"))
-                .OrderBy(f => f)
-                .ToArray();
-            List<Task> loadTasks = new();
-            for (int i = 0; i < frameFiles.Length; i++)
-            {
-                loadTasks.Add(Task.Run(async () =>
-                {
-                    string frameFile = frameFiles[i];
-                    Debug.Log($"[CharacterFactory] Loading frame {i} from {frameFile}");
-                    var frameBytes = await File.ReadAllBytesAsync(frameFile);
-                    LoadImageFromBytes(expressionData, frameBytes, i);
-                }));
-            }
-
-            yield return new WaitUntil(() => loadTasks.All(t => t.IsCompleted));
         }
 
         /// <summary>
@@ -1264,8 +1222,10 @@ namespace LiveTalk.API
                 
                 if (faceDataJson?.faceRegions != null)
                 {
-                    foreach (var faceRegion in faceDataJson.faceRegions)
+                    var tasks = new List<Task>();
+                    for (int i = 0; i < faceDataJson.faceRegions.Length; i++)
                     {
+                        var faceRegion = faceDataJson.faceRegions[i];
                         // Create complete face data structure with all loaded textures
                         var faceData = new FaceData
                         {
@@ -1275,7 +1235,7 @@ namespace LiveTalk.API
                                 faceRegion.boundingBox.y,
                                 faceRegion.boundingBox.width,
                                 faceRegion.boundingBox.height
-                            ),
+                            ),  
                             AdjustedFaceBbox = new Vector4(
                                 faceRegion.adjustedFaceBbox.x,
                                 faceRegion.adjustedFaceBbox.y,
@@ -1287,14 +1247,12 @@ namespace LiveTalk.API
                                 faceRegion.cropBox.y,
                                 faceRegion.cropBox.z,
                                 faceRegion.cropBox.w
-                            )
+                            )   
                         };
-
-                        // Load all saved textures from the texture files
-                        await LoadFaceTextures(faceData, faceRegion, expressionFolder);
-
                         expressionData.Data.FaceRegions.Add(faceData);
+                        tasks.Add(LoadFaceTextures(faceData, faceRegion, expressionFolder));
                     }
+                    await Task.WhenAll(tasks);
                 }
             }
             catch (Exception ex)
@@ -1310,12 +1268,16 @@ namespace LiveTalk.API
         {
             try
             {
+                var tasks = new List<Task>();
                 // Load cropped face texture
                 if (!string.IsNullOrEmpty(faceRegion.textureFiles?.croppedFace))
                 {
                     string croppedPath = Path.Combine(expressionFolder, faceRegion.textureFiles.croppedFace);
                     (int width, int height) = (faceRegion.textureDimensions.croppedFace.width, faceRegion.textureDimensions.croppedFace.height);
-                    faceData.CroppedFaceTexture = await LoadTextureAsFrame(croppedPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.CroppedFaceTexture = await LoadTextureAsFrame(croppedPath, width, height);
+                    }));
                 }
 
                 // Load face large texture
@@ -1323,7 +1285,10 @@ namespace LiveTalk.API
                 {
                     string faceLargePath = Path.Combine(expressionFolder, faceRegion.textureFiles.faceLarge);
                     (int width, int height) = (faceRegion.textureDimensions.faceLarge.width, faceRegion.textureDimensions.faceLarge.height);
-                    faceData.FaceLarge = await LoadTextureAsFrame(faceLargePath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.FaceLarge = await LoadTextureAsFrame(faceLargePath, width, height);
+                    }));
                 }
 
                 // Load segmentation mask
@@ -1331,7 +1296,10 @@ namespace LiveTalk.API
                 {
                     string segmentationPath = Path.Combine(expressionFolder, faceRegion.textureFiles.segmentationMask);
                     (int width, int height) = (faceRegion.textureDimensions.segmentationMask.width, faceRegion.textureDimensions.segmentationMask.height);
-                    faceData.SegmentationMask = await LoadTextureAsFrame(segmentationPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.SegmentationMask = await LoadTextureAsFrame(segmentationPath, width, height);
+                    }));
                 }
 
                 // Load mask small
@@ -1339,7 +1307,10 @@ namespace LiveTalk.API
                 {
                     string maskSmallPath = Path.Combine(expressionFolder, faceRegion.textureFiles.maskSmall);
                     (int width, int height) = (faceRegion.textureDimensions.maskSmall.width, faceRegion.textureDimensions.maskSmall.height);
-                    faceData.MaskSmall = await LoadTextureAsFrame(maskSmallPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.MaskSmall = await LoadTextureAsFrame(maskSmallPath, width, height);
+                    }));
                 }
 
                 // Load original texture
@@ -1347,7 +1318,10 @@ namespace LiveTalk.API
                 {
                     string originalPath = Path.Combine(expressionFolder, faceRegion.textureFiles.original);
                     (int width, int height) = (faceRegion.textureDimensions.original.width, faceRegion.textureDimensions.original.height);
-                    faceData.OriginalTexture = await LoadTextureAsFrame(originalPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.OriginalTexture = await LoadTextureAsFrame(originalPath, width, height);
+                    }));
                 }
 
                 // Load full mask
@@ -1355,7 +1329,10 @@ namespace LiveTalk.API
                 {
                     string fullMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.fullMask);
                     (int width, int height) = (faceRegion.textureDimensions.fullMask.width, faceRegion.textureDimensions.fullMask.height);
-                    faceData.FullMask = await LoadTextureAsFrame(fullMaskPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.FullMask = await LoadTextureAsFrame(fullMaskPath, width, height);
+                    }));
                 }
 
                 // Load boundary mask
@@ -1363,7 +1340,10 @@ namespace LiveTalk.API
                 {
                     string boundaryMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.boundaryMask);
                     (int width, int height) = (faceRegion.textureDimensions.boundaryMask.width, faceRegion.textureDimensions.boundaryMask.height);
-                    faceData.BoundaryMask = await LoadTextureAsFrame(boundaryMaskPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.BoundaryMask = await LoadTextureAsFrame(boundaryMaskPath, width, height);
+                    }));
                 }
 
                 // Load blurred mask
@@ -1371,8 +1351,13 @@ namespace LiveTalk.API
                 {
                     string blurredMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.blurredMask);
                     (int width, int height) = (faceRegion.textureDimensions.blurredMask.width, faceRegion.textureDimensions.blurredMask.height);
-                    faceData.BlurredMask = await LoadTextureAsFrame(blurredMaskPath, width, height);
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        faceData.BlurredMask = await LoadTextureAsFrame(blurredMaskPath, width, height);
+                    }));
                 }
+
+                await Task.WhenAll(tasks);
             }
             catch (Exception ex)
             {
