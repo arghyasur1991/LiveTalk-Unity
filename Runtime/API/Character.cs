@@ -9,8 +9,6 @@ using UnityEngine.Video;
 using SparkTTS;
 using SparkTTS.Utils;
 using Newtonsoft.Json;
-using System.Diagnostics;
-using Debug = UnityEngine.Debug;
 
 namespace LiveTalk.API
 {
@@ -904,7 +902,7 @@ namespace LiveTalk.API
             Action<Character> onComplete,
             Action<Exception> onError)
         {
-            var start = Stopwatch.StartNew();
+            var start = System.Diagnostics.Stopwatch.StartNew();
             // Load character.json
             string configPath = Path.Combine(characterFolder, "character.json");
             if (!File.Exists(configPath))
@@ -922,9 +920,6 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            var elapsed1 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character config read in {elapsed1.TotalMilliseconds} milliseconds");
-
             // Parse character config
             var configJson = readConfigTask.Result;
             CharacterConfig config;
@@ -937,9 +932,6 @@ namespace LiveTalk.API
                 onError?.Invoke(new Exception($"Failed to parse character config: {ex.Message}"));
                 yield break;
             }
-
-            var elapsed2 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character config parsed in {elapsed2.TotalMilliseconds - elapsed1.TotalMilliseconds} milliseconds");
 
             // Load character image
             string imagePath = Path.Combine(characterFolder, "image.png");
@@ -960,8 +952,6 @@ namespace LiveTalk.API
 
             // Create texture from image bytes
             var imageBytes = readImageTask.Result;
-            var elapsed2a = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character image read in {elapsed2a.TotalMilliseconds - elapsed2.TotalMilliseconds} milliseconds");
 
             var texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
             if (!texture.LoadImage(imageBytes))
@@ -969,9 +959,6 @@ namespace LiveTalk.API
                 onError?.Invoke(new Exception("Failed to load character image into texture"));
                 yield break;
             }
-
-            var elapsed3 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character image loaded in {elapsed3.TotalMilliseconds - elapsed2a.TotalMilliseconds} milliseconds");
 
             // Create character object
             var character = new Character(
@@ -987,18 +974,10 @@ namespace LiveTalk.API
                 CharacterFolder = characterFolder
             };
 
-            var elapsed4 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character object created in {elapsed4.TotalMilliseconds - elapsed3.TotalMilliseconds} milliseconds");
-
             // Load all character data (expressions, voice, etc.)
             yield return LoadCharacterDataContents(character);
-
-            var elapsed5 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character data loaded in {elapsed5.TotalMilliseconds - elapsed4.TotalMilliseconds} milliseconds");
-
-            var elapsed6 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Character data loaded successfully for {character.Name} in {elapsed6.TotalMilliseconds} milliseconds");
-
+            var elapsed = start.Elapsed;
+            Debug.Log($"[CharacterFactory] Character data loaded in {elapsed.TotalMilliseconds} milliseconds");
             onComplete?.Invoke(character);
         }
 
@@ -1009,18 +988,11 @@ namespace LiveTalk.API
         {
             Debug.Log($"[CharacterFactory] Loading character data for {character.Name}");
 
-            var start = Stopwatch.StartNew();
             // Load expressions data
             yield return LoadExpressionsData(character);
 
-            var elapsed1 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Expressions data loaded in {elapsed1.TotalMilliseconds} milliseconds");
-
             // Load voice data
             yield return LoadVoiceData(character);
-
-            var elapsed2 = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Voice data loaded in {elapsed2.TotalMilliseconds - elapsed1.TotalMilliseconds} milliseconds");
 
             character.IsDataLoaded = true;
             Debug.Log($"[CharacterFactory] Character data loaded successfully for {character.Name}");
@@ -1030,8 +1002,7 @@ namespace LiveTalk.API
         /// Load all expression data (frames, latents, face data)
         /// </summary>
         private static IEnumerator LoadExpressionsData(Character character)
-        {
-            var start = Stopwatch.StartNew();
+        {   
             string drivingFramesFolder = Path.Combine(character.CharacterFolder, "drivingFrames");
             if (!Directory.Exists(drivingFramesFolder))
             {
@@ -1042,35 +1013,24 @@ namespace LiveTalk.API
             var expressionFolders = Directory.GetDirectories(drivingFramesFolder);
             Debug.Log($"[CharacterFactory] Found {expressionFolders.Length} expression folders");
 
-            var elapsed1a = start.Elapsed;
-            Debug.Log($"[CharacterFactory] Found {expressionFolders.Length} expression folders in {elapsed1a.TotalMilliseconds} milliseconds");
-
             for (int i = 0; i < expressionFolders.Length; i++)
             {
                 string expressionFolder = expressionFolders[i];
                 string folderName = Path.GetFileName(expressionFolder);
                 
                 // Extract expression index from folder name (expression-0, expression-1, etc.)
-                if (folderName.StartsWith("expression-") && int.TryParse(folderName.Substring(11), out int expressionIndex))
+                if (folderName.StartsWith("expression-") && int.TryParse(folderName[11..], out int expressionIndex))
                 {
                     var expressionData = new Character.ExpressionData
                     {
                         ExpressionName = GetExpressionName(expressionIndex)
                     };
 
-                    var start2 = Stopwatch.StartNew();
-
                     // Load latents
                     yield return LoadExpressionLatents(expressionFolder, expressionData);
 
-                    var elapsed2a = start2.Elapsed;
-                    Debug.Log($"[CharacterFactory] Latents loaded in {elapsed2a.TotalMilliseconds} milliseconds");
-
                     // Load face data
                     yield return LoadExpressionFaceData(expressionFolder, expressionData);
-
-                    var elapsed2b = start2.Elapsed;
-                    Debug.Log($"[CharacterFactory] Face data loaded in {elapsed2b.TotalMilliseconds - elapsed2a.TotalMilliseconds} milliseconds");
 
                     character.LoadedExpressions[expressionIndex] = expressionData;
                     Debug.Log($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");
