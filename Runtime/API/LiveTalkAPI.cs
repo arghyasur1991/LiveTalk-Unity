@@ -183,7 +183,6 @@ namespace LiveTalk.API
         /// </summary>
         /// <param name="avatarTexture">Avatar image texture</param>
         /// <param name="audioClip">Speech audio clip</param>
-        /// <param name="batchSize">Processing batch size (default: 4)</param>
         /// <returns>MuseTalkStream for receiving frames as they're generated</returns>
         public OutputStream GenerateTalkingHeadAsync(Texture2D avatarTexture, string talkingHeadFolderPath, AudioClip audioClip)
         {
@@ -201,10 +200,7 @@ namespace LiveTalk.API
                 avatarTextures = new List<Texture2D> { avatarTexture };
             }
 
-            var input = new MuseTalkInput(avatarTextures.ToArray(), audioClip)
-            {
-                BatchSize = _config.BatchSize
-            };
+            var input = new MuseTalkInput(avatarTextures.ToArray(), audioClip);
             
             // Estimate frame count based on audio length (approximation)
             int estimatedFrames = Mathf.CeilToInt(audioClip.length * 25f); // ~25 FPS estimate

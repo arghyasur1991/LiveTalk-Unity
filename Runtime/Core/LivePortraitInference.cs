@@ -87,9 +87,7 @@ namespace LiveTalk.Core
             _motionExtractor = new Model(_config, "motion_extractor", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
             _stitching = new Model(_config, "stitching", MODEL_RELATIVE_PATH);
             _warpingSpade = new Model(_config, "warping_spade", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
-            
-            // Initialize consolidated face analysis
-            _faceAnalysis = new FaceAnalysis(_config);
+            _faceAnalysis = FaceAnalysis.CreateOrGetInstance(_config);
             
             // Verify all models initialized
             bool allInitialized = _appearanceFeatureExtractor != null &&

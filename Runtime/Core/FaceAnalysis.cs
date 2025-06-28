@@ -102,13 +102,23 @@ namespace LiveTalk.Core
         // Landmark parameters
         private const int LandmarkInputSize = 192;
         private const int LandmarkRunnerSize = 224;
-        
-        // Cache for anchor centers
+
+        // Cache for anchor centers. Make sure to clear this cache after processing each frame.
         private readonly Dictionary<string, float[,]> _centerCache = new();
+        private static FaceAnalysis _instance = null;
+
+        public static FaceAnalysis CreateOrGetInstance(LiveTalkConfig config)
+        {
+            if (_instance == null)
+            {
+                _instance = new FaceAnalysis(config);
+            }
+            return _instance;
+        }
         
         public bool IsInitialized { get; private set; }
         
-        public FaceAnalysis(LiveTalkConfig config)
+        private FaceAnalysis(LiveTalkConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             
@@ -479,7 +489,7 @@ namespace LiveTalk.Core
                     faces.Add(face);
                 }
             }
-            
+            _centerCache.Clear();            
             return faces;
         }
         

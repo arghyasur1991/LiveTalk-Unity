@@ -12,7 +12,6 @@ namespace LiveTalk.API
         public string ModelPath = "";
         public string Version = "v15"; // only v15 is supported. Not used for now.
         public string Device = "cpu"; // "cpu" or "cuda"
-        public int BatchSize { get; internal set; } = 1;
         public float ExtraMargin { get; internal set; } = 10f; // Additional margin for v15
         // Disk caching configuration
         public bool EnableDiskCache = false; // Enable persistent disk caching for avatar processing

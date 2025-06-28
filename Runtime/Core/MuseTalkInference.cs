@@ -31,11 +31,6 @@ namespace LiveTalk.Core
         /// </summary>
         public AudioClip AudioClip { get; set; }
         
-        /// <summary>
-        /// Batch size for processing
-        /// </summary>
-        public int BatchSize { get; internal set; } = 1;
-        
         public MuseTalkInput(Texture2D avatarTexture, AudioClip audioClip)
         {
             AvatarTextures = new[] { avatarTexture ?? throw new ArgumentNullException(nameof(avatarTexture)) };
@@ -78,7 +73,6 @@ namespace LiveTalk.Core
         private bool _initialized = false;
         private bool _disposed = false;
         private FaceAnalysis _faceAnalysis;
-        private AvatarData _avatarData;
         
 
         
@@ -113,7 +107,7 @@ namespace LiveTalk.Core
             _vaeEncoder = new Model(_config, "vae_encoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
             _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
             _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH, ExecutionProvider.CPU, Precision.FP32);
-            _faceAnalysis = new FaceAnalysis(_config);
+            _faceAnalysis = FaceAnalysis.CreateOrGetInstance(_config);
             _whisperModel = new WhisperModel(_config);
         }
 
@@ -132,32 +126,11 @@ namespace LiveTalk.Core
                 
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
-                
-            Logger.Log($"[MuseTalkInference] === STARTING MUSETALK STREAMING GENERATION ===");
-            Logger.Log($"[MuseTalkInference] Version: {_config.Version}, Batch Size: {input.BatchSize}");
-            Logger.Log($"[MuseTalkInference] Avatar Images: {input.AvatarTextures.Length}, Audio: {input.AudioClip.name} ({input.AudioClip.length:F2}s)");
-            
-            // Step 1: Process avatar images and extract face regions
-            Logger.Log("[MuseTalkInference] STAGE 1: Processing avatar images...");
             var avatarTask = ProcessAvatarImages(input.AvatarTextures);
             yield return new WaitUntil(() => avatarTask.IsCompleted);
             var avatarData = avatarTask.Result;
-            Logger.Log($"[MuseTalkInference] Stage 1 completed - Processed {avatarData.FaceRegions.Count} faces");
-            
-            // Step 2: Process audio and extract features
-            Logger.Log("[MuseTalkInference] STAGE 2: Processing audio...");
-            var audioTask = ProcessAudio(input.AudioClip);
-            yield return new WaitUntil(() => audioTask.IsCompleted);
-            var audioFeatures = audioTask.Result;
-            stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
-            Logger.Log($"[MuseTalkInference] Stage 2 completed - Generated {audioFeatures.FeatureChunks.Count} audio chunks");
-            
-            // Step 3: Generate video frames in streaming mode
-            Logger.Log("[MuseTalkInference] STAGE 3: Generating video frames (streaming)...");
-            yield return GenerateFramesStreaming(avatarData, audioFeatures, input.BatchSize, stream);
-            
-            stream.Finished = true;
-            Logger.Log($"[MuseTalkInference] === STREAMING GENERATION COMPLETED ===");
+
+            yield return GenerateWithPreloadedDataAsync(input.AudioClip, avatarData, stream);
         }
 
         /// <summary>
@@ -174,23 +147,15 @@ namespace LiveTalk.Core
                 InitializeModels();
                 _initialized = true;
             }
-                
-            Logger.Log($"[MuseTalkInference] === STARTING MUSETALK PRELOADED DATA GENERATION ===");
             
             // Step 1: Process audio and extract features (same as normal workflow)
-            Logger.Log("[MuseTalkInference] STAGE 1: Processing audio...");
             var audioTask = ProcessAudio(audioClip);
             yield return new WaitUntil(() => audioTask.IsCompleted);
             var audioFeatures = audioTask.Result;
             stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
-            Logger.Log($"[MuseTalkInference] Stage 1 completed - Generated {audioFeatures.FeatureChunks.Count} audio chunks");
-            
-            // Step 2: Generate video frames using preloaded data (streaming mode)
-            Logger.Log("[MuseTalkInference] STAGE 2: Generating video frames with preloaded data (streaming)...");
-            yield return GenerateFramesStreaming(avatarData, audioFeatures, 1, stream);
+            yield return GenerateFramesStreaming(avatarData, audioFeatures, stream);
             
             stream.Finished = true;
-            Logger.Log($"[MuseTalkInference] === PRELOADED DATA GENERATION COMPLETED ===");
         }
 
         /// <summary>
@@ -420,8 +385,6 @@ namespace LiveTalk.Core
             {
                 Logger.LogWarning($"[MuseTalkInference] Latent count ({avatarData.Latents.Count}) does not match face region count ({avatarData.FaceRegions.Count}). Some faces may have failed processing.");
             }
-
-            _avatarData = avatarData;
             Logger.Log($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
                 $"face regions with {avatarData.Latents.Count} latent sets across {avatarTextures.Length} avatar textures");            
             return avatarData;
@@ -595,19 +558,17 @@ namespace LiveTalk.Core
         /// Generate video frames using UNet and VAE decoder (STREAMING)
         /// Similar to LivePortrait - yields frames as they're generated for real-time feedback
         /// </summary>
-        private IEnumerator GenerateFramesStreaming(AvatarData avatarData, AudioFeatures audioFeatures, int batchSize, OutputStream stream)
+        private IEnumerator GenerateFramesStreaming(AvatarData avatarData, AudioFeatures audioFeatures, OutputStream stream)
         {
             // Use audio length to determine frame count (like Python implementation)
             int numFrames = audioFeatures.FeatureChunks.Count;
-            int numBatches = Mathf.CeilToInt((float)numFrames / batchSize);
             
             if (avatarData.Latents.Count == 0)
             {
                 Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
                 yield break;
-            }
-            _avatarData = avatarData;            
-            Logger.Log($"[MuseTalkInference] Processing {numFrames} frames in {numBatches} batches of {batchSize}");
+            }         
+            Logger.Log($"[MuseTalkInference] Processing {numFrames}");
             
             // Create cycled latent list for smooth animation
             var cycleDLatents = new List<float[]>(avatarData.Latents);
@@ -615,17 +576,11 @@ namespace LiveTalk.Core
             reversedLatents.Reverse();
             cycleDLatents.AddRange(reversedLatents);
             
-            for (int batchIdx = 0; batchIdx < numBatches; batchIdx++)
-            {   
-                int startIdx = batchIdx * batchSize;
-                int endIdx = Math.Min(startIdx + batchSize, numFrames);
-                int actualBatchSize = endIdx - startIdx;
-                
-                Logger.Log($"[MuseTalkInference] Processing batch {batchIdx + 1}/{numBatches} (frames {startIdx}-{endIdx - 1})");
-                
+            for (int idx = 0; idx < numFrames; idx++)
+            {                
                 // Prepare batch data using the frame index to cycle through latents
-                var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, startIdx, actualBatchSize);
-                var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, startIdx, actualBatchSize);
+                var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
+                var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
                 
                 // Add positional encoding to audio (async)
                 var audioWithPETask = AddPositionalEncoding(audioBatch);
@@ -638,18 +593,15 @@ namespace LiveTalk.Core
                 var predictedLatents = predictedLatentsTask.Result;
                 
                 // Decode latents to images (async)
-                var batchFramesTask = DecodeLatents(predictedLatents, actualBatchSize, startIdx);
+                var batchFramesTask = DecodeLatents(predictedLatents, idx, avatarData);
                 yield return new WaitUntil(() => batchFramesTask.IsCompleted);
-                var batchFrames = batchFramesTask.Result;
+                var frame = batchFramesTask.Result;
                 
                 // Stream frames to output as they're generated
-                foreach (var frame in batchFrames)
-                {
-                    stream.queue.Enqueue(frame);
-                }
+                stream.queue.Enqueue(frame);
                 
                 // Log batch performance
-                Logger.Log($"[MuseTalkInference] Batch {batchIdx} completed ({actualBatchSize} frames) - streamed to output");
+                Logger.Log($"[MuseTalkInference] Batch {idx} completed - streamed to output");
                 
                 // Yield control back to allow processing/rendering
                 yield return null;
@@ -657,132 +609,64 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Generate video frames using UNet and VAE decoder (LEGACY)
-        /// For backward compatibility - returns all frames at once
-        /// </summary>
-        private async Task<List<Texture2D>> GenerateFrames(AvatarData avatarData, AudioFeatures audioFeatures, int batchSize)
-        {
-            var frames = new List<Texture2D>();
-            
-            // Use audio length to determine frame count (like Python implementation)
-            int numFrames = audioFeatures.FeatureChunks.Count;
-            int numBatches = Mathf.CeilToInt((float)numFrames / batchSize);
-            
-            if (avatarData.Latents.Count == 0)
-            {
-                Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
-                return frames;
-            }
-            
-            Logger.Log($"[MuseTalkInference] Processing {numFrames} frames in {numBatches} batches of {batchSize}");
-            
-            // Create cycled latent list for smooth animation
-            var cycleDLatents = new List<float[]>(avatarData.Latents);
-            var reversedLatents = new List<float[]>(avatarData.Latents);
-            reversedLatents.Reverse();
-            cycleDLatents.AddRange(reversedLatents);
-            
-            for (int batchIdx = 0; batchIdx < numBatches; batchIdx++)
-            {   
-                int startIdx = batchIdx * batchSize;
-                int endIdx = Math.Min(startIdx + batchSize, numFrames);
-                int actualBatchSize = endIdx - startIdx;
-                
-                Logger.Log($"[MuseTalkInference] Processing batch {batchIdx + 1}/{numBatches} (frames {startIdx}-{endIdx - 1})");
-                
-                // Prepare batch data using the frame index to cycle through latents
-                var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, startIdx, actualBatchSize);
-                var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, startIdx, actualBatchSize);
-                
-                // Add positional encoding to audio
-                var audioWithPE = await AddPositionalEncoding(audioBatch);
-                
-                // Run UNet inference
-                var predictedLatents = await RunUNet(latentBatch, audioWithPE);
-                
-                // Decode latents to images
-                var batchFrames = await DecodeLatents(predictedLatents, actualBatchSize, startIdx);
-                
-                frames.AddRange(batchFrames);
-                
-                // Log batch performance
-                Logger.Log($"[MuseTalkInference] Batch {batchIdx} completed ({actualBatchSize} frames)");
-            }
-            
-            return frames;
-        }
-        
-        /// <summary>
         /// Prepare latent batch with proper cycling for frame-based animation
         /// CRITICAL FIX: Match Python input_latent_list_cycle indexing exactly
         /// </summary>
-        private DenseTensor<float> PrepareLatentBatchWithCycling(List<float[]> cycleDLatents, int startIdx, int batchSize)
+        private DenseTensor<float> PrepareLatentBatchWithCycling(List<float[]> cycleDLatents, int startIdx)
         {
             // CRITICAL FIX: Match Python tensor preparation exactly
             // Python processes latents as [1, 8, 32, 32] then concatenates for batch
             const int channels = 8, height = 32, width = 32;
-            int totalSize = batchSize * channels * height * width;
+            int totalSize = channels * height * width;
             var flatBatch = new float[totalSize];
+            // Match Python latent cycling exactly
+            int globalFrameIdx = startIdx;
+            var latentIdx = globalFrameIdx % cycleDLatents.Count;
+            var latent = cycleDLatents[latentIdx];
             
-            for (int i = 0; i < batchSize; i++)
+            // Verify latent size
+            const int expectedLatentSize = 1 * channels * height * width;
+            if (latent.Length != expectedLatentSize)
             {
-                // Match Python latent cycling exactly
-                int globalFrameIdx = startIdx + i;
-                var latentIdx = globalFrameIdx % cycleDLatents.Count;
-                var latent = cycleDLatents[latentIdx];
-                
-                // Verify latent size
-                const int expectedLatentSize = 1 * channels * height * width;
-                if (latent.Length != expectedLatentSize)
+                throw new InvalidOperationException($"Latent size mismatch: got {latent.Length}, expected {expectedLatentSize}");
+            }
+            
+            // OPTIMIZATION 4: Use unsafe copy for latent batch preparation
+            const int singleLatentSize = channels * height * width;
+            
+            unsafe
+            {
+                fixed (float* src = latent)
+                fixed (float* dst = flatBatch)
                 {
-                    throw new InvalidOperationException($"Latent size mismatch: got {latent.Length}, expected {expectedLatentSize}");
-                }
-                
-                // OPTIMIZATION 4: Use unsafe copy for latent batch preparation
-                const int singleLatentSize = channels * height * width;
-                int batchOffset = i * singleLatentSize;
-                
-                unsafe
-                {
-                    fixed (float* src = latent)
-                    fixed (float* dst = &flatBatch[batchOffset])
-                    {
-                        Buffer.MemoryCopy(src, dst, singleLatentSize * sizeof(float), singleLatentSize * sizeof(float));
-                    }
+                    Buffer.MemoryCopy(src, dst, singleLatentSize * sizeof(float), singleLatentSize * sizeof(float));
                 }
             }
             
             // Return tensor with proper batch dimension: [batchSize, 8, 32, 32]
-            return new DenseTensor<float>(flatBatch, new[] { batchSize, channels, height, width });
+            return new DenseTensor<float>(flatBatch, new[] { 1, channels, height, width });
         }
         
         /// <summary>
         /// Prepare audio batch for processing
         /// </summary>
-        private DenseTensor<float> PrepareAudioBatch(List<float[]> audioChunks, int startIdx, int batchSize)
+        private DenseTensor<float> PrepareAudioBatch(List<float[]> audioChunks, int startIdx)
         {
-            // Audio chunks are [50, 384] and we need [batchSize, 50, 384]
             int timeSteps = 50, features = 384;
-            int totalSize = batchSize * timeSteps * features;
+            int totalSize = timeSteps * features;
             var flatBatch = new float[totalSize];
-            
-            for (int i = 0; i < batchSize; i++)
+            var audioIdx = startIdx;
+            if (audioIdx < audioChunks.Count)
             {
-                var audioIdx = startIdx + i;
-                
-                if (audioIdx < audioChunks.Count)
+                var chunk = audioChunks[audioIdx];
+                int batchOffset = 0;
+                for (int idx = 0; idx < chunk.Length && idx < timeSteps * features; idx++)
                 {
-                    var chunk = audioChunks[audioIdx];
-                    int batchOffset = i * timeSteps * features;
-                    
-                    for (int idx = 0; idx < chunk.Length && idx < timeSteps * features; idx++)
-                    {
-                        flatBatch[batchOffset + idx] = chunk[idx];
-                    }
+                    flatBatch[batchOffset + idx] = chunk[idx];
                 }
             }
             
-            return new DenseTensor<float>(flatBatch, new[] { batchSize, timeSteps, features });
+            return new DenseTensor<float>(flatBatch, new[] { 1, timeSteps, features });
         }
         
         /// <summary>
@@ -850,10 +734,9 @@ namespace LiveTalk.Core
         /// Decode latents back to images using VAE decoder and apply seamless blending
         /// OPTIMIZED: Uses reusable batch array and efficient memory operations with zero-copy tensor reuse
         /// </summary>
-        private async Task<List<Texture2D>> DecodeLatents(Tensor<float> unetOutputBatch, int batchSize, int globalStartIdx = 0)
-        {
-            // Run ONNX VAE decoder inference on background thread first            
-            var blendedFrames = await Task.Run(async () =>
+        private async Task<Texture2D> DecodeLatents(Tensor<float> unetOutputBatch, int globalStartIdx, AvatarData avatarData)
+        {      
+            var blendedFrame = await Task.Run(async () =>
             {
                 var tensors = new List<Tensor<float>>();
                 Tensor<float> batchImageOutput = null; // Keep reference alive
@@ -878,7 +761,7 @@ namespace LiveTalk.Core
                     }
                     
                     int imagesPerBatch = imageDims.Aggregate(1, (a, b) => a * b);
-                    int totalElements = imagesPerBatch * batchSize;
+                    int totalElements = imagesPerBatch;
                     
                     if (_reusableBatchArray.Length < totalElements)
                     {
@@ -897,93 +780,69 @@ namespace LiveTalk.Core
                         sourceArray.CopyTo(_reusableBatchArray.AsSpan(0, totalElements));
                     }
                     
-                    for (int b = 0; b < batchSize; b++)
-                    {
-                        int offset = b * imagesPerBatch;
-                        
-                        // Create Memory<float> that references the reusable array directly (no copying!)
-                        var imageMemory = _reusableBatchArray.AsMemory(offset, imagesPerBatch);
-                        var singleImageTensor = new DenseTensor<float>(imageMemory, imageDims);
-                        tensors.Add(singleImageTensor);
-                    }
+                    // Create Memory<float> that references the reusable array directly (no copying!)
+                    var imageMemory = _reusableBatchArray.AsMemory(0, imagesPerBatch);
+                    var singleImageTensor = new DenseTensor<float>(imageMemory, imageDims);
+                    tensors.Add(singleImageTensor);
                 }
                 catch (Exception e)
                 {
                     Logger.LogWarning($"[MuseTalkInference] Batch VAE decoding failed: {e.Message}");
                     throw;
                 }
+                var tensor = tensors[0];
                 
-                var blendedFrames = new List<Frame>();
-                for (int i = 0; i < tensors.Count; i++)
+                // Calculate global frame index for proper numbering
+                int globalFrameIdx = globalStartIdx;
+                
+                // Step 1: Convert tensor to raw decoded texture
+                var rawDecodedTexture = FrameUtils.TensorToFrame(tensor);
+                
+                // Step 2: Resize to face crop dimensions (matching Python cv2.resize)
+                if (avatarData != null && avatarData.FaceRegions.Count > 0)
                 {
-                    var tensor = tensors[i];
-                    
-                    // Calculate global frame index for proper numbering
-                    int globalFrameIdx = globalStartIdx + i;
-                    
-                    // Step 1: Convert tensor to raw decoded texture
-                    var rawDecodedTexture = FrameUtils.TensorToFrame(tensor);
-                    
-                    // Step 2: Resize to face crop dimensions (matching Python cv2.resize)
-                    if (_avatarData != null && _avatarData.FaceRegions.Count > 0)
+                    // Get corresponding face bbox for sizing
+                    int avatarIndex = globalFrameIdx % (2 * avatarData.FaceRegions.Count); // cycled latents
+                    if (avatarIndex >= avatarData.FaceRegions.Count)
                     {
-                        // Get corresponding face bbox for sizing
-                        int avatarIndex = globalFrameIdx % (2 *_avatarData.FaceRegions.Count); // cycled latents
-                        if (avatarIndex >= _avatarData.FaceRegions.Count)
-                        {
-                            avatarIndex = (2 * _avatarData.FaceRegions.Count) - 1 - avatarIndex;
-                        }
-                        var faceData = _avatarData.FaceRegions[avatarIndex];
-                        var bbox = faceData.BoundingBox;
-                        
-                        int targetWidth = Mathf.RoundToInt(bbox.width);
-                        int targetHeight = Mathf.RoundToInt(bbox.height);
-                        
-                        if (_config.Version == "v15")
-                        {
-                            targetHeight += (int)_config.ExtraMargin; // extra_margin
-                            // Clamp to original image height
-                            targetHeight = Mathf.Min(targetHeight, faceData.OriginalTexture.height - Mathf.RoundToInt(bbox.y));
-                        }
-                        
-                        // Resize decoded frame to face crop size
-                        var resizedFrame = FrameUtils.ResizeFrame(rawDecodedTexture, targetWidth, targetHeight);
-                        
-                        // Convert face bbox to Vector4 format for blending (x1, y1, x2, y2)
-                        var faceBbox = new Vector4(bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height);
-                        string blendingMode = "jaw"; // version v15
-                        // Use precomputed segmentation data for optimal performance
-                        var blendedFrame = ImageBlendingHelper.BlendFaceWithOriginal(
-                            faceData.OriginalTexture, 
-                            resizedFrame, 
-                            faceBbox,
-                            faceData.CropBox,
-                            faceData.BlurredMask, 
-                            faceData.FaceLarge, 
-                            _config.ExtraMargin,
-                            blendingMode);
-                        
-                        blendedFrames.Add(blendedFrame);
+                        avatarIndex = (2 * avatarData.FaceRegions.Count) - 1 - avatarIndex;
                     }
-                    else
+                    var faceData = avatarData.FaceRegions[avatarIndex];
+                    var bbox = faceData.BoundingBox;
+                    
+                    int targetWidth = Mathf.RoundToInt(bbox.width);
+                    int targetHeight = Mathf.RoundToInt(bbox.height);
+                    
+                    if (_config.Version == "v15")
                     {
-                        blendedFrames.Add(rawDecodedTexture);
+                        targetHeight += (int)_config.ExtraMargin; // extra_margin
+                        // Clamp to original image height
+                        targetHeight = Mathf.Min(targetHeight, faceData.OriginalTexture.height - Mathf.RoundToInt(bbox.y));
                     }
+                    
+                    // Resize decoded frame to face crop size
+                    var resizedFrame = FrameUtils.ResizeFrame(rawDecodedTexture, targetWidth, targetHeight);
+                    
+                    // Convert face bbox to Vector4 format for blending (x1, y1, x2, y2)
+                    var faceBbox = new Vector4(bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height);
+                    string blendingMode = "jaw"; // version v15
+                    // Use precomputed segmentation data for optimal performance
+                    var blendedFrame = ImageBlendingHelper.BlendFaceWithOriginal(
+                        faceData.OriginalTexture, 
+                        resizedFrame, 
+                        faceBbox,
+                        faceData.CropBox,
+                        faceData.BlurredMask, 
+                        faceData.FaceLarge, 
+                        _config.ExtraMargin,
+                        blendingMode);
+                    return blendedFrame;
                 }
-                return blendedFrames;
+                return rawDecodedTexture;
             });
             
-            // Convert tensors to textures and apply blending on main thread
-            var blendedTextures = new List<Texture2D>();
-            foreach (var frame in blendedFrames)
-            {
-                blendedTextures.Add(TextureUtils.FrameToTexture2D(frame));
-            }
-            
-            return blendedTextures;
+            return TextureUtils.FrameToTexture2D(blendedFrame);
         }
-        
-
 
         public void Dispose()
         {
