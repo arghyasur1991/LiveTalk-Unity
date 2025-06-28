@@ -16,6 +16,119 @@ namespace LiveTalk.Utils
     /// </summary>
     internal static class ModelUtils
     {
+        private static bool _loggingInitialized = false;
+
+        /// <summary>
+        /// Initialize ONNX Runtime with Unity logging integration
+        /// Automatically called by LoadModel but can be called explicitly
+        /// </summary>
+        public static void InitializeOnnxLogging(OrtLoggingLevel logLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING)
+        {
+            if (_loggingInitialized) return;
+
+            if (OrtEnv.IsCreated)
+            {
+                Debug.LogWarning("[ModelUtils] OrtEnv already created. Custom logging may not take effect.");
+                return;
+            }
+
+            try
+            {
+                // Create environment options with Unity logging callback
+                var options = new EnvironmentCreationOptions
+                {
+                    logLevel = logLevel,
+                    logId = "LiveTalk",
+                    loggingFunction = UnityOnnxLoggingCallback,
+                    loggingParam = IntPtr.Zero
+                };
+
+                // Initialize OrtEnv with custom options
+                OrtEnv.CreateInstanceWithOptions(ref options);
+                
+                _loggingInitialized = true;
+                Debug.Log($"[ModelUtils] ONNX Runtime logging initialized with Unity integration (LogLevel: {logLevel})");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ModelUtils] Failed to initialize ONNX Runtime logging: {e.Message}");
+                _loggingInitialized = true; // Prevent retry loops
+            }
+        }
+
+        /// <summary>
+        /// Unity logging callback for ONNX Runtime
+        /// </summary>
+        private static void UnityOnnxLoggingCallback(IntPtr param, 
+                                                   OrtLoggingLevel severity, 
+                                                   string category, 
+                                                   string logId, 
+                                                   string codeLocation, 
+                                                   string message)
+        {
+            Debug.Log($"[ModelUtils] ONNX Runtime logging callback: {severity} {category} {logId} {codeLocation} {message}");
+            string formattedMessage = FormatOnnxLogMessage(severity, category, logId, codeLocation, message);
+
+            switch (severity)
+            {
+                case OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE:
+                case OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO:
+                    Debug.Log(formattedMessage);
+                    break;
+                    
+                case OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING:
+                    Debug.LogWarning(formattedMessage);
+                    break;
+                    
+                case OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR:
+                case OrtLoggingLevel.ORT_LOGGING_LEVEL_FATAL:
+                    Debug.LogError(formattedMessage);
+                    break;
+                    
+                default:
+                    Debug.Log(formattedMessage);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Format ONNX Runtime log message for Unity console
+        /// </summary>
+        private static string FormatOnnxLogMessage(OrtLoggingLevel severity, 
+                                                 string category, 
+                                                 string logId, 
+                                                 string codeLocation, 
+                                                 string message)
+        {
+            string severityStr = severity switch
+            {
+                OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE => "VERBOSE",
+                OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO => "INFO", 
+                OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING => "WARN",
+                OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR => "ERROR",
+                OrtLoggingLevel.ORT_LOGGING_LEVEL_FATAL => "FATAL",
+                _ => "UNKNOWN"
+            };
+
+            string cleanCategory = !string.IsNullOrEmpty(category) ? $"[{category}]" : "";
+            string cleanCodeLocation = !string.IsNullOrEmpty(codeLocation) ? $" ({codeLocation})" : "";
+            
+            return $"[ONNX-{severityStr}]{cleanCategory} {message}{cleanCodeLocation}";
+        }
+
+        /// <summary>
+        /// Enable verbose ONNX Runtime logging for debugging
+        /// Must be called before any ONNX operations
+        /// </summary>
+        public static void EnableVerboseLogging()
+        {
+            if (_loggingInitialized)
+            {
+                Debug.LogWarning("[ModelUtils] Logging already initialized. Verbose logging setting may not take effect.");
+                return;
+            }
+            InitializeOnnxLogging(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE);
+        }
         /// <summary>
         /// Log model metadata including cache keys for debugging
         /// </summary>
@@ -151,6 +264,7 @@ namespace LiveTalk.Utils
                 InterOpNumThreads = Environment.ProcessorCount,
                 IntraOpNumThreads = Environment.ProcessorCount
             };
+            options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;
             
             options.AddSessionConfigEntry("session.disable_prepacking", "0"); // Enable weight prepacking
             options.AddSessionConfigEntry("session.use_env_allocators", "1"); // Use environment allocators
@@ -209,8 +323,14 @@ namespace LiveTalk.Utils
 
                     // ["SpecializationStrategy"] = "FastPrediction",
                     // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
-                    // ["ProfileComputePlan"] = "0"
+                    ["ProfileComputePlan"] = "1"
                 };
+                // Enable profiling for specific models if verbose logging is enabled
+                if (modelPath.Contains("warping") || modelPath.Contains("unet"))
+                {
+                    sessionOptions.EnableProfiling = true;
+                    Debug.Log($"[ModelUtils] Profiling enabled for model: {Path.GetFileName(modelPath)}");
+                }
                 
                 if (!string.IsNullOrEmpty(cacheDirectory))
                 {
@@ -275,6 +395,9 @@ namespace LiveTalk.Utils
 
         public static InferenceSession LoadModel(LiveTalkConfig config, ModelConfig modelConfig)
         {
+            // Initialize ONNX logging first if not already done
+            InitializeOnnxLogging(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE);
+            
             if (modelConfig.precision == Precision.INT8)
             {
                 // Use CPU if INT8 is enabled
