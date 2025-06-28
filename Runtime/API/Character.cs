@@ -1268,94 +1268,60 @@ namespace LiveTalk.API
         {
             try
             {
-                var tasks = new List<Task>();
-                // Load cropped face texture
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.croppedFace))
+                // Define texture mappings to eliminate code duplication
+                var textureLoaders = new[]
                 {
-                    string croppedPath = Path.Combine(expressionFolder, faceRegion.textureFiles.croppedFace);
-                    (int width, int height) = (faceRegion.textureDimensions.croppedFace.width, faceRegion.textureDimensions.croppedFace.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.CroppedFaceTexture = await LoadTextureAsFrame(croppedPath, width, height);
-                    }));
-                }
+                    new { 
+                        FilePath = faceRegion.textureFiles?.croppedFace,
+                        Dimensions = faceRegion.textureDimensions.croppedFace,
+                        SetTexture = new Action<Frame>(frame => faceData.CroppedFaceTexture = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.faceLarge,
+                        Dimensions = faceRegion.textureDimensions.faceLarge,
+                        SetTexture = new Action<Frame>(frame => faceData.FaceLarge = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.segmentationMask,
+                        Dimensions = faceRegion.textureDimensions.segmentationMask,
+                        SetTexture = new Action<Frame>(frame => faceData.SegmentationMask = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.maskSmall,
+                        Dimensions = faceRegion.textureDimensions.maskSmall,
+                        SetTexture = new Action<Frame>(frame => faceData.MaskSmall = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.original,
+                        Dimensions = faceRegion.textureDimensions.original,
+                        SetTexture = new Action<Frame>(frame => faceData.OriginalTexture = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.fullMask,
+                        Dimensions = faceRegion.textureDimensions.fullMask,
+                        SetTexture = new Action<Frame>(frame => faceData.FullMask = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.boundaryMask,
+                        Dimensions = faceRegion.textureDimensions.boundaryMask,
+                        SetTexture = new Action<Frame>(frame => faceData.BoundaryMask = frame)
+                    },
+                    new { 
+                        FilePath = faceRegion.textureFiles?.blurredMask,
+                        Dimensions = faceRegion.textureDimensions.blurredMask,
+                        SetTexture = new Action<Frame>(frame => faceData.BlurredMask = frame)
+                    }
+                };
 
-                // Load face large texture
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.faceLarge))
-                {
-                    string faceLargePath = Path.Combine(expressionFolder, faceRegion.textureFiles.faceLarge);
-                    (int width, int height) = (faceRegion.textureDimensions.faceLarge.width, faceRegion.textureDimensions.faceLarge.height);
-                    tasks.Add(Task.Run(async () =>
+                var tasks = textureLoaders
+                    .Where(loader => !string.IsNullOrEmpty(loader.FilePath))
+                    .Select(loader => Task.Run(async () =>
                     {
-                        faceData.FaceLarge = await LoadTextureAsFrame(faceLargePath, width, height);
-                    }));
-                }
-
-                // Load segmentation mask
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.segmentationMask))
-                {
-                    string segmentationPath = Path.Combine(expressionFolder, faceRegion.textureFiles.segmentationMask);
-                    (int width, int height) = (faceRegion.textureDimensions.segmentationMask.width, faceRegion.textureDimensions.segmentationMask.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.SegmentationMask = await LoadTextureAsFrame(segmentationPath, width, height);
-                    }));
-                }
-
-                // Load mask small
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.maskSmall))
-                {
-                    string maskSmallPath = Path.Combine(expressionFolder, faceRegion.textureFiles.maskSmall);
-                    (int width, int height) = (faceRegion.textureDimensions.maskSmall.width, faceRegion.textureDimensions.maskSmall.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.MaskSmall = await LoadTextureAsFrame(maskSmallPath, width, height);
-                    }));
-                }
-
-                // Load original texture
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.original))
-                {
-                    string originalPath = Path.Combine(expressionFolder, faceRegion.textureFiles.original);
-                    (int width, int height) = (faceRegion.textureDimensions.original.width, faceRegion.textureDimensions.original.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.OriginalTexture = await LoadTextureAsFrame(originalPath, width, height);
-                    }));
-                }
-
-                // Load full mask
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.fullMask))
-                {
-                    string fullMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.fullMask);
-                    (int width, int height) = (faceRegion.textureDimensions.fullMask.width, faceRegion.textureDimensions.fullMask.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.FullMask = await LoadTextureAsFrame(fullMaskPath, width, height);
-                    }));
-                }
-
-                // Load boundary mask
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.boundaryMask))
-                {
-                    string boundaryMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.boundaryMask);
-                    (int width, int height) = (faceRegion.textureDimensions.boundaryMask.width, faceRegion.textureDimensions.boundaryMask.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.BoundaryMask = await LoadTextureAsFrame(boundaryMaskPath, width, height);
-                    }));
-                }
-
-                // Load blurred mask
-                if (!string.IsNullOrEmpty(faceRegion.textureFiles?.blurredMask))
-                {
-                    string blurredMaskPath = Path.Combine(expressionFolder, faceRegion.textureFiles.blurredMask);
-                    (int width, int height) = (faceRegion.textureDimensions.blurredMask.width, faceRegion.textureDimensions.blurredMask.height);
-                    tasks.Add(Task.Run(async () =>
-                    {
-                        faceData.BlurredMask = await LoadTextureAsFrame(blurredMaskPath, width, height);
-                    }));
-                }
+                        string texturePath = Path.Combine(expressionFolder, loader.FilePath);
+                        var frame = await LoadTextureAsFrame(texturePath, loader.Dimensions.width, loader.Dimensions.height);
+                        loader.SetTexture(frame);
+                    }))
+                    .ToList();
 
                 await Task.WhenAll(tasks);
             }
