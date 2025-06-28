@@ -970,10 +970,11 @@ namespace LiveTalk.API
                 config.pitch,
                 config.speed,
                 config.intro
-            );
-
-            // Set character folder for data loading
-            character.CharacterFolder = characterFolder;
+            )
+            {
+                // Set character folder for data loading
+                CharacterFolder = characterFolder
+            };
 
             // Load all character data (expressions, voice, etc.)
             yield return LoadCharacterDataContents(character);
@@ -1156,8 +1157,7 @@ namespace LiveTalk.API
                 Debug.LogError($"[CharacterFactory] Failed to read voice config: {readConfigTask.Exception?.Message}");
                 yield break;
             }
-
-                        // Load the reference audio sample using AudioLoaderService
+            
             var loadAudioTask = AudioLoaderService.LoadAudioClipAsync(voiceSampleFile);
             yield return new WaitUntil(() => loadAudioTask.IsCompleted);
             
