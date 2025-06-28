@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
@@ -1039,7 +1040,7 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Load latents for a specific expression
+        /// Load latents for a specific expression - optimized with unsafe code and parallelization
         /// </summary>
         private static IEnumerator LoadExpressionLatents(string expressionFolder, Character.ExpressionData expressionData)
         {
@@ -1057,20 +1058,73 @@ namespace LiveTalk.API
             {
                 var latentsBytes = readTask.Result;
                 
-                // Convert bytes back to float array
-                var allLatents = new float[latentsBytes.Length / sizeof(float)];
-                Buffer.BlockCopy(latentsBytes, 0, allLatents, 0, latentsBytes.Length);
-
-                // Split back into individual latent arrays (assuming each latent is 8*32*32 = 8192 floats)
-                const int latentSize = 8 * 32 * 32; // 8192 floats per latent
-                int numLatents = allLatents.Length / latentSize;
-
-                for (int i = 0; i < numLatents; i++)
+                // Process latents in parallel using unsafe code for optimal performance
+                var processTask = Task.Run(() => ProcessLatentsUnsafe(latentsBytes, expressionData));
+                yield return new WaitUntil(() => processTask.IsCompleted);
+                
+                if (processTask.IsFaulted)
                 {
-                    var latent = new float[latentSize];
-                    Array.Copy(allLatents, i * latentSize, latent, 0, latentSize);
-                    expressionData.Data.Latents.Add(latent);
+                    Debug.LogError($"[CharacterFactory] Error processing latents: {processTask.Exception?.InnerException?.Message}");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Process latents using unsafe code and parallel processing for maximum performance
+        /// </summary>
+        private static unsafe void ProcessLatentsUnsafe(byte[] latentsBytes, Character.ExpressionData expressionData)
+        {
+            const int latentSize = 8 * 32 * 32; // 8192 floats per latent
+            const int floatSize = sizeof(float);
+            const int latentSizeBytes = latentSize * floatSize;
+            
+            int totalFloats = latentsBytes.Length / floatSize;
+            int numLatents = totalFloats / latentSize;
+            
+            if (numLatents == 0)
+            {
+                Debug.LogWarning("[CharacterFactory] No valid latents found in file");
+                return;
+            }
+
+            // Pre-allocate list capacity to avoid resizing
+            expressionData.Data.Latents.Capacity = numLatents;
+            
+            // Create all latent arrays upfront to avoid allocations in parallel loop
+            var latentArrays = new float[numLatents][];
+            for (int i = 0; i < numLatents; i++)
+            {
+                latentArrays[i] = new float[latentSize];
+            }
+
+            // Pin the source bytes for unsafe access
+            fixed (byte* sourcePtr = latentsBytes)
+            {
+                float* floatPtr = (float*)sourcePtr;
+                
+                // Process latents in parallel with optimal memory access
+                System.Threading.Tasks.Parallel.For(0, numLatents, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Environment.ProcessorCount
+                }, latentIndex =>
+                {
+                    var targetArray = latentArrays[latentIndex];
+                    float* sourceLatentPtr = floatPtr + (latentIndex * latentSize);
+                    
+                    // Pin target array for direct memory copy
+                    fixed (float* targetPtr = targetArray)
+                    {
+                        // Direct memory copy - much faster than Array.Copy or Buffer.BlockCopy
+                        Buffer.MemoryCopy(sourceLatentPtr, targetPtr, latentSizeBytes, latentSizeBytes);
+                    }
+                });
+            }
+            
+            // Add all processed latents to the expression data
+            // This is done sequentially to avoid thread safety issues with List<T>
+            for (int i = 0; i < numLatents; i++)
+            {
+                expressionData.Data.Latents.Add(latentArrays[i]);
             }
         }
 
