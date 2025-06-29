@@ -119,6 +119,7 @@ namespace LiveTalk.API
             
             _livePortrait = new LivePortraitInference(_config);
             _museTalk = new MuseTalkInference(_config);
+            ModelUtils.Initialize();
         }
         
         /// <summary>
@@ -245,6 +246,7 @@ namespace LiveTalk.API
             {
                 _livePortrait?.Dispose();
                 _museTalk?.Dispose();
+                ModelUtils.Dispose();
                 _disposed = true;
                 Logger.Log("[LivePortraitMuseTalkAPI] Disposed");
             }

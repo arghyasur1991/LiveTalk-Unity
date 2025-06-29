@@ -11,12 +11,25 @@ namespace LiveTalk.Utils
 {
     using Core;
     using API;
+    using System.Threading.Tasks;
+
     /// <summary>
     /// Utility functions for ONNX model loading and configuration in MuseTalk
     /// </summary>
     internal static class ModelUtils
     {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        private struct LoadingInfo
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string ModelName;
+        }
+
         private static bool _loggingInitialized = false;
+        private static IntPtr _loggingParam = IntPtr.Zero;
+
+        private static readonly Queue<Tuple<Task, string>> _taskQueue = new();
+        private static bool _disposeLoadThread = false;
 
         /// <summary>
         /// Initialize ONNX Runtime with Unity logging integration
@@ -34,13 +47,15 @@ namespace LiveTalk.Utils
 
             try
             {
+                // Create loggingParam handle from _loadingInfo
+                _loggingParam = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LoadingInfo)));
                 // Create environment options with Unity logging callback
                 var options = new EnvironmentCreationOptions
                 {
                     logLevel = logLevel,
                     logId = "LiveTalk",
                     loggingFunction = UnityOnnxLoggingCallback,
-                    loggingParam = IntPtr.Zero
+                    loggingParam = _loggingParam
                 };
 
                 // Initialize OrtEnv with custom options
@@ -56,6 +71,39 @@ namespace LiveTalk.Utils
             }
         }
 
+        public static void Initialize()
+        {
+            InitializeOnnxLogging(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE);
+            Task.Run(async() => {
+                while (true)
+                {
+                    if (_taskQueue.Count > 0)
+                    {
+                        var task = _taskQueue.Dequeue();
+                        var loadingInfo = new LoadingInfo { ModelName = task.Item2 };
+                        Marshal.StructureToPtr(loadingInfo, _loggingParam, false);
+                        
+                        await task.Item1;
+                    }
+                    if (_disposeLoadThread)
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+
+        public static void EnqueueTask(Task task, string modelName)
+        {
+            _taskQueue.Enqueue(Tuple.Create(task, modelName));
+        }
+
+        public static void Dispose()
+        {
+            _disposeLoadThread = true;
+            Marshal.FreeHGlobal(_loggingParam);
+        }
+
         /// <summary>
         /// Unity logging callback for ONNX Runtime
         /// </summary>
@@ -66,8 +114,9 @@ namespace LiveTalk.Utils
                                                    string codeLocation, 
                                                    string message)
         {
-            Debug.Log($"[ModelUtils] ONNX Runtime logging callback: {severity} {category} {logId} {codeLocation} {message}");
-            string formattedMessage = FormatOnnxLogMessage(severity, category, logId, codeLocation, message);
+            var loadingInfo = (LoadingInfo)Marshal.PtrToStructure(param, typeof(LoadingInfo));
+            // Debug.Log($"[ModelUtils] ONNX Runtime logging callback: {severity} {category} {logId} {codeLocation} {message}");
+            string formattedMessage = FormatOnnxLogMessage(severity, category, logId, codeLocation, message, loadingInfo.ModelName);
 
             switch (severity)
             {
@@ -98,7 +147,8 @@ namespace LiveTalk.Utils
                                                  string category, 
                                                  string logId, 
                                                  string codeLocation, 
-                                                 string message)
+                                                 string message,
+                                                 string modelName)
         {
             string severityStr = severity switch
             {
@@ -113,7 +163,7 @@ namespace LiveTalk.Utils
             string cleanCategory = !string.IsNullOrEmpty(category) ? $"[{category}]" : "";
             string cleanCodeLocation = !string.IsNullOrEmpty(codeLocation) ? $" ({codeLocation})" : "";
             
-            return $"[ONNX-{severityStr}]{cleanCategory} {message}{cleanCodeLocation}";
+            return $"[ONNX-{severityStr}][{modelName}]{cleanCategory} {message}{cleanCodeLocation}";
         }
 
         /// <summary>
@@ -326,9 +376,9 @@ namespace LiveTalk.Utils
                     ["ProfileComputePlan"] = "1"
                 };
                 // Enable profiling for specific models if verbose logging is enabled
-                if (modelPath.Contains("warping") || modelPath.Contains("unet"))
+                if (modelPath.Contains("warping"))
                 {
-                    sessionOptions.EnableProfiling = true;
+                    // sessionOptions.EnableProfiling = true;
                     Debug.Log($"[ModelUtils] Profiling enabled for model: {Path.GetFileName(modelPath)}");
                 }
                 
