@@ -82,7 +82,7 @@ namespace LiveTalk.Utils
                         var task = _taskQueue.Dequeue();
                         var loadingInfo = new LoadingInfo { ModelName = task.Item2 };
                         Marshal.StructureToPtr(loadingInfo, _loggingParam, false);
-                        
+                        task.Item1.Start();                        
                         await task.Item1;
                     }
                     if (_disposeLoadThread)

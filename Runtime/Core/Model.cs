@@ -32,7 +32,7 @@ namespace LiveTalk.Core
 
         private async Task<InferenceSession> LoadModel(LiveTalkConfig config)
         {
-            var task = Task.Run(() => {
+            var task = new Task(() => {
                 _session = ModelUtils.LoadModel(config, _config);
             });
             ModelUtils.EnqueueTask(task, _config.modelName);
