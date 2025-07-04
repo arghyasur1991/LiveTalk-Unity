@@ -1,18 +1,18 @@
 {
-    "name": "MuseTalk.Editor",
-    "rootNamespace": "MuseTalk",
+    "name": "LiveTalk.Runtime",
+    "rootNamespace": "LiveTalk",
     "references": [
-        "MuseTalk.Runtime"
+        "com.github.asus4.onnxruntime",
+        "com.unity.nuget.newtonsoft-json",
+        "SparkTTS.Runtime"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
-    "allowUnsafeCode": false,
+    "allowUnsafeCode": true,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": false
-} 
+}
