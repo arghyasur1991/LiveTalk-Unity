@@ -833,40 +833,7 @@ namespace LiveTalk.API
 
             if (characterVoice != null)
             {
-                // Generate the voice sample
-                var audioClip = characterVoice.ReferenceClip;
-
-                if (audioClip != null)
-                {
-                    // Convert AudioClip to WAV and save
-                    string samplePath = Path.Combine(voiceFolder, "sample.wav");
-                    await SaveAudioClipAsWAV(audioClip, samplePath);
-                    Logger.LogVerbose($"[Character] Voice sample saved to: {samplePath}");
-
-                    // Also save voice config for reference
-                    var voiceConfig = new
-                    {
-                        gender = genderParam,
-                        pitch = pitchParam,
-                        speed = speedParam,
-                        introText = Intro,
-                        timestamp = DateTime.UtcNow,
-                        audioFile = "sample.wav",
-                        sampleRate = audioClip.frequency,
-                        channels = audioClip.channels,
-                        length = audioClip.length
-                    };
-                    
-                    string configPath = Path.Combine(voiceFolder, "voice_config.json");
-                    string configJson = JsonConvert.SerializeObject(voiceConfig, Formatting.Indented);
-                    await File.WriteAllTextAsync(configPath, configJson);
-                }
-                else
-                {
-                    Logger.LogError("[Character] Failed to generate voice sample audio");
-                }
-
-                // Clean up
+                await characterVoice.SaveVoiceAsync(voiceFolder);
                 characterVoice.Dispose();
             }
             else
@@ -918,23 +885,6 @@ namespace LiveTalk.API
                 Speed.VeryHigh => "very_high",
                 _ => "moderate"
             };
-        }
-
-        /// <summary>
-        /// Save AudioClip as WAV file using SparkTTS AudioLoaderService
-        /// </summary>
-        private async Task SaveAudioClipAsWAV(AudioClip audioClip, string filePath)
-        {
-            try
-            {
-                // Use SparkTTS AudioLoaderService to save the audio clip directly
-                await AudioLoaderService.SaveAudioClipToFile(audioClip, filePath);
-                Logger.LogVerbose($"[Character] Audio saved as WAV: {filePath} ({audioClip.samples} samples, {audioClip.frequency}Hz, {audioClip.channels} channels)");
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError($"[Character] Error saving audio as WAV: {ex.Message}");
-            }
         }
 
         /// <summary>
