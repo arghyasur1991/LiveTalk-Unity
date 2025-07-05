@@ -325,7 +325,7 @@ namespace LiveTalk.API
             {
                 expressions = new string[] { "talk-neutral" };
             }
-            for (int expressionIndex = 0; expressionIndex < expressions.Length; expressionIndex++)
+            for (int expressionIndex = 0; expressionIndex < 0 /* expressions.Length */; expressionIndex++)
             {
                 string expression = expressions[expressionIndex];
                 string expressionFolder = Path.Combine(drivingFramesFolder, $"expression-{expressionIndex}");
@@ -1045,61 +1045,24 @@ namespace LiveTalk.API
         private IEnumerator LoadVoiceData()
         {
             string voiceFolder = Path.Combine(CharacterFolder, "voice");
-            string voiceSampleFile = Path.Combine(voiceFolder, "sample.wav");
-            string voiceConfigFile = Path.Combine(voiceFolder, "voice_config.json");
-            
-            if (!File.Exists(voiceSampleFile))
+            if (!Directory.Exists(voiceFolder))
             {
-                Logger.LogWarning($"[CharacterFactory] No voice sample found: {voiceSampleFile}");
+                Logger.LogWarning($"[CharacterFactory] No voice folder found: {voiceFolder}");
                 yield break;
             }
 
-            if (!File.Exists(voiceConfigFile))
-            {
-                Logger.LogWarning($"[CharacterFactory] No voice config found: {voiceConfigFile}");
-                yield break;
-            }
-
-            // Read the voice config for metadata
-            var readConfigTask = File.ReadAllTextAsync(voiceConfigFile);
-            yield return new WaitUntil(() => readConfigTask.IsCompleted);
-
-            if (readConfigTask.IsFaulted)
-            {
-                Logger.LogError($"[CharacterFactory] Failed to read voice config: {readConfigTask.Exception?.Message}");
-                yield break;
-            }
+            // Create character voice from the loaded reference sample
+            var characterVoiceTask = CharacterVoiceFactory.Instance.CreateFromFolderAsync(voiceFolder);            
+            yield return new WaitUntil(() => characterVoiceTask.IsCompleted);
             
-            var loadAudioTask = AudioLoaderService.LoadAudioClipAsync(voiceSampleFile);
-            yield return new WaitUntil(() => loadAudioTask.IsCompleted);
-            
-            if (loadAudioTask.IsFaulted)
+            if (!characterVoiceTask.IsFaulted)
             {
-                Logger.LogError($"[CharacterFactory] Failed to load audio sample: {loadAudioTask.Exception?.Message}");
-                yield break;
-            }
-            
-            var audioClip = loadAudioTask.Result;
-            if (audioClip != null)
-            {
-                // Create character voice from the loaded reference sample
-                var characterVoiceTask = CharacterVoiceFactory.Instance.CreateFromReferenceAsync(audioClip);
-                
-                yield return new WaitUntil(() => characterVoiceTask.IsCompleted);
-                
-                if (!characterVoiceTask.IsFaulted)
-                {
-                    LoadedVoice = characterVoiceTask.Result;
-                    Logger.LogVerbose($"[CharacterFactory] Voice loaded from reference sample for {Name}");
-                }
-                else
-                {
-                    Logger.LogError($"[CharacterFactory] Failed to create voice from reference: {characterVoiceTask.Exception?.Message}");
-                }
+                LoadedVoice = characterVoiceTask.Result;
+                Logger.LogVerbose($"[CharacterFactory] Voice loaded from folder for {Name}");
             }
             else
             {
-                Logger.LogError($"[CharacterFactory] Failed to load audio clip from: {voiceSampleFile}");
+                Logger.LogError($"[CharacterFactory] Failed to create voice from folder: {characterVoiceTask.Exception?.Message}");
             }
         }
 
