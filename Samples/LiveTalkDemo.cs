@@ -67,6 +67,7 @@ namespace LiveTalk.Samples
         [SerializeField] private TMP_Text fpsText;
         [SerializeField] private RawImage previewImage;
         [SerializeField] private Slider progressSlider;
+        [SerializeField] private bool generateVoiceOnly = false;
         
         private LiveTalkAPI _api;
         private bool _isPlayingAudio = false;
@@ -567,7 +568,7 @@ namespace LiveTalk.Samples
             System.Exception speechError = null;
             yield return _loadedCharacter.SpeakAsync(
                 textToSpeak,
-                expressionIndex: 0, // Use talk-neutral expression
+                expressionIndex: generateVoiceOnly ? -1 : 0, // Use talk-neutral expression
                 onComplete: (stream, audioClip) => {
                     speechStream = stream;
                     audioSource.clip = audioClip;
@@ -591,6 +592,14 @@ namespace LiveTalk.Samples
                 UpdateStatus("Speech generation completed but no stream was returned");
                 _isGenerating = false;
                 SetButtonsEnabled(true);
+                yield break;
+            }
+
+            if (generateVoiceOnly)
+            {
+                _isGenerating = false;
+                SetButtonsEnabled(true);
+                PlayAudio();
                 yield break;
             }
             

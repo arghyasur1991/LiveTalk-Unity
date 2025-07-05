@@ -357,7 +357,7 @@ namespace LiveTalk.API
         /// Generate speech asynchronously using coroutines
         /// </summary>
         /// <param name="text">Text to speak</param>
-        /// <param name="expressionIndex">Expression to use</param>
+        /// <param name="expressionIndex">Expression to use, -1 for voice only</param>
         /// <param name="onComplete">Callback when audio generation is complete</param>
         /// <param name="onError">Callback when an error occurs</param>
         /// <returns>Coroutine for audio generation, then FrameStream for video frames</returns>
@@ -379,7 +379,7 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            if (!LoadedExpressions.ContainsKey(expressionIndex))
+            if (expressionIndex != -1 && !LoadedExpressions.ContainsKey(expressionIndex))
             {
                 onError?.Invoke(new ArgumentException($"Expression index {expressionIndex} not available. Available expressions: {string.Join(", ", LoadedExpressions.Keys)}"));
                 yield break;
@@ -416,12 +416,18 @@ namespace LiveTalk.API
                 onError?.Invoke(new InvalidOperationException("Generated audio clip is null."));
                 yield break;
             }
+            var outputStream = new FrameStream(0);
+            if (expressionIndex == -1)
+            {
+                onComplete?.Invoke(outputStream, audioClip);
+                yield break;
+            }
 
             // Use the preloaded expression data for MuseTalk
             var expressionData = LoadedExpressions[expressionIndex];
             
             // Generate talking head using MuseTalk with preloaded data
-            var outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
+            outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
                 expressionData.Data,
                 audioClip
             );
