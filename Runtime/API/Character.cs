@@ -367,6 +367,7 @@ namespace LiveTalk.API
             Action<FrameStream, AudioClip> onComplete = null,
             Action<Exception> onError = null)
         {
+            var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
             {
                 onError?.Invoke(new InvalidOperationException("Character data not loaded. Use CharacterFactory.LoadCharacterAsync() first."));
@@ -420,6 +421,8 @@ namespace LiveTalk.API
             if (expressionIndex == -1)
             {
                 onComplete?.Invoke(outputStream, audioClip);
+                var stopLocal = start.Elapsed;
+                Logger.Log($"[Character] Speaking completed for {Name} in {stopLocal.TotalMilliseconds}ms");
                 yield break;
             }
 
@@ -433,6 +436,8 @@ namespace LiveTalk.API
             );
 
             onComplete?.Invoke(outputStream, audioClip);
+            var stop = start.Elapsed;
+            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms");
         }
 
         /// <summary>
