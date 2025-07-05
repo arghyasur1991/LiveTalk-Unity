@@ -250,11 +250,11 @@ namespace LiveTalk.API
 
             var sparkTTSLogLevel = _config.LogLevel switch
             {
-                LogLevel.VERBOSE => DebugLogger.LogLevel.Debug,
-                LogLevel.INFO => DebugLogger.LogLevel.Info,
-                LogLevel.WARNING => DebugLogger.LogLevel.Warning,
-                LogLevel.ERROR => DebugLogger.LogLevel.Error,
-                _ => DebugLogger.LogLevel.Warning,
+                LogLevel.VERBOSE => SparkTTS.Utils.LogLevel.VERBOSE,
+                LogLevel.INFO => SparkTTS.Utils.LogLevel.INFO,
+                LogLevel.WARNING => SparkTTS.Utils.LogLevel.WARNING,
+                LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
+                _ => SparkTTS.Utils.LogLevel.WARNING,
             };
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel);
             _initialized = true;

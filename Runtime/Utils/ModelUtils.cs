@@ -215,6 +215,13 @@ namespace LiveTalk.Utils
         private static void InitializeOnnxLogging()
         {
             if (_loggingInitialized) return;
+            
+            // if ios dont initialize logging
+            if (Application.platform == RuntimePlatform.IPhonePlayer)
+            {
+                _loggingInitialized = true;
+                return;
+            }
 
             if (OrtEnv.IsCreated)
             {
