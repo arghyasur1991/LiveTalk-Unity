@@ -128,11 +128,11 @@ LiveTalk includes a built-in Editor tool that automatically analyzes your codeba
    - Source: `Assets/Models` (automatically detected)
    - Destination: `Assets/StreamingAssets/LiveTalk` (automatically configured)
 3. **Select components**: Choose which model categories to deploy:
-   - ✅ SparkTTS Models (includes LLM models)
-   - ✅ LivePortrait Models 
-   - ✅ MuseTalk Models
-4. **Review selection**: The tool shows you exactly which models will be copied and their file sizes
-5. **Deploy**: Click "Deploy Selected Models" to copy the optimized model set
+   - ✅ **SparkTTS Models** (deployed via SparkTTS-Unity package)
+   - ✅ **LivePortrait Models** (deployed directly)
+   - ✅ **MuseTalk Models** (deployed directly)
+4. **Review selection**: The tool shows you exactly which LiveTalk models will be copied and their file sizes
+5. **Deploy**: Click "Deploy All Models" to copy both LiveTalk and SparkTTS models using their respective deployment systems
 
 #### Model Precision Settings
 
@@ -140,15 +140,14 @@ The tool automatically selects the optimal precision for each model based on the
 
 | Model Category | Precision | Execution Provider | Notes |
 |---|---|---|---|
-| **SparkTTS** | | | |
-| wav2vec2_model | FP16 | CPU | Smaller model for audio processing |
-| Other SparkTTS | FP32 | CPU | Full precision for quality |
 | **LivePortrait** | | | |
 | warping_spade | FP16 | CoreML | GPU-accelerated rendering |
 | Other LivePortrait | FP32 | CoreML | Full precision for facial features |
 | **MuseTalk** | | | |
 | unet, vae_encoder, vae_decoder | FP16 | CoreML | GPU-accelerated inference |
 | whisper_encoder, positional_encoding | FP32 | CPU | Audio processing precision |
+| **SparkTTS** | | | |
+| *Models deployed via SparkTTS-Unity package* | *See SparkTTS documentation* | *Various* | *Handled by SparkTTS deployment tool* |
 
 #### Advanced Options
 
@@ -159,12 +158,23 @@ The tool automatically selects the optimal precision for each model based on the
 #### Large Model Handling
 
 The tool automatically handles large models that use separate data files:
-- **SparkTTS LLM**: `model.onnx` (1.1MB) + `model.onnx_data` (1.9GB) - uses underscore
-- **MuseTalk UNet**: `unet.onnx` (710KB) + `unet.onnx.data` (3.2GB) - uses dot
+- **MuseTalk UNet**: `unet.onnx` (710KB) + `unet.onnx.data` (3.2GB) - uses dot notation
+- **SparkTTS LLM**: Handled by SparkTTS-Unity deployment tool with `model.onnx_data` files
 
-Both the model and data files are copied together and included in size calculations and backup operations.
+LiveTalk model and data files are copied together and included in size calculations and backup operations. SparkTTS models are handled by the SparkTTS-Unity package's own deployment system.
 
 This tool ensures your Unity project includes only the models you actually need, significantly reducing build size while maintaining optimal performance.
+
+#### Standalone SparkTTS Deployment
+
+SparkTTS models can also be deployed independently using the SparkTTS-Unity package's standalone tool:
+
+**Access**: `Window > SparkTTS > Model Deployment Tool`
+
+This allows you to:
+- Deploy only SparkTTS models without LiveTalk models
+- Use SparkTTS in projects that don't include LiveTalk
+- Have fine-grained control over SparkTTS model deployment
 
 ### Downloading Pre-Exported Models
 

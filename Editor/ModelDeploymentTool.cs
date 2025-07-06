@@ -45,27 +45,6 @@ namespace LiveTalk.Editor
         /// </summary>
         private static readonly Dictionary<string, List<ModelConfig>> ModelConfigurations = new()
         {
-            ["SparkTTS"] = new List<ModelConfig>
-            {
-                new("wav2vec2_model", "SparkTTS", "fp16", "CPU"),
-                new("bicodec_encoder_quantizer", "SparkTTS", "fp32", "CPU"),
-                new("bicodec_vocoder", "SparkTTS", "fp32", "CPU"),
-                new("mel_spectrogram", "SparkTTS", "fp32", "CPU"),
-                new("speaker_encoder_tokenizer", "SparkTTS", "fp32", "CPU"),
-                new("onnx_config.json", "SparkTTS", "none", "CPU"),
-            },
-            ["SparkTTS_LLM"] = new List<ModelConfig>
-            {
-                new("model", "SparkTTS/LLM", "fp32", "CPU"),
-                new("config.json", "SparkTTS/LLM", "none", "CPU"),
-                new("tokenizer.json", "SparkTTS/LLM", "none", "CPU"),
-                new("vocab.json", "SparkTTS/LLM", "none", "CPU"),
-                new("merges.txt", "SparkTTS/LLM", "none", "CPU"),
-                new("added_tokens.json", "SparkTTS/LLM", "none", "CPU"),
-                new("special_tokens_map.json", "SparkTTS/LLM", "none", "CPU"),
-                new("tokenizer_config.json", "SparkTTS/LLM", "none", "CPU"),
-                new("generation_config.json", "SparkTTS/LLM", "none", "CPU"),
-            },
             ["LivePortrait"] = new List<ModelConfig>
             {
                 new("appearance_feature_extractor", "LiveTalk/models/LivePortrait", "fp32", "CoreML"),
@@ -177,16 +156,23 @@ namespace LiveTalk.Editor
             EditorGUILayout.LabelField("Model Selection", EditorStyles.boldLabel);
             
             // Component toggles
-            includeSparkTTS = EditorGUILayout.Toggle("Include SparkTTS Models", includeSparkTTS);
+            includeSparkTTS = EditorGUILayout.Toggle("Include SparkTTS Models (via SparkTTS package)", includeSparkTTS);
+            if (includeSparkTTS)
+            {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.HelpBox("SparkTTS models will be deployed using the SparkTTS-Unity package deployment tool.", MessageType.Info);
+                EditorGUI.indentLevel--;
+            }
+            
             includeLivePortrait = EditorGUILayout.Toggle("Include LivePortrait Models", includeLivePortrait);
             includeMuseTalk = EditorGUILayout.Toggle("Include MuseTalk Models", includeMuseTalk);
             
             EditorGUILayout.Space();
             
-            // Model details
+            // LiveTalk model details
             if (selectedModels != null && selectedModels.Count > 0)
             {
-                EditorGUILayout.LabelField($"Selected Models ({selectedModels.Count}):", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"LiveTalk Models ({selectedModels.Count}):", EditorStyles.boldLabel);
                 EditorGUILayout.LabelField($"Total Size: {FormatFileSize(totalSelectedSize)}");
                 
                 scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition, GUILayout.Height(200));
@@ -198,9 +184,26 @@ namespace LiveTalk.Editor
                 
                 EditorGUILayout.EndScrollView();
             }
-            else
+            else if (includeLivePortrait || includeMuseTalk)
             {
-                EditorGUILayout.HelpBox("No models selected or available.", MessageType.Warning);
+                EditorGUILayout.HelpBox("No LiveTalk models selected or available.", MessageType.Warning);
+            }
+            
+            // SparkTTS status
+            if (includeSparkTTS)
+            {
+                EditorGUILayout.Space();
+                EditorGUILayout.LabelField("SparkTTS Models:", EditorStyles.boldLabel);
+                
+                var sparkTTSToolType = System.Type.GetType("SparkTTS.Editor.ModelDeploymentTool, SparkTTS.Editor");
+                if (sparkTTSToolType != null)
+                {
+                    EditorGUILayout.HelpBox("✓ SparkTTS deployment tool found - models will be deployed automatically", MessageType.Info);
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox("✗ SparkTTS deployment tool not found - ensure SparkTTS-Unity package is installed", MessageType.Warning);
+                }
             }
         }
 
@@ -262,12 +265,30 @@ namespace LiveTalk.Editor
                 RefreshModelList();
             }
             
-            if (GUILayout.Button("Deploy Selected Models", GUILayout.Height(30)))
+            bool hasSelection = includeSparkTTS || includeLivePortrait || includeMuseTalk;
+            EditorGUI.BeginDisabledGroup(!hasSelection);
+            
+            string buttonText = "Deploy Selected Models";
+            if (includeSparkTTS && (includeLivePortrait || includeMuseTalk))
+                buttonText = "Deploy All Models";
+            else if (includeSparkTTS)
+                buttonText = "Deploy SparkTTS Models";
+            else if (includeLivePortrait || includeMuseTalk)
+                buttonText = "Deploy LiveTalk Models";
+            
+            if (GUILayout.Button(buttonText, GUILayout.Height(30)))
             {
                 DeployModels();
             }
             
+            EditorGUI.EndDisabledGroup();
+            
             EditorGUILayout.EndHorizontal();
+            
+            if (!hasSelection)
+            {
+                EditorGUILayout.HelpBox("Please select at least one model category to deploy.", MessageType.Info);
+            }
             
             if (GUILayout.Button("Clean StreamingAssets", GUILayout.Height(25)))
             {
@@ -283,19 +304,12 @@ namespace LiveTalk.Editor
         {
             selectedModels = new List<ModelConfig>();
             totalSelectedSize = 0;
-
-            if (includeSparkTTS)
-                AddModelsFromCategory("SparkTTS");
             
             if (includeLivePortrait)
                 AddModelsFromCategory("LivePortrait");
             
             if (includeMuseTalk)
                 AddModelsFromCategory("MuseTalk");
-
-            // Add SparkTTS LLM models if SparkTTS is included
-            if (includeSparkTTS)
-                AddModelsFromCategory("SparkTTS_LLM");
             
             // Calculate file sizes and validate paths
             foreach (var model in selectedModels)
@@ -335,27 +349,15 @@ namespace LiveTalk.Editor
                 fileName += "_int8";
             }
             
-            // Handle special case for models with separate data files
-            if ((model.modelName == "unet" && model.precision == "fp32") || 
-                (model.modelName == "model" && model.relativePath.Contains("LLM")))
+            // Handle special case for UNet model with data file
+            if (model.modelName == "unet" && model.precision == "fp32")
             {
-                // Check for data file - different naming conventions
-                string dataFileName;
-                if (model.modelName == "model" && model.relativePath.Contains("LLM"))
-                {
-                    // SparkTTS LLM uses model.onnx_data (underscore)
-                    dataFileName = fileName + ".onnx_data";
-                }
-                else
-                {
-                    // UNet uses unet.onnx.data (dot)
-                    dataFileName = fileName + ".onnx.data";
-                }
-                
+                // Check for .onnx.data file
+                string dataFileName = fileName + ".onnx.data";
                 string dataPath = Path.Combine(sourceModelsPath, model.relativePath, dataFileName);
                 if (File.Exists(dataPath))
                 {
-                    // This is a large model with separate data file
+                    // This is the large unet model with separate data file
                     model.fullPath = Path.Combine(sourceModelsPath, model.relativePath, fileName + extension);
                     if (File.Exists(model.fullPath))
                     {
@@ -402,30 +404,72 @@ namespace LiveTalk.Editor
 
         private void DeployModels()
         {
-            if (selectedModels == null || selectedModels.Count == 0)
+            // Validate that at least one component is selected
+            if (!includeSparkTTS && !includeLivePortrait && !includeMuseTalk)
             {
                 EditorUtility.DisplayDialog("No Models Selected", "Please select at least one model category to deploy.", "OK");
                 return;
             }
+            
+            bool liveTalkSuccess = true;
+            bool sparkTTSSuccess = true;
+            int totalDeployed = 0;
 
-            var missingModels = selectedModels.Where(m => !File.Exists(m.fullPath)).ToList();
-            if (missingModels.Any())
+            // Deploy LiveTalk models
+            if ((includeLivePortrait || includeMuseTalk) && selectedModels != null && selectedModels.Count > 0)
             {
-                string missingList = string.Join("\n", missingModels.Select(m => $"- {m.modelName} at {m.fullPath}"));
-                EditorUtility.DisplayDialog("Missing Models", $"The following models are missing:\n{missingList}", "OK");
-                return;
-            }
-
-            if (!dryRun)
-            {
-                bool proceed = EditorUtility.DisplayDialog("Deploy Models", 
-                    $"Deploy {selectedModels.Count} models ({FormatFileSize(totalSelectedSize)}) to StreamingAssets?", 
-                    "Deploy", "Cancel");
-                
-                if (!proceed)
+                var missingModels = selectedModels.Where(m => !File.Exists(m.fullPath)).ToList();
+                if (missingModels.Any())
+                {
+                    string missingList = string.Join("\n", missingModels.Select(m => $"- {m.modelName} at {m.fullPath}"));
+                    EditorUtility.DisplayDialog("Missing Models", $"The following LiveTalk models are missing:\n{missingList}", "OK");
                     return;
+                }
+
+                if (!dryRun)
+                {
+                    bool proceed = EditorUtility.DisplayDialog("Deploy Models", 
+                        $"Deploy {selectedModels.Count} LiveTalk models ({FormatFileSize(totalSelectedSize)}) to StreamingAssets?", 
+                        "Deploy", "Cancel");
+                    
+                    if (!proceed)
+                        return;
+                }
+
+                liveTalkSuccess = DeployLiveTalkModels();
+                if (liveTalkSuccess)
+                {
+                    totalDeployed += selectedModels.Count;
+                }
             }
 
+            // Deploy SparkTTS models if selected
+            if (includeSparkTTS)
+            {
+                sparkTTSSuccess = DeploySparkTTSModels();
+            }
+
+            // Show final result
+            if (!dryRun && (liveTalkSuccess || sparkTTSSuccess))
+            {
+                AssetDatabase.Refresh();
+                
+                string message = "Deployment completed:\n";
+                if (liveTalkSuccess && selectedModels?.Count > 0)
+                    message += $"• LiveTalk: {selectedModels.Count} models deployed\n";
+                if (sparkTTSSuccess)
+                    message += $"• SparkTTS: Models deployed via SparkTTS package\n";
+                
+                EditorUtility.DisplayDialog("Deployment Complete", message, "OK");
+            }
+            else if (!liveTalkSuccess || !sparkTTSSuccess)
+            {
+                EditorUtility.DisplayDialog("Deployment Error", "Some deployments failed. Check console for details.", "OK");
+            }
+        }
+
+        private bool DeployLiveTalkModels()
+        {
             try
             {
                 int progress = 0;
@@ -433,30 +477,93 @@ namespace LiveTalk.Editor
                 
                 foreach (var model in selectedModels)
                 {
-                    EditorUtility.DisplayProgressBar("Deploying Models", $"Copying {model.modelName}...", (float)progress / total);
+                    if (!dryRun)
+                    {
+                        EditorUtility.DisplayProgressBar("Deploying LiveTalk Models", $"Copying {model.modelName}...", (float)progress / total);
+                    }
                     
                     DeployModel(model);
                     progress++;
                 }
                 
-                EditorUtility.ClearProgressBar();
-                
                 if (!dryRun)
                 {
-                    AssetDatabase.Refresh();
-                    EditorUtility.DisplayDialog("Deployment Complete", 
-                        $"Successfully deployed {selectedModels.Count} models to StreamingAssets.", "OK");
+                    EditorUtility.ClearProgressBar();
                 }
                 else
                 {
-                    Debug.Log($"[DRY RUN] Would have deployed {selectedModels.Count} models");
+                    Debug.Log($"[LiveTalk DRY RUN] Would have deployed {selectedModels.Count} models");
                 }
+                
+                return true;
             }
             catch (Exception ex)
             {
-                EditorUtility.ClearProgressBar();
-                EditorUtility.DisplayDialog("Deployment Error", $"Error during deployment: {ex.Message}", "OK");
-                Debug.LogError($"Model deployment failed: {ex}");
+                if (!dryRun)
+                {
+                    EditorUtility.ClearProgressBar();
+                }
+                Debug.LogError($"[LiveTalk] Model deployment failed: {ex}");
+                return false;
+            }
+        }
+
+        private bool DeploySparkTTSModels()
+        {
+            try
+            {
+                // Try to call SparkTTS deployment tool
+                var sparkTTSToolType = System.Type.GetType("SparkTTS.Editor.ModelDeploymentTool, SparkTTS.Editor");
+                if (sparkTTSToolType == null)
+                {
+                    Debug.LogWarning("[LiveTalk] SparkTTS deployment tool not found. SparkTTS package may not be installed.");
+                    EditorUtility.DisplayDialog("SparkTTS Not Found", 
+                        "SparkTTS deployment tool not found. Please ensure SparkTTS-Unity package is installed.", "OK");
+                    return false;
+                }
+
+                var deployMethod = sparkTTSToolType.GetMethod("DeploySparkTTSModels", 
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                
+                if (deployMethod == null)
+                {
+                    Debug.LogError("[LiveTalk] SparkTTS deployment method not found.");
+                    return false;
+                }
+
+                // Create SparkTTS deployment options
+                var optionsType = sparkTTSToolType.GetNestedType("DeploymentOptions");
+                var options = System.Activator.CreateInstance(optionsType);
+                
+                // Set options using reflection
+                optionsType.GetProperty("OverwriteExisting").SetValue(options, overwriteExisting);
+                optionsType.GetProperty("CreateBackup").SetValue(options, createBackup);
+                optionsType.GetProperty("DryRun").SetValue(options, dryRun);
+                optionsType.GetProperty("IncludeSparkTTS").SetValue(options, true);
+                optionsType.GetProperty("IncludeLLM").SetValue(options, true);
+
+                // Call SparkTTS deployment
+                string sparkTTSSourcePath = Path.Combine(Application.dataPath, "Models");
+                string sparkTTSDestPath = Application.streamingAssetsPath;
+                
+                object[] parameters = { sparkTTSSourcePath, sparkTTSDestPath, options };
+                bool success = (bool)deployMethod.Invoke(null, parameters);
+                
+                if (success)
+                {
+                    Debug.Log("[LiveTalk] SparkTTS models deployed successfully via SparkTTS package.");
+                }
+                else
+                {
+                    Debug.LogError("[LiveTalk] SparkTTS deployment failed.");
+                }
+                
+                return success;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[LiveTalk] Failed to deploy SparkTTS models: {ex.Message}");
+                return false;
             }
         }
 
@@ -469,24 +576,11 @@ namespace LiveTalk.Editor
             {
                 Debug.Log($"[DRY RUN] Would copy: {model.fullPath} -> {destinationPath}");
                 
-                // Check for additional files (like .onnx.data or .onnx_data)
-                if ((model.modelName == "unet" && model.precision == "fp32") ||
-                    (model.modelName == "model" && model.relativePath.Contains("LLM")))
+                // Check for additional files (like .onnx.data)
+                if (model.modelName == "unet" && model.precision == "fp32")
                 {
-                    string dataSourcePath, dataDestPath;
-                    if (model.modelName == "model" && model.relativePath.Contains("LLM"))
-                    {
-                        // SparkTTS LLM uses model.onnx_data (underscore)
-                        dataSourcePath = model.fullPath + "_data";
-                        dataDestPath = destinationPath + "_data";
-                    }
-                    else
-                    {
-                        // UNet uses unet.onnx.data (dot)
-                        dataSourcePath = model.fullPath + ".data";
-                        dataDestPath = destinationPath + ".data";
-                    }
-                    
+                    string dataSourcePath = model.fullPath + ".data";
+                    string dataDestPath = destinationPath + ".data";
                     if (File.Exists(dataSourcePath))
                     {
                         Debug.Log($"[DRY RUN] Would copy: {dataSourcePath} -> {dataDestPath}");
@@ -510,24 +604,11 @@ namespace LiveTalk.Editor
             File.Copy(model.fullPath, destinationPath, overwriteExisting);
             Debug.Log($"Copied: {model.fullPath} -> {destinationPath}");
             
-            // Handle special case for models with separate data files
-            if ((model.modelName == "unet" && model.precision == "fp32") ||
-                (model.modelName == "model" && model.relativePath.Contains("LLM")))
+            // Handle special case for unet model with data file
+            if (model.modelName == "unet" && model.precision == "fp32")
             {
-                string dataSourcePath, dataDestPath;
-                if (model.modelName == "model" && model.relativePath.Contains("LLM"))
-                {
-                    // SparkTTS LLM uses model.onnx_data (underscore)
-                    dataSourcePath = model.fullPath + "_data";
-                    dataDestPath = destinationPath + "_data";
-                }
-                else
-                {
-                    // UNet uses unet.onnx.data (dot)
-                    dataSourcePath = model.fullPath + ".data";
-                    dataDestPath = destinationPath + ".data";
-                }
-                
+                string dataSourcePath = model.fullPath + ".data";
+                string dataDestPath = destinationPath + ".data";
                 if (File.Exists(dataSourcePath))
                 {
                     // Create backup for data file if requested
