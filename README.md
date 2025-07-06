@@ -50,9 +50,7 @@ LiveTalk is a unified, high-performance talking head generation system that comb
 ## Dependencies
 
 This package requires the following Unity packages:
-- com.github.asus4.onnxruntime (0.4.0)
-- com.github.asus4.onnxruntime-extensions (0.4.0)
-- com.unity.nuget.newtonsoft-json (3.2.1)
+- com.genesis.sparktts.unity
 
 ### Setting up Package Dependencies
 
@@ -114,7 +112,6 @@ LiveTalk includes a built-in Editor tool that automatically analyzes your codeba
 
 #### Key Features
 
-* **Smart Model Selection**: Automatically determines which models are actually used by analyzing the LiveTalk codebase
 * **Precision-Aware**: Copies only the required precision variants (FP16/FP32) based on code analysis
 * **Size Optimization**: Reduces build size by excluding unused models
 * **Folder Structure Preservation**: Maintains the correct directory structure in StreamingAssets
@@ -136,7 +133,7 @@ LiveTalk includes a built-in Editor tool that automatically analyzes your codeba
 
 #### Model Precision Settings
 
-The tool automatically selects the optimal precision for each model based on the LiveTalk codebase:
+The tool selects the used precision for each model based on the LiveTalk codebase:
 
 | Model Category | Precision | Execution Provider | Notes |
 |---|---|---|---|
@@ -183,14 +180,11 @@ Download the pre-exported ONNX models from [Google Drive](https://drive.google.c
 
 1. Download the ZIP file from the link
 2. Extract the contents
-3. Copy the extracted `LiveTalk` folder with models to your Unity project's `Assets/StreamingAssets/` directory
+3. Copy the extracted `LiveTalk` folder with models to your Unity project's `Assets/Models/` directory
+4. **Use the Model Deployment Tool** (recommended): Go to `Window > LiveTalk > Model Deployment Tool` to automatically copy only the required models with optimal precision settings
 
 #### SparkTTS Models
-Download the pre-exported ONNX models from [Google Drive](https://drive.google.com/file/d/1YXj81ApcEasY17a8Zj9RqTpvn4s1UKk7/view?usp=sharing).
-
-1. Download the ZIP file from the link
-2. Extract the contents  
-3. Copy the extracted `SparkTTS` folder with models to your Unity project's `Assets/StreamingAssets/` directory
+Check the [Model Setup](https://github.com/arghyasur1991/Spark-TTS-Unity#model-setup) section of Spark-TTS-Unity
 
 ### Exporting Models (Coming Soon)
 
@@ -515,7 +509,7 @@ bool TryGetNext(out Texture2D texture) // Non-blocking retrieval
 
 ## Requirements
 
-- Unity 6000.0 or later
+- Unity 6000.0.46f1 or later
 - Platforms: macOS (CPU/CoreML), Windows (Not tested)
 - Minimum 32GB RAM recommended for character creations
 - Storage space for models (~6GB total: ~7GB LiveTalk + ~3GB SparkTTS)
@@ -533,10 +527,10 @@ bool TryGetNext(out Texture2D texture) // Non-blocking retrieval
 - `warping_spade` (FP16): 180-250ms  
 - `landmark_runner` (FP32): 2-3ms
 
-**MuseTalk Pipeline - 11 FPS**:
+**MuseTalk Pipeline - 11-12 FPS**:
 - `vae_encoder` (FP16): 20-30ms
 - `unet` (FP16): 30-40ms
-- `vae_decoder` (FP16): 40-50ms
+- `vae_decoder` (FP16): 30-50ms
 
 ## License
 
