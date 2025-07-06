@@ -562,11 +562,7 @@ namespace LiveTalk.Utils
         /// <returns>The full path to the CoreML cache directory</returns>
         private static string GetCoreMLCacheDirectory(LiveTalkConfig config)
         {
-            if (!string.IsNullOrEmpty(config?.ModelPath))
-            {
-                return Path.Combine(config.ModelPath, "coreml_cache");
-            }
-            return Path.Combine(Application.persistentDataPath, "coreml_cache");
+            return Path.Combine(Application.dataPath, "coreml_cache");
         }
 
         /// <summary>

@@ -106,6 +106,66 @@ Assets/StreamingAssets/SparkTTS/
       ├── ...
 ```
 
+### Model Deployment Tool
+
+LiveTalk includes a built-in Editor tool that automatically analyzes your codebase and copies only the required models from `Assets/Models` to `StreamingAssets` with the correct precision settings (FP16, FP32, etc.).
+
+**Access the tool**: `Window > LiveTalk > Model Deployment Tool`
+
+#### Key Features
+
+* **Smart Model Selection**: Automatically determines which models are actually used by analyzing the LiveTalk codebase
+* **Precision-Aware**: Copies only the required precision variants (FP16/FP32) based on code analysis
+* **Size Optimization**: Reduces build size by excluding unused models
+* **Folder Structure Preservation**: Maintains the correct directory structure in StreamingAssets
+* **Backup Support**: Creates backups of existing models before overwriting
+* **Dry Run Mode**: Preview changes without actually copying files
+
+#### How to Use
+
+1. **Open the tool**: Go to `Window > LiveTalk > Model Deployment Tool`
+2. **Configure paths**: 
+   - Source: `Assets/Models` (automatically detected)
+   - Destination: `Assets/StreamingAssets/LiveTalk` (automatically configured)
+3. **Select components**: Choose which model categories to deploy:
+   - ✅ SparkTTS Models (includes LLM models)
+   - ✅ LivePortrait Models 
+   - ✅ MuseTalk Models
+4. **Review selection**: The tool shows you exactly which models will be copied and their file sizes
+5. **Deploy**: Click "Deploy Selected Models" to copy the optimized model set
+
+#### Model Precision Settings
+
+The tool automatically selects the optimal precision for each model based on the LiveTalk codebase:
+
+| Model Category | Precision | Execution Provider | Notes |
+|---|---|---|---|
+| **SparkTTS** | | | |
+| wav2vec2_model | FP16 | CPU | Smaller model for audio processing |
+| Other SparkTTS | FP32 | CPU | Full precision for quality |
+| **LivePortrait** | | | |
+| warping_spade | FP16 | CoreML | GPU-accelerated rendering |
+| Other LivePortrait | FP32 | CoreML | Full precision for facial features |
+| **MuseTalk** | | | |
+| unet, vae_encoder, vae_decoder | FP16 | CoreML | GPU-accelerated inference |
+| whisper_encoder, positional_encoding | FP32 | CPU | Audio processing precision |
+
+#### Advanced Options
+
+* **Overwrite Existing**: Replace existing models in StreamingAssets
+* **Create Backup**: Keep .backup copies of replaced files (includes .onnx.data files)
+* **Dry Run**: Preview operations without copying files
+
+#### Large Model Handling
+
+The tool automatically handles large models that use separate data files:
+- **SparkTTS LLM**: `model.onnx` (1.1MB) + `model.onnx_data` (1.9GB) - uses underscore
+- **MuseTalk UNet**: `unet.onnx` (710KB) + `unet.onnx.data` (3.2GB) - uses dot
+
+Both the model and data files are copied together and included in size calculations and backup operations.
+
+This tool ensures your Unity project includes only the models you actually need, significantly reducing build size while maintaining optimal performance.
+
 ### Downloading Pre-Exported Models
 
 #### LiveTalk Models
