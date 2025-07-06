@@ -2,7 +2,9 @@
     "name": "LiveTalk.Editor",
     "rootNamespace": "LiveTalk",
     "references": [
-        "LiveTalk.Runtime"
+        "LiveTalk.Runtime",
+        "SparkTTS.Editor",
+        "SparkTTS.Runtime"
     ],
     "includePlatforms": [
         "Editor"

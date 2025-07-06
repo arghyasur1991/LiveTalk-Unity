@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using SparkTTS.Editor;
 
 namespace LiveTalk.Editor
 {
@@ -29,14 +30,16 @@ namespace LiveTalk.Editor
             public bool isRequired;
             public long fileSize;
             public string fullPath;
+            public string source; // "LiveTalk" or "SparkTTS"
 
-            public ModelConfig(string name, string path, string prec, string provider, bool required = true)
+            public ModelConfig(string name, string path, string prec, string provider, bool required = true, string source = "LiveTalk")
             {
                 modelName = name;
                 relativePath = path;
                 precision = prec;
                 executionProvider = provider;
                 isRequired = required;
+                this.source = source;
             }
         }
 
@@ -194,16 +197,7 @@ namespace LiveTalk.Editor
             {
                 EditorGUILayout.Space();
                 EditorGUILayout.LabelField("SparkTTS Models:", EditorStyles.boldLabel);
-                
-                var sparkTTSToolType = System.Type.GetType("SparkTTS.Editor.ModelDeploymentTool, SparkTTS.Editor");
-                if (sparkTTSToolType != null)
-                {
-                    EditorGUILayout.HelpBox("✓ SparkTTS deployment tool found - models will be deployed automatically", MessageType.Info);
-                }
-                else
-                {
-                    EditorGUILayout.HelpBox("✗ SparkTTS deployment tool not found - ensure SparkTTS-Unity package is installed", MessageType.Warning);
-                }
+                EditorGUILayout.HelpBox("✓ SparkTTS deployment tool integrated - models will be deployed automatically", MessageType.Info);
             }
         }
 
@@ -305,16 +299,28 @@ namespace LiveTalk.Editor
             selectedModels = new List<ModelConfig>();
             totalSelectedSize = 0;
             
+            // Add LiveTalk models
             if (includeLivePortrait)
                 AddModelsFromCategory("LivePortrait");
             
             if (includeMuseTalk)
                 AddModelsFromCategory("MuseTalk");
             
+            // Add SparkTTS models if selected
+            if (includeSparkTTS)
+                AddSparkTTSModels();
+            
             // Calculate file sizes and validate paths
             foreach (var model in selectedModels)
             {
-                UpdateModelInfo(model);
+                if (model.source == "LiveTalk")
+                {
+                    UpdateModelInfo(model);
+                }
+                else if (model.source == "SparkTTS")
+                {
+                    UpdateSparkTTSModelInfo(model);
+                }
             }
             
             Repaint();
@@ -326,6 +332,62 @@ namespace LiveTalk.Editor
             {
                 selectedModels.AddRange(ModelConfigurations[category]);
             }
+        }
+
+        private void AddSparkTTSModels()
+        {
+            try
+            {
+                // Get SparkTTS model configurations from the SparkTTS deployment tool
+                var sparkTTSConfigs = GetSparkTTSModelConfigurations();
+                
+                foreach (var config in sparkTTSConfigs)
+                {
+                    var liveTalkConfig = new ModelConfig(
+                        config.modelName,
+                        config.relativePath,
+                        config.precision,
+                        "CPU", // Default execution provider for SparkTTS models
+                        config.isRequired,
+                        "SparkTTS"
+                    );
+                    selectedModels.Add(liveTalkConfig);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[LiveTalk] Could not load SparkTTS models: {ex.Message}");
+            }
+        }
+
+        private List<SparkTTS.Editor.ModelDeploymentTool.ModelConfig> GetSparkTTSModelConfigurations()
+        {
+            var configs = new List<SparkTTS.Editor.ModelDeploymentTool.ModelConfig>();
+            
+            // Get SparkTTS model configurations using the public API
+            configs.AddRange(SparkTTS.Editor.ModelDeploymentTool.GetModelConfigurations("SparkTTS"));
+            configs.AddRange(SparkTTS.Editor.ModelDeploymentTool.GetModelConfigurations("SparkTTS_LLM"));
+            
+            return configs;
+        }
+
+        private void UpdateSparkTTSModelInfo(ModelConfig model)
+        {
+            // Create a SparkTTS ModelConfig to use with the SparkTTS tool
+            var sparkTTSModel = new SparkTTS.Editor.ModelDeploymentTool.ModelConfig(
+                model.modelName,
+                model.relativePath,
+                model.precision,
+                model.isRequired
+            );
+            
+            // Use SparkTTS tool to update model info
+            sparkTTSModel = SparkTTS.Editor.ModelDeploymentTool.UpdateModelInfo(sparkTTSModel, sourceModelsPath);
+            
+            // Copy updated values back to our model
+            model.fullPath = sparkTTSModel.fullPath;
+            model.fileSize = sparkTTSModel.fileSize;
+            totalSelectedSize += model.fileSize;
         }
 
         private void UpdateModelInfo(ModelConfig model)
@@ -512,42 +574,24 @@ namespace LiveTalk.Editor
         {
             try
             {
-                // Try to call SparkTTS deployment tool
-                var sparkTTSToolType = System.Type.GetType("SparkTTS.Editor.ModelDeploymentTool, SparkTTS.Editor");
-                if (sparkTTSToolType == null)
-                {
-                    Debug.LogWarning("[LiveTalk] SparkTTS deployment tool not found. SparkTTS package may not be installed.");
-                    EditorUtility.DisplayDialog("SparkTTS Not Found", 
-                        "SparkTTS deployment tool not found. Please ensure SparkTTS-Unity package is installed.", "OK");
-                    return false;
-                }
-
-                var deployMethod = sparkTTSToolType.GetMethod("DeploySparkTTSModels", 
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                
-                if (deployMethod == null)
-                {
-                    Debug.LogError("[LiveTalk] SparkTTS deployment method not found.");
-                    return false;
-                }
-
                 // Create SparkTTS deployment options
-                var optionsType = sparkTTSToolType.GetNestedType("DeploymentOptions");
-                var options = System.Activator.CreateInstance(optionsType);
-                
-                // Set options using reflection
-                optionsType.GetProperty("OverwriteExisting").SetValue(options, overwriteExisting);
-                optionsType.GetProperty("CreateBackup").SetValue(options, createBackup);
-                optionsType.GetProperty("DryRun").SetValue(options, dryRun);
-                optionsType.GetProperty("IncludeSparkTTS").SetValue(options, true);
-                optionsType.GetProperty("IncludeLLM").SetValue(options, true);
+                var options = new SparkTTS.Editor.ModelDeploymentTool.DeploymentOptions
+                {
+                    OverwriteExisting = overwriteExisting,
+                    CreateBackup = createBackup,
+                    DryRun = dryRun,
+                    IncludeSparkTTS = true,
+                    IncludeLLM = true
+                };
 
                 // Call SparkTTS deployment
                 string sparkTTSSourcePath = Path.Combine(Application.dataPath, "Models");
                 string sparkTTSDestPath = Application.streamingAssetsPath;
                 
-                object[] parameters = { sparkTTSSourcePath, sparkTTSDestPath, options };
-                bool success = (bool)deployMethod.Invoke(null, parameters);
+                bool success = SparkTTS.Editor.ModelDeploymentTool.DeploySparkTTSModels(
+                    sparkTTSSourcePath, 
+                    sparkTTSDestPath, 
+                    options);
                 
                 if (success)
                 {
