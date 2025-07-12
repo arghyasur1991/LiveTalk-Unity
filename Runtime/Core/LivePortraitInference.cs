@@ -79,7 +79,10 @@ namespace LiveTalk.Core
             
             try
             {
-                LoadMaskTemplate();
+                if (_config.MemoryUsage != MemoryUsage.Optimal)
+                {
+                    LoadMaskTemplate();
+                }
                 InitializeModels();
                 Logger.LogVerbose("[LivePortraitInference] Instance created successfully");
             }
@@ -118,6 +121,11 @@ namespace LiveTalk.Core
                 throw new ArgumentNullException(nameof(outputStream));
             if (drivingStream == null)
                 throw new ArgumentNullException(nameof(drivingStream));
+
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                LoadMaskTemplate();
+            }
             
             // Convert source image to RGB24 format and process
             sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
@@ -179,6 +187,12 @@ namespace LiveTalk.Core
             // Mark streams as finished
             outputStream.Finished = true;
             EndSession();
+
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                _maskTemplate = Frame.Zero;
+            }
+
             Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
         }
 

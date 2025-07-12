@@ -499,6 +499,7 @@ namespace LiveTalk.Core
                     _inputNames = null;
                     _initialized = false;
                     _loadTask = null;
+                    _session = null;
                 }
                 // Release unmanaged resources.
                 // Set large fields to null.

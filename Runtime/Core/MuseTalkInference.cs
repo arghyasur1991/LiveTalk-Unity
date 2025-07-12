@@ -291,6 +291,7 @@ namespace LiveTalk.Core
             _vaeDecoder.EndSession();
             _positionalEncoding.EndSession();
             // Whisper model is ended in ProcessAudio()
+            _reusableBatchArray = null;
         }
 
         /// <summary>

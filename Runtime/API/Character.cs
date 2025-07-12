@@ -487,6 +487,7 @@ namespace LiveTalk.API
             // Process frames
             var processResult = new ProcessFramesResult();
             yield return ProcessFramesCoroutine(outputStream, expressionFolder, processResult);
+            videoPlayer.clip = null;
 
             Logger.LogVerbose($"[Character] Generated and saved {processResult.GeneratedFrames.Count} frames for expression: {expression}");
 
