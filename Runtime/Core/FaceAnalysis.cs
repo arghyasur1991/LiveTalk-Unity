@@ -262,10 +262,9 @@ namespace LiveTalk.Core
         /// <param name="frames">The list of input frames to process for face detection and landmark extraction</param>
         /// <param name="bboxShift">Optional vertical shift to apply to bounding boxes for fine-tuning face region positioning</param>
         /// <returns>A task containing a tuple of bounding box coordinates (as Vector4 list) and the corresponding processed frames</returns>
-        public async Task<(List<Vector4>, List<Frame>)> GetLandmarkAndBbox(List<Frame> frames, int bboxShift = 0)
+        public async Task<List<Vector4>> GetLandmarkAndBbox(List<Frame> frames, int bboxShift = 0)
         {
             var coordsList = new List<Vector4>();
-            var framesList = new List<Frame>();
             var CoordPlaceholder = Vector4.zero; // Matching InsightFaceHelper.CoordPlaceholder
             
             Logger.LogVerbose($"[FaceAnalysis] Processing {frames.Count} images with hybrid SCRFD+106landmark approach");
@@ -333,12 +332,9 @@ namespace LiveTalk.Core
                 {
                     coordsList.Add(finalBbox);
                 }
-                
-                // Store the processed data
-                framesList.Add(frame);
             }
             
-            return (coordsList, framesList);
+            return coordsList;
         }
         
         /// <summary>

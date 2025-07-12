@@ -491,13 +491,17 @@ namespace LiveTalk.Core
                 {
                     // Dispose managed resources
                     _session?.Dispose();
-                    _inputs?.Clear();
                     _preallocatedOutputs?.Clear();
+                    _inputs?.Clear();
+                    _inputNames?.Clear();
+                    _preallocatedOutputs = null;
+                    _inputs = null;
+                    _inputNames = null;
                     _initialized = false;
                     _loadTask = null;
                 }
                 // Release unmanaged resources.
-                // Set large fields to null.                
+                // Set large fields to null.
                 _disposed = true;
                 Logger.LogVerbose($"[Model] Disposed: {_config.modelName}");
             }

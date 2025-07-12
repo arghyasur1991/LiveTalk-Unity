@@ -546,7 +546,12 @@ namespace LiveTalk.Utils
         /// <returns>The full path to the CoreML cache directory</returns>
         private static string GetCoreMLCacheDirectory(LiveTalkConfig config)
         {
-            return Path.Combine(Application.dataPath, "Models", "coreml_cache");
+            var dataPath = Application.dataPath;
+            if (Application.platform == RuntimePlatform.IPhonePlayer)
+            {
+                dataPath = Application.persistentDataPath; // Use persistent data path for iOS
+            }
+            return Path.Combine(dataPath, "Models", "coreml_cache");
         }
 
         /// <summary>

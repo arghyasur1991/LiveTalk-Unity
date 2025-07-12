@@ -9,6 +9,7 @@ using UnityEngine;
 
 namespace LiveTalk.Core
 {
+    using System.IO;
     using API;
     using Utils;
 
@@ -58,6 +59,25 @@ namespace LiveTalk.Core
 
         #region Public Methods
         
+        public async Task<AvatarData> ProcessAvatarImages(List<string> avatarFramePaths)
+        {
+            if (avatarFramePaths == null)
+                throw new ArgumentNullException(nameof(avatarFramePaths));
+            if (avatarFramePaths.Count == 0)
+                throw new ArgumentException("Avatar frame paths list cannot be empty", nameof(avatarFramePaths));
+
+            Logger.LogVerbose($"[MuseTalkInference] Processing {avatarFramePaths.Count} avatar frame paths");
+
+            var textures = new List<Texture2D>();
+            foreach (var path in avatarFramePaths)
+            {
+                var texture = FileUtils.LoadFrame(path);
+                textures.Add(texture);
+            }
+
+            return await ProcessAvatarImages(textures);
+        }
+
         /// <summary>
         /// Asynchronously processes avatar images to extract face regions, landmarks, and latent representations.
         /// This method performs face detection, segmentation mask generation, and VAE encoding to prepare
@@ -82,15 +102,14 @@ namespace LiveTalk.Core
             {
                 var frame = TextureUtils.Texture2DToFrame(texture);
                 frames.Add(frame);
+                UnityEngine.Object.DestroyImmediate(texture);
             }
 
             await Task.Run(async () =>
             {
                 await _faceAnalysis.StartFaceAnalysisSession();
-                var result = await _faceAnalysis.GetLandmarkAndBbox(frames);
+                var coordsList = await _faceAnalysis.GetLandmarkAndBbox(frames);
                 _faceAnalysis.EndFaceAnalysisSession();
-                List<Vector4> coordsList = result.Item1;
-                List<Frame> framesList = result.Item2;
                 if (coordsList.Count == 0)
                 {
                     Logger.LogWarning($"[MuseTalkInference] No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
@@ -113,7 +132,8 @@ namespace LiveTalk.Core
                     
                     try
                     {                    
-                        var originalFrame = framesList[i];
+                        var originalFrame = frames[i];
+                        frames[i] = Frame.Zero;
                         
                         // Crop face region with version-specific margins
                         var croppedFrame = CropFaceRegion(originalFrame, bbox, _config.Version);

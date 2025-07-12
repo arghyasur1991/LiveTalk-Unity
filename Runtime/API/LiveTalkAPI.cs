@@ -240,6 +240,11 @@ namespace LiveTalk.API
         /// </summary>
         internal GameObject Object => _liveTalkInstance;
 
+        /// <summary>
+        /// Gets the LiveTalk configuration for internal operations.
+        /// </summary>
+        internal LiveTalkConfig Config => _config;
+
         #endregion
 
         #region Constructor

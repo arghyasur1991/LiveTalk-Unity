@@ -41,6 +41,7 @@ namespace LiveTalk.API
     internal class ProcessFramesResult
     {
         public List<Texture2D> GeneratedFrames { get; set; } = new List<Texture2D>();
+        public List<string> GeneratedFramePaths { get; set; } = new List<string>();
     }
 
 
@@ -490,13 +491,12 @@ namespace LiveTalk.API
             Logger.LogVerbose($"[Character] Generated and saved {processResult.GeneratedFrames.Count} frames for expression: {expression}");
 
             // Generate and save cache data
-            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult.GeneratedFrames);
+            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult);
             yield return new WaitUntil(() => cacheTask.IsCompleted);
 
-            // Clean up generated textures
-            foreach (var frame in processResult.GeneratedFrames)
+            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
-                UnityEngine.Object.DestroyImmediate(frame);
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
             }
         }
 
@@ -525,7 +525,15 @@ namespace LiveTalk.API
                     yield return new WaitUntil(() => writeTask.IsCompleted);
                     
                     // Keep reference for cache generation
-                    result.GeneratedFrames.Add(awaiter.Texture);
+                    if (LiveTalkAPI.Instance.Config.MemoryUsage != MemoryUsage.Optimal)
+                    {
+                        result.GeneratedFrames.Add(awaiter.Texture);
+                    }
+                    else
+                    {
+                        result.GeneratedFramePaths.Add(frameFileName);
+                        UnityEngine.Object.DestroyImmediate(awaiter.Texture);
+                    }
                     frameIndex++;
                 }
             }
@@ -576,11 +584,11 @@ namespace LiveTalk.API
         /// <summary>
         /// Generate and save cache data (latents and face data) for the processed frames using real MuseTalkInference
         /// </summary>
-        private async Task GenerateAndSaveCacheData(string expressionFolder, List<Texture2D> frames)
+        private async Task GenerateAndSaveCacheData(string expressionFolder, ProcessFramesResult processResult)
         {
             try
             {
-                Logger.LogVerbose($"[Character] Generating real cache data for {frames.Count} frames using MuseTalkInference");
+                Logger.LogVerbose($"[Character] Generating Cache Data...");
 
                 // Create a temporary MuseTalkInference instance for processing
                 var liveTalkAPI = LiveTalkAPI.Instance;
@@ -591,7 +599,7 @@ namespace LiveTalk.API
                 }
 
                 // Use MuseTalkInference to process the avatar images and extract real data
-                var avatarData = await ProcessAvatarImagesWithMuseTalk(liveTalkAPI, frames);
+                var avatarData = await ProcessAvatarImagesWithMuseTalk(liveTalkAPI, processResult);
 
                 if (avatarData != null && avatarData.Latents.Count > 0)
                 {
@@ -619,12 +627,19 @@ namespace LiveTalk.API
         /// Process avatar images using MuseTalkInference public API to extract real latents and face data
         /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
         /// </summary>
-        private async Task<AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, List<Texture2D> avatarTextures)
+        private async Task<AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, ProcessFramesResult processResult)
         {
-            Logger.LogVerbose($"[Character] Processing {avatarTextures.Count} avatar textures using real MuseTalk pipeline");
+            Logger.LogVerbose($"[Character] Processing avatar textures using MuseTalk pipeline");
 
-            // Use the public MuseTalk ProcessAvatarImages API directly - no reflection needed
-            var avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(avatarTextures);
+            AvatarData avatarData;
+            if (LiveTalkAPI.Instance.Config.MemoryUsage != MemoryUsage.Optimal)
+            {
+                avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(processResult.GeneratedFrames);
+            }
+            else
+            {
+                avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(processResult.GeneratedFramePaths);
+            }
             
             if (avatarData?.FaceRegions?.Count == 0 || avatarData?.Latents?.Count == 0)
             {

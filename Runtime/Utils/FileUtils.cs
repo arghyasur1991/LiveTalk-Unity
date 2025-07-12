@@ -110,7 +110,7 @@ namespace LiveTalk.Utils
                 
                 foreach (string filePath in files)
                 {
-                    Texture2D loadedTexture = LoadSingleFrame(filePath);
+                    Texture2D loadedTexture = LoadFrame(filePath);
                     if (loadedTexture != null)
                     {
                         framesList.Add(loadedTexture);
@@ -132,10 +132,6 @@ namespace LiveTalk.Utils
             return framesList;
         }
 
-        #endregion
-
-        #region Private Methods - Image Loading
-
         /// <summary>
         /// Loads a single image file and converts it to RGB24 format for processing.
         /// This method handles file reading, texture creation, format conversion, and error recovery
@@ -143,7 +139,7 @@ namespace LiveTalk.Utils
         /// </summary>
         /// <param name="filePath">The full file path to the image file to load</param>
         /// <returns>A Texture2D in RGB24 format with the filename as the texture name, or null if loading fails</returns>
-        private static Texture2D LoadSingleFrame(string filePath)
+        public static Texture2D LoadFrame(string filePath)
         {
             try
             {
