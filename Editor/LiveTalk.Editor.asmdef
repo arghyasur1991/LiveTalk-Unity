@@ -1,13 +1,16 @@
 {
-    "name": "MuseTalk.Runtime",
-    "rootNamespace": "MuseTalk",
+    "name": "LiveTalk.Editor",
+    "rootNamespace": "LiveTalk",
     "references": [
-        "com.github.asus4.onnxruntime",
-        "com.github.asus4.onnxruntime-extensions"
+        "LiveTalk.Runtime",
+        "SparkTTS.Editor",
+        "SparkTTS.Runtime"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
-    "allowUnsafeCode": true,
+    "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
