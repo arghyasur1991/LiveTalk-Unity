@@ -154,6 +154,42 @@ namespace LiveTalk.Core
         #region Public Methods - Face Analysis
 
         /// <summary>
+        /// Starts the face analysis session for the face analysis models.
+        /// </summary>
+        public async Task StartFaceAnalysisSession()
+        {
+            await _detFace.StartSession();
+            await _landmark2d106.StartSession();
+            await _landmarkRunner.StartSession();
+        }
+
+        /// <summary>
+        /// Ends the face analysis session for the face analysis models.
+        /// </summary>
+        public void EndFaceAnalysisSession()
+        {
+            _detFace.EndSession();
+            _landmark2d106.EndSession();
+            _landmarkRunner.EndSession();
+        }
+
+        /// <summary>
+        /// Starts the face parsing session for the face parsing model.
+        /// </summary>
+        public async Task StartFaceParsingSession()
+        {
+            await _faceParsing.StartSession();
+        }
+
+        /// <summary>
+        /// Ends the face parsing session for the face parsing model.
+        /// </summary>
+        public void EndFaceParsingSession()
+        {
+            _faceParsing.EndSession();
+        }
+
+        /// <summary>
         /// Analyzes faces in the input image and returns detected faces with landmarks, sorted by area.
         /// This is the main entry point for comprehensive face analysis, combining detection and landmark extraction.
         /// </summary>

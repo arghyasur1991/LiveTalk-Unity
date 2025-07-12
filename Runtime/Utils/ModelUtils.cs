@@ -470,10 +470,6 @@ namespace LiveTalk.Utils
                     ["MLComputeUnits"] = "CPUAndGPU",
                     ["RequireStaticInputShapes"] = "0",
                     ["EnableOnSubgraphs"] = "1",
-                    // Advanced options for optimization
-                    // ["SpecializationStrategy"] = "FastPrediction",
-                    // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
-                    // ["ProfileComputePlan"] = "1"
                 };
                 
                 if (!string.IsNullOrEmpty(cacheDirectory))

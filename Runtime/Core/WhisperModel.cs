@@ -104,6 +104,22 @@ namespace LiveTalk.Core
             }
         }
 
+        /// <summary>
+        /// Starts the session for the Whisper model
+        /// </summary>
+        public async Task StartSession()
+        {
+            await _model.StartSession();
+        }
+
+        /// <summary>
+        /// Ends the session for the Whisper model
+        /// </summary>
+        public void EndSession()
+        {
+            _model.EndSession();
+        }
+
         #endregion
 
         #region Private Methods

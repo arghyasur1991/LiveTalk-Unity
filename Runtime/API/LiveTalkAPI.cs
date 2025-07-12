@@ -26,9 +26,39 @@ namespace LiveTalk.API
 
     public enum CreationMode
     {
+        /// <summary>
+        /// Only generate voice.
+        /// </summary>
         VoiceOnly,
+        /// <summary>
+        /// Generate voice and single expression.
+        /// </summary>
         SingleExpression,
+        /// <summary>
+        /// Generate voice and all expressions.
+        /// </summary>
         AllExpressions,
+    }
+
+    public enum MemoryUsage
+    {
+        /// <summary>
+        /// Not Recommended (Not enough extra quality trade-off with performance and memory usage)
+        /// Requires all FP32 models to be packaged in StreamingAssets manually.
+        /// </summary>
+        Quality, 
+        /// <summary>
+        /// For desktop devices. Slower first use of any model.
+        /// </summary>
+        Performance, 
+        /// <summary>
+        /// Recommended for desktop devices. Prevent unnecessary model loading at startup. Default.
+        /// </summary>
+        Balanced, 
+        /// <summary>
+        /// For mobile devices (Not recommended for desktop)
+        /// </summary>
+        Optimal, 
     }
 
     /// <summary>
@@ -219,14 +249,14 @@ namespace LiveTalk.API
         /// Initializes a new instance of the LiveTalkAPI class with the specified configuration and controller.
         /// </summary>
         /// <param name="logLevel">The logging level for the API (defaults to WARNING)</param>
-        /// <param name="initializeModelsOnDemand">Whether to initialize models on demand or immediately (defaults to true)</param>
         /// <param name="characterSaveLocation">The location to save the generated characters</param>
         /// <param name="parentModelPath">The parent path for model files (defaults to StreamingAssets if empty)</param>
+        /// <param name="memoryUsage">The memory usage level for the API (defaults to Balanced)</param>
         public void Initialize(
             LogLevel logLevel = LogLevel.INFO,
-            bool initializeModelsOnDemand = true,
             string characterSaveLocation = "",
-            string parentModelPath = "")
+            string parentModelPath = "",
+            MemoryUsage memoryUsage = MemoryUsage.Balanced)
         {
             if (_initialized)
             {
@@ -244,8 +274,8 @@ namespace LiveTalk.API
                 characterSaveLocation = Path.Combine(Application.persistentDataPath, "Characters");
             }
             
-            _config = new LiveTalkConfig(parentModelPath, logLevel, initializeModelsOnDemand);
-            Logger.LogLevel = _config.LogLevel;            
+            _config = new LiveTalkConfig(parentModelPath, logLevel, memoryUsage);
+            Logger.LogLevel = _config.LogLevel;
             _livePortrait = new LivePortraitInference(_config);
             _museTalk = new MuseTalkInference(_config);
             ModelUtils.Initialize(_config.LogLevel);
@@ -263,7 +293,7 @@ namespace LiveTalk.API
                 LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
                 _ => SparkTTS.Utils.LogLevel.WARNING,
             };
-            bool optimalMemoryUsage = Application.platform == RuntimePlatform.IPhonePlayer || Application.platform == RuntimePlatform.Android;
+            bool optimalMemoryUsage = memoryUsage == MemoryUsage.Optimal;
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel, optimalMemoryUsage);
             _initialized = true;
         }

@@ -51,10 +51,7 @@ namespace LiveTalk.Core
         public MuseTalkInference(LiveTalkConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
-            if (!_config.InitializeModelsOnDemand)
-            {
-                InitializeAllModels();
-            }
+            InitializeAllModels();
         }
 
         #endregion
@@ -77,7 +74,6 @@ namespace LiveTalk.Core
             if (avatarTextures.Count == 0)
                 throw new ArgumentException("Avatar textures list cannot be empty", nameof(avatarTextures));
 
-            InitializePreprocessorModels();
             Logger.LogVerbose($"[MuseTalkInference] Processing {avatarTextures.Count} avatar textures");
             
             var avatarData = new AvatarData();
@@ -90,12 +86,21 @@ namespace LiveTalk.Core
 
             await Task.Run(async () =>
             {
+                await _faceAnalysis.StartFaceAnalysisSession();
                 var result = await _faceAnalysis.GetLandmarkAndBbox(frames);
+                _faceAnalysis.EndFaceAnalysisSession();
                 List<Vector4> coordsList = result.Item1;
                 List<Frame> framesList = result.Item2;
+                if (coordsList.Count == 0)
+                {
+                    Logger.LogWarning($"[MuseTalkInference] No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
+                    return;
+                }
                 
                 Logger.LogVerbose($"[MuseTalkInference] Face detection completed: {coordsList.Count} results for {avatarTextures.Count} input textures");
                 
+                await _faceAnalysis.StartFaceParsingSession();
+                await _vaeEncoder.StartSession();
                 // Process each detected face region
                 for (int i = 0; i < coordsList.Count; i++)
                 {
@@ -147,12 +152,15 @@ namespace LiveTalk.Core
                         // Continue processing other faces, but this will be caught in validation later
                     }
                 }
+                _faceAnalysis.EndFaceParsingSession();
+                _vaeEncoder.EndSession();
             });
             
             // Validate that we have processed at least one face successfully
             if (avatarData.FaceRegions.Count == 0)
             {
-                throw new InvalidOperationException($"No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
+                Logger.LogWarning($"[MuseTalkInference] No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
+                return avatarData;
             }
             
             if (avatarData.Latents.Count == 0)
@@ -188,7 +196,6 @@ namespace LiveTalk.Core
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            InitializeAllModels();
             var avatarTask = ProcessAvatarImages(avatarTextures);
             yield return new WaitUntil(() => avatarTask.IsCompleted);
             var avatarData = avatarTask.Result;
@@ -217,8 +224,6 @@ namespace LiveTalk.Core
                 throw new ArgumentNullException(nameof(avatarData));
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
-
-            InitializeGeneratorModels();
             
             // Step 1: Process audio and extract features
             var audioTask = ProcessAudio(audioClip);
@@ -247,6 +252,28 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
+        /// Starts the session for the generator models
+        /// </summary>
+        private async Task StartGeneratorSession()
+        {
+            await _unet.StartSession();
+            await _vaeDecoder.StartSession();
+            await _positionalEncoding.StartSession();
+            // Whisper model is started in ProcessAudio()
+        }
+
+        /// <summary>
+        /// Ends the session for the generator models
+        /// </summary>
+        private void EndGeneratorSession()
+        {
+            _unet.EndSession();
+            _vaeDecoder.EndSession();
+            _positionalEncoding.EndSession();
+            // Whisper model is ended in ProcessAudio()
+        }
+
+        /// <summary>
         /// Initializes the models required for video frame generation.
         /// Includes UNet, VAE decoder, Whisper model, and positional encoding components.
         /// </summary>
@@ -254,12 +281,20 @@ namespace LiveTalk.Core
         {
             if (_generatorModelsInitialized)
                 return;
-                
+            
+            bool forceFP32 = _config.MemoryUsage == MemoryUsage.Quality;
+            Precision fp16Precision = forceFP32 ? Precision.FP32 : Precision.FP16;
+
             Logger.LogVerbose("[MuseTalkInference] Initializing generator models...");
-            _unet = new Model(_config, "unet", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
-            _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _unet = new Model(_config, "unet", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, fp16Precision);
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                // Unet needs to be kept alive for performance reasons as loading is very slow
+                _unet.SetLoadPolicy(Model.ModelLoadPolicy.OnDemandKeepAlive);
+            }
+            _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, fp16Precision);
             _whisperModel = new WhisperModel(_config);
-            _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH, ExecutionProvider.CPU, Precision.FP32);
+            _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH);
             _generatorModelsInitialized = true;
         }
 
@@ -443,6 +478,8 @@ namespace LiveTalk.Core
             {
                 audioData = AudioUtils.StereoToMono(audioData);
             }
+
+            await _whisperModel.StartSession();
             
             if (_whisperModel == null || !_whisperModel.IsInitialized)
             {
@@ -451,6 +488,7 @@ namespace LiveTalk.Core
             
             // Use ONNX Whisper model
             var features = await ExtractWhisperFeatures(audioData, audioClip.frequency);
+            _whisperModel.EndSession();
             return features;
         }
         
@@ -494,9 +532,12 @@ namespace LiveTalk.Core
             {
                 Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
                 yield break;
-            }         
+            }
             Logger.LogVerbose($"[MuseTalkInference] Processing {numFrames} frames");
-            
+
+            var startSessionTask = StartGeneratorSession();
+            yield return new WaitUntil(() => startSessionTask.IsCompleted);
+
             // Create cycled latent list for smooth animation
             var cycleDLatents = new List<float[]>(avatarData.Latents);
             var reversedLatents = new List<float[]>(avatarData.Latents);
@@ -504,7 +545,7 @@ namespace LiveTalk.Core
             cycleDLatents.AddRange(reversedLatents);
             
             for (int idx = 0; idx < numFrames; idx++)
-            {                
+            {
                 // Prepare batch data using the frame index to cycle through latents
                 var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
                 var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
@@ -530,6 +571,8 @@ namespace LiveTalk.Core
                 // Log batch performance
                 Logger.LogVerbose($"[MuseTalkInference] Frame {idx} completed");
             }
+
+            EndGeneratorSession();
         }
 
         /// <summary>
