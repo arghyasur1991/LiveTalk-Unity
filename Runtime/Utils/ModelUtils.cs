@@ -439,6 +439,12 @@ namespace LiveTalk.Utils
             {
                 LogSeverityLevel = _ortLogLevel
             };
+
+            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                options.EnableMemoryPattern = false;
+                options.EnableCpuMemArena = false;
+            }
             
             return options;
         }
