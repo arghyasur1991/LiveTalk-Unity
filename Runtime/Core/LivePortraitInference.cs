@@ -156,12 +156,12 @@ namespace LiveTalk.Core
             {
                 var awaiter = drivingStream.WaitForNext();
                 yield return awaiter;
+                var drivingFrame = awaiter.Texture;
 
-                if (awaiter.Texture != null)
-                {
-                    var drivingFrame = awaiter.Texture;
-                    
+                if (drivingFrame != null)
+                { 
                     var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
+                    UnityEngine.Object.DestroyImmediate(drivingFrame);
                     
                     var predictTask = ProcessNextFrameAsync(processResult, predInfo, imgRgbData);
                     yield return new WaitUntil(() => predictTask.IsCompleted);
@@ -176,11 +176,6 @@ namespace LiveTalk.Core
                     }
 
                     processedFrames++;
-                    
-                    if (drivingFrame != null)
-                    {
-                        UnityEngine.Object.DestroyImmediate(drivingFrame);
-                    }
                 }
             }
 
