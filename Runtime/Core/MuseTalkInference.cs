@@ -68,16 +68,25 @@ namespace LiveTalk.Core
 
             Logger.LogVerbose($"[MuseTalkInference] Processing {avatarFramePaths.Count} avatar frame paths");
 
-            var textures = new List<Texture2D>();
+            AvatarData avatarData = new();
+            await _faceAnalysis.StartFaceAnalysisSession();
+            await _faceAnalysis.StartFaceParsingSession();
+            await _vaeEncoder.StartSession();
             foreach (var path in avatarFramePaths)
             {
                 var texture = FileUtils.LoadFrame(path);
-                textures.Add(texture);
+                await ComputeAvatarDataForFrame(texture, avatarData);
             }
+            _faceAnalysis.EndFaceAnalysisSession();
+            _faceAnalysis.EndFaceParsingSession();
+            _vaeEncoder.EndSession();
 
-            return await ProcessAvatarImages(textures);
+            Logger.LogVerbose($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
+                $"face regions with {avatarData.Latents.Count} latent sets across {avatarFramePaths.Count} avatar textures");
+
+            return avatarData;
         }
-
+        
         /// <summary>
         /// Asynchronously processes avatar images to extract face regions, landmarks, and latent representations.
         /// This method performs face detection, segmentation mask generation, and VAE encoding to prepare
@@ -97,101 +106,19 @@ namespace LiveTalk.Core
             Logger.LogVerbose($"[MuseTalkInference] Processing {avatarTextures.Count} avatar textures");
             
             var avatarData = new AvatarData();
-            var frames = new List<Frame>();
+            await _faceAnalysis.StartFaceAnalysisSession();
+            await _faceAnalysis.StartFaceParsingSession();
+            await _vaeEncoder.StartSession();
+
             foreach (var texture in avatarTextures)
             {
-                var frame = TextureUtils.Texture2DToFrame(texture);
-                frames.Add(frame);
-                UnityEngine.Object.DestroyImmediate(texture);
+                await ComputeAvatarDataForFrame(texture, avatarData);
             }
 
-            await Task.Run(async () =>
-            {
-                await _faceAnalysis.StartFaceAnalysisSession();
-                var coordsList = await _faceAnalysis.GetLandmarkAndBbox(frames);
-                _faceAnalysis.EndFaceAnalysisSession();
-                if (coordsList.Count == 0)
-                {
-                    Logger.LogWarning($"[MuseTalkInference] No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
-                    return;
-                }
-                
-                Logger.LogVerbose($"[MuseTalkInference] Face detection completed: {coordsList.Count} results for {avatarTextures.Count} input textures");
-                
-                await _faceAnalysis.StartFaceParsingSession();
-                await _vaeEncoder.StartSession();
-                // Process each detected face region
-                for (int i = 0; i < coordsList.Count; i++)
-                {
-                    var bbox = coordsList[i];
-                    if (bbox == Vector4.zero)
-                    {
-                        Logger.LogWarning($"[MuseTalkInference] No face detected in image {i}, skipping");
-                        continue;
-                    }
-                    
-                    try
-                    {                    
-                        var originalFrame = frames[i];
-                        frames[i] = Frame.Zero;
-                        
-                        // Crop face region with version-specific margins
-                        var croppedFrame = CropFaceRegion(originalFrame, bbox, _config.Version);
-                        
-                        // Compute segmentation mask and cached data for blending
-                        var segmentationData = await ComputeSegmentationData(originalFrame, bbox);
-                    
-                        // Create face data for this region
-                        var faceData = new FaceData
-                        {
-                            HasFace = true,
-                            BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
-                            CroppedFaceTexture = croppedFrame,
-                            OriginalTexture = originalFrame,
-                            FaceLarge = segmentationData.FaceLarge,
-                            SegmentationMask = segmentationData.SegmentationMask,
-                            AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
-                            CropBox = segmentationData.CropBox,
-                            
-                            MaskSmall = segmentationData.MaskSmall,
-                            FullMask = segmentationData.FullMask,
-                            BoundaryMask = segmentationData.BoundaryMask,
-                            BlurredMask = segmentationData.BlurredMask
-                        };
-                        
-                        avatarData.FaceRegions.Add(faceData);
-                        
-                        // Generate latents using VAE encoder
-                        var latents = await GetLatentsForUNet(croppedFrame);
-                        avatarData.Latents.Add(latents);
-                    }
-                    catch (Exception e)
-                    {
-                        Logger.LogError($"[MuseTalkInference] Error processing face region {i}: {e.Message}");
-                        Logger.LogError($"[MuseTalkInference] Stack trace: {e.StackTrace}");
-                        // Continue processing other faces, but this will be caught in validation later
-                    }
-                }
-                _faceAnalysis.EndFaceParsingSession();
-                _vaeEncoder.EndSession();
-            });
-            
-            // Validate that we have processed at least one face successfully
-            if (avatarData.FaceRegions.Count == 0)
-            {
-                Logger.LogWarning($"[MuseTalkInference] No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
-                return avatarData;
-            }
-            
-            if (avatarData.Latents.Count == 0)
-            {
-                throw new InvalidOperationException($"Failed to generate latents for any of the {avatarData.FaceRegions.Count} detected faces. Check VAE encoder initialization and texture format.");
-            }
-            
-            if (avatarData.Latents.Count != avatarData.FaceRegions.Count)
-            {
-                Logger.LogWarning($"[MuseTalkInference] Latent count ({avatarData.Latents.Count}) does not match face region count ({avatarData.FaceRegions.Count}). Some faces may have failed processing.");
-            }
+            _faceAnalysis.EndFaceAnalysisSession();
+            _faceAnalysis.EndFaceParsingSession();
+            _vaeEncoder.EndSession();
+
             Logger.LogVerbose($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
                 $"face regions with {avatarData.Latents.Count} latent sets across {avatarTextures.Count} avatar textures");            
             return avatarData;
@@ -594,6 +521,51 @@ namespace LiveTalk.Core
             }
 
             EndGeneratorSession();
+        }
+
+        /// <summary>
+        /// Asynchronously computes avatar data for a single frame.
+        /// This method detects faces, crops the face region, generates segmentation masks,
+        /// and computes latents for the UNet model.
+        /// </summary>
+        /// <param name="texture"></param>
+        /// <param name="avatarData"></param>
+        /// <returns></returns>
+        private async Task ComputeAvatarDataForFrame(Texture2D texture, AvatarData avatarData)
+        {
+            var frame = TextureUtils.Texture2DToFrame(texture);
+            UnityEngine.Object.DestroyImmediate(texture);
+            await Task.Run(async () =>
+            {
+                var bbox = await _faceAnalysis.GetLandmarkAndBbox(frame);
+                if (bbox == Vector4.zero)
+                {
+                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {texture.width}x{texture.height}");
+                    return;
+                }
+
+                var croppedFrame = CropFaceRegion(frame, bbox, _config.Version);
+                var segmentationData = await ComputeSegmentationData(frame, bbox);
+                var faceData = new FaceData
+                {
+                    HasFace = true,
+                    BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
+                    CroppedFaceTexture = croppedFrame,
+                    OriginalTexture = frame,
+                    FaceLarge = segmentationData.FaceLarge,
+                    SegmentationMask = segmentationData.SegmentationMask,
+                    AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
+                    CropBox = segmentationData.CropBox,
+                    MaskSmall = segmentationData.MaskSmall,
+                    FullMask = segmentationData.FullMask,
+                    BoundaryMask = segmentationData.BoundaryMask,
+                    BlurredMask = segmentationData.BlurredMask
+                };
+                avatarData.FaceRegions.Add(faceData);
+
+                var latents = await GetLatentsForUNet(croppedFrame);
+                avatarData.Latents.Add(latents);
+            });
         }
 
         /// <summary>
