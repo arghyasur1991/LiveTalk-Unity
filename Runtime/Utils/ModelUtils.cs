@@ -77,7 +77,7 @@ namespace LiveTalk.Utils
 
             InitializeOnnxLogging();
             _cacheDirectory = GetCoreMLCacheDirectory();
-            EnsureCacheDirectoryExists(_cacheDirectory);
+            FileUtils.EnsureDirectoryExists(_cacheDirectory);
             
             // Start background task queue processor for asynchronous model loading
             Task.Run(async() => {
@@ -572,31 +572,6 @@ namespace LiveTalk.Utils
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             }
             return modelPath;
-        }
-
-        /// <summary>
-        /// Ensures the CoreML cache directory exists and is writable with proper error handling.
-        /// This method creates the cache directory structure if it doesn't exist and handles
-        /// permission and filesystem errors gracefully.
-        /// </summary>
-        /// <param name="cacheDirectory">The cache directory path to create and validate</param>
-        private static void EnsureCacheDirectoryExists(string cacheDirectory)
-        {
-            if (string.IsNullOrEmpty(cacheDirectory))
-                return;
-                
-            try
-            {
-                if (!Directory.Exists(cacheDirectory))
-                {
-                    Directory.CreateDirectory(cacheDirectory);
-                    Logger.Log($"[ModelUtils] Created CoreML cache directory: {cacheDirectory}");
-                }
-            }
-            catch (Exception e)
-            {
-                Logger.LogWarning($"[ModelUtils] Failed to create cache directory {cacheDirectory}: {e.Message}");
-            }
         }
 
         #endregion
