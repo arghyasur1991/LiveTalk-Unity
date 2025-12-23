@@ -444,6 +444,7 @@ namespace LiveTalk.Utils
             {
                 options.EnableMemoryPattern = false;
                 options.EnableCpuMemArena = false;
+                options.IntraOpNumThreads = 1;
             }
             
             return options;

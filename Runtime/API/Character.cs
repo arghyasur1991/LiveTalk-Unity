@@ -497,6 +497,7 @@ namespace LiveTalk.API
 
             if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
+                yield return new WaitForSeconds(2f); // Wait for GC to complete
                 GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
             }
         }
