@@ -79,11 +79,11 @@ namespace LiveTalk.Core
             
             try
             {
-                LoadMaskTemplate();
-                if (!_config.InitializeModelsOnDemand)
+                if (_config.MemoryUsage != MemoryUsage.Optimal)
                 {
-                    InitializeModels();
+                    LoadMaskTemplate();
                 }
+                InitializeModels();
                 Logger.LogVerbose("[LivePortraitInference] Instance created successfully");
             }
             catch (Exception e)
@@ -122,12 +122,22 @@ namespace LiveTalk.Core
             if (drivingStream == null)
                 throw new ArgumentNullException(nameof(drivingStream));
 
-            InitializeModels();
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                LoadMaskTemplate();
+            }
+            
             // Convert source image to RGB24 format and process
             sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
             var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
-            var processSrcTask = ProcessSourceImageAsync(srcImg);
+
+            // Start session
+            var startSessionTask = StartSession();
+            Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
+            yield return new WaitUntil(() => startSessionTask.IsCompleted);
             
+            // Process source image
+            var processSrcTask = ProcessSourceImageAsync(srcImg);            
             Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
             
             yield return new WaitUntil(() => processSrcTask.IsCompleted);
@@ -146,12 +156,12 @@ namespace LiveTalk.Core
             {
                 var awaiter = drivingStream.WaitForNext();
                 yield return awaiter;
+                var drivingFrame = awaiter.Texture;
 
-                if (awaiter.Texture != null)
-                {
-                    var drivingFrame = awaiter.Texture;
-                    
+                if (drivingFrame != null)
+                { 
                     var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
+                    UnityEngine.Object.DestroyImmediate(drivingFrame);
                     
                     var predictTask = ProcessNextFrameAsync(processResult, predInfo, imgRgbData);
                     yield return new WaitUntil(() => predictTask.IsCompleted);
@@ -166,16 +176,18 @@ namespace LiveTalk.Core
                     }
 
                     processedFrames++;
-                    
-                    if (drivingFrame != null)
-                    {
-                        UnityEngine.Object.DestroyImmediate(drivingFrame);
-                    }
                 }
             }
 
             // Mark streams as finished
             outputStream.Finished = true;
+            EndSession();
+
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                _maskTemplate = Frame.Zero;
+            }
+
             Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
         }
 
@@ -195,13 +207,40 @@ namespace LiveTalk.Core
                 return;
             }
 
+            bool forceFP32 = _config.MemoryUsage == MemoryUsage.Quality;
+            Precision fp16Precision = forceFP32 ? Precision.FP32 : Precision.FP16;
+
             Logger.LogVerbose("[LivePortraitInference] Initializing models...");
             _appearanceFeatureExtractor = new Model(_config, "appearance_feature_extractor", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
             _motionExtractor = new Model(_config, "motion_extractor", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML);
             _stitching = new Model(_config, "stitching", MODEL_RELATIVE_PATH);
-            _warpingSpade = new Model(_config, "warping_spade", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _warpingSpade = new Model(_config, "warping_spade", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, fp16Precision);
             _faceAnalysis = FaceAnalysis.CreateOrGetInstance(_config);
             _initialized = true;
+        }
+
+        /// <summary>
+        /// Starts the session for all models
+        /// </summary>
+        private async Task StartSession()
+        {
+            await _appearanceFeatureExtractor.StartSession();
+            await _motionExtractor.StartSession();
+            await _stitching.StartSession();
+            await _warpingSpade.StartSession();
+            await _faceAnalysis.StartFaceAnalysisSession();
+        }
+
+        /// <summary>
+        /// Ends the session for all models
+        /// </summary>
+        private void EndSession()
+        {
+            _appearanceFeatureExtractor.EndSession();
+            _motionExtractor.EndSession();
+            _stitching.EndSession();
+            _warpingSpade.EndSession();
+            _faceAnalysis.EndFaceAnalysisSession();
         }
 
         #endregion

@@ -41,6 +41,7 @@ namespace LiveTalk.API
     internal class ProcessFramesResult
     {
         public List<Texture2D> GeneratedFrames { get; set; } = new List<Texture2D>();
+        public List<string> GeneratedFramePaths { get; set; } = new List<string>();
     }
 
 
@@ -160,6 +161,7 @@ namespace LiveTalk.API
     {
         public string Name { get; internal set; }
         public Gender Gender { get; internal set; }
+        public string CharacterId { get; set; }
         public Texture2D Image { get; internal set; }
         public Pitch Pitch { get; internal set; }
         public Speed Speed { get; internal set; }
@@ -171,6 +173,8 @@ namespace LiveTalk.API
         internal string CharacterFolder { get; set; }
         internal Dictionary<int, ExpressionData> LoadedExpressions { get; set; } = new Dictionary<int, ExpressionData>();
         internal CharacterVoice LoadedVoice { get; set; }
+        internal string DrivingFramesFolder { get; set; }
+        internal string VoiceFolder { get; set; }
         
         internal Character(
             string name,
@@ -188,30 +192,20 @@ namespace LiveTalk.API
             Intro = intro;
         }
 
-        public static IEnumerator LoadCharacterAsync(
-            string characterId,
+        public static IEnumerator LoadCharacterAsyncFromPath(
+            string characterPath,
             Action<Character> onComplete,
             Action<Exception> onError)
         {
-            if (string.IsNullOrEmpty(characterId))
+            if (string.IsNullOrEmpty(characterPath))
             {
-                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
                 yield break;
             }
-
-            // Support both folder and .bundle package formats
-            string characterPath = GetCharacterPath(characterId);
-            if (characterPath == null)
-            {
-                onError?.Invoke(new DirectoryNotFoundException($"Character not found: {characterId} (checked both folder and .bundle package)"));
-                yield break;
-            }
+            Logger.Log($"[Character] Loading character data from path: {characterPath}");
 
             Character loadedCharacter = null;
             Exception loadError = null;
-
-            bool isBundle = IsCharacterBundle(characterId);
-            Logger.Log($"[Character] Loading character data for {characterId} from {(isBundle ? "bundle" : "folder")}: {characterPath}");
 
             // Load character data in a coroutine
             yield return LoadCharacterDataCoroutine(characterPath, 
@@ -232,128 +226,53 @@ namespace LiveTalk.API
             }
         }
 
+        public static IEnumerator LoadCharacterAsyncFromId(
+            string characterId,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (string.IsNullOrEmpty(characterId))
+            {
+                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                yield break;
+            }
+
+            // Support both folder and .bundle package formats
+            string characterPath = GetCharacterPath(characterId);
+            if (characterPath == null)
+            {
+                onError?.Invoke(new DirectoryNotFoundException($"Character not found: {characterId} (checked both folder and .bundle package)"));
+                yield break;
+            }
+
+            yield return LoadCharacterAsyncFromPath(characterPath, onComplete, onError);
+        }
+
         /// <summary>
-        /// Create avatar with explicit format selection
+        /// Create avatar with explicit voice prompt path
         /// </summary>
+        /// <param name="voicePromptPath">The path to the voice prompt</param>
         /// <param name="useBundle">True to create as macOS bundle, false to create as regular folder</param>
-        public IEnumerator CreateAvatarAsync(bool useBundle, CreationMode creationMode)
+        /// <param name="creationMode">The creation mode to use</param>
+        /// <returns>Coroutine for avatar creation</returns>
+        public IEnumerator CreateAvatarAsync(
+            string voicePromptPath,
+            bool useBundle,
+            CreationMode creationMode)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
-            // Get the LiveTalkAPI instance
-            var liveTalkAPI = LiveTalkAPI.Instance ?? throw new InvalidOperationException("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first.");
 
-            // Step 1: Generate a unique ID for this character based on name, gender, and image
-            string characterId = GenerateCharacterHash();
-            string characterFolder = Path.Combine(saveLocation, useBundle ? $"{characterId}.bundle" : characterId);
-            
-            // Create main character directory (clean slate approach)
-            // Using .bundle extension makes this appear as a single file in macOS Finder
-            if (Directory.Exists(characterFolder))
+            yield return CreateAvatarAsyncInternal(useBundle, creationMode);
+            if (!string.IsNullOrEmpty(voicePromptPath))
             {
-                Directory.Delete(characterFolder, true);
+                var voicePromptClipTask = LoadVoiceFromReference(voicePromptPath, VoiceFolder);
+                yield return new WaitUntil(() => voicePromptClipTask.IsCompleted);
             }
-            Directory.CreateDirectory(characterFolder);
-
-            // Add json for character config
-            var characterConfig = new
+            else
             {
-                name = Name,
-                gender = Gender,
-                pitch = Pitch,
-                speed = Speed, 
-                intro = Intro
-            };
-            string characterConfigJson = JsonConvert.SerializeObject(characterConfig, Formatting.Indented);
-            var writeConfigTask = File.WriteAllTextAsync(Path.Combine(characterFolder, "character.json"), characterConfigJson);
-            yield return new WaitUntil(() => writeConfigTask.IsCompleted);
-
-            // Add Info.plist for macOS package (only when creating bundle)
-            if (useBundle)
-            {
-                string infoPlistContent = $@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<!DOCTYPE plist PUBLIC ""-//Apple//DTD PLIST 1.0//EN"" ""http://www.apple.com/DTDs/PropertyList-1.0.dtd"">
-<plist version=""1.0"">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.genesis.livetalk.character.{characterId}</string>
-    <key>CFBundleName</key>
-    <string>{Name}</string>
-    <key>CFBundleDisplayName</key>
-    <string>{Name} Character</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>BNDL</string>
-    <key>CFBundleSignature</key>
-    <string>LTCH</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>";
-                var writePlistTask = File.WriteAllTextAsync(Path.Combine(characterFolder, "Info.plist"), infoPlistContent);
-                yield return new WaitUntil(() => writePlistTask.IsCompleted);
+                var voiceTask = GenerateVoiceSample(VoiceFolder);
+                yield return new WaitUntil(() => voiceTask.IsCompleted);
             }
-
-            // Save image (convert to uncompressed format if needed)
-            string imagePath = Path.Combine(characterFolder, "image.png");
-            var uncompressedImage = TextureUtils.ConvertToUncompressedTexture(Image);
-            byte[] imageBytes = uncompressedImage.EncodeToPNG();
-            var writeImageTask = File.WriteAllBytesAsync(imagePath, imageBytes);
-            yield return new WaitUntil(() => writeImageTask.IsCompleted);
-            
-            // Clean up temporary texture if we created one
-            if (uncompressedImage != Image)
-            {
-                UnityEngine.Object.DestroyImmediate(uncompressedImage);
-            }
-            
-            // Create subfolder structure
-            string drivingFramesFolder = Path.Combine(characterFolder, "drivingFrames");
-            string voiceFolder = Path.Combine(characterFolder, "voice");
-            Directory.CreateDirectory(drivingFramesFolder);
-            Directory.CreateDirectory(voiceFolder);
-
-            Logger.Log($"[Character] Creating character for {Name} in {(useBundle ? "bundle" : "folder")}: {characterFolder}");
-
-            // Step 2: Generate driving frames for each expression
-            var expressions = new string[] { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
-            bool useSingleExpression = creationMode == CreationMode.SingleExpression;
-            bool voiceOnly = creationMode == CreationMode.VoiceOnly;
-            if (useSingleExpression)
-            {
-                expressions = new string[] { "talk-neutral" };
-            }
-            else if (voiceOnly)
-            {
-                expressions = new string[] { };
-            }
-            for (int expressionIndex = 0; expressionIndex < expressions.Length; expressionIndex++)
-            {
-                string expression = expressions[expressionIndex];
-                string expressionFolder = Path.Combine(drivingFramesFolder, $"expression-{expressionIndex}");
-                Directory.CreateDirectory(expressionFolder);
-
-                Logger.Log($"[Character] Processing expression: {expression} (index: {expressionIndex})");
-
-                // Load the driving video for this expression
-                VideoClip drivingVideo = LoadDrivingVideoForExpression(expression);
-                if (drivingVideo == null)
-                {
-                    Logger.LogWarning($"[Character] Could not load driving video for expression: {expression}");
-                    continue;
-                }
-
-                // Process this expression with coroutines outside try-catch
-                yield return ProcessExpressionCoroutine(expression, drivingVideo, expressionFolder, liveTalkAPI);
-            }
-
-            // Step 3: Generate voice sample using SparkTTS
-            var voiceTask = GenerateVoiceSample(voiceFolder);
-            yield return new WaitUntil(() => voiceTask.IsCompleted);
 
             var stop = start.Elapsed;
             Logger.Log($"[Character] Character creation completed for {Name} in {stop.TotalMilliseconds}ms");
@@ -453,14 +372,139 @@ namespace LiveTalk.API
         {
             Logger.LogVerbose($"[Character] Loading character data for {Name}");
 
-            // Load expressions data
-            yield return LoadExpressionsData();
+            if (Image != null)
+            {
+                // Load expressions data
+                yield return LoadExpressionsData();
+            }
 
             // Load voice data
             yield return LoadVoiceData();
 
             IsDataLoaded = true;
             Logger.LogVerbose($"[Character] Character data loaded successfully for {Name}");
+        }
+
+        /// <summary>
+        /// Create avatar internal
+        /// </summary>
+        /// <param name="useBundle">True to create as macOS bundle, false to create as regular folder</param>
+        /// <param name="creationMode">The creation mode to use</param>
+        /// <returns>Coroutine for avatar creation</returns>
+        private IEnumerator CreateAvatarAsyncInternal(bool useBundle, CreationMode creationMode)
+        {
+            // Get the LiveTalkAPI instance
+            var liveTalkAPI = LiveTalkAPI.Instance ?? throw new InvalidOperationException("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first.");
+
+            // Step 1: Generate a unique ID for this character based on name, gender, and image
+            CharacterId = GenerateCharacterHash();
+            CharacterFolder = Path.Combine(saveLocation, useBundle ? $"{CharacterId}.bundle" : CharacterId);
+            // Create main character directory (clean slate approach)
+            // Using .bundle extension makes this appear as a single file in macOS Finder
+            if (Directory.Exists(CharacterFolder))
+            {
+                Directory.Delete(CharacterFolder, true);
+            }
+            Directory.CreateDirectory(CharacterFolder);
+
+            // Add json for character config
+            var characterConfig = new
+            {
+                name = Name,
+                gender = Gender,
+                pitch = Pitch,
+                speed = Speed, 
+                intro = Intro
+            };
+            string characterConfigJson = JsonConvert.SerializeObject(characterConfig, Formatting.Indented);
+            var writeConfigTask = File.WriteAllTextAsync(Path.Combine(CharacterFolder, "character.json"), characterConfigJson);
+            yield return new WaitUntil(() => writeConfigTask.IsCompleted);
+
+            // Add Info.plist for macOS package (only when creating bundle)
+            if (useBundle)
+            {
+                string infoPlistContent = $@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<!DOCTYPE plist PUBLIC ""-//Apple//DTD PLIST 1.0//EN"" ""http://www.apple.com/DTDs/PropertyList-1.0.dtd"">
+<plist version=""1.0"">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.genesis.livetalk.character.{CharacterId}</string>
+    <key>CFBundleName</key>
+    <string>{Name}</string>
+    <key>CFBundleDisplayName</key>
+    <string>{Name} Character</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleSignature</key>
+    <string>LTCH</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>";
+                var writePlistTask = File.WriteAllTextAsync(Path.Combine(CharacterFolder, "Info.plist"), infoPlistContent);
+                yield return new WaitUntil(() => writePlistTask.IsCompleted);
+            }
+
+            // Create subfolder structure
+            DrivingFramesFolder = Path.Combine(CharacterFolder, "drivingFrames");
+            VoiceFolder = Path.Combine(CharacterFolder, "voice");
+            Directory.CreateDirectory(DrivingFramesFolder);
+            Directory.CreateDirectory(VoiceFolder);
+
+            Logger.Log($"[Character] Creating character for {Name} in {(useBundle ? "bundle" : "folder")}: {CharacterFolder}");
+
+            if (Image != null)
+            {
+                // Save image (convert to uncompressed format if needed)
+                string imagePath = Path.Combine(CharacterFolder, "image.png");
+                var uncompressedImage = TextureUtils.ConvertToUncompressedTexture(Image);
+                byte[] imageBytes = uncompressedImage.EncodeToPNG();
+                var writeImageTask = File.WriteAllBytesAsync(imagePath, imageBytes);
+                yield return new WaitUntil(() => writeImageTask.IsCompleted);
+                
+                // Clean up temporary texture if we created one
+                if (uncompressedImage != Image)
+                {
+                    UnityEngine.Object.DestroyImmediate(uncompressedImage);
+                }
+                // Step 2: Generate driving frames for each expression
+                var expressions = new string[] { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
+                bool useSingleExpression = creationMode == CreationMode.SingleExpression;
+                bool voiceOnly = creationMode == CreationMode.VoiceOnly;
+                if (useSingleExpression)
+                {
+                    expressions = new string[] { "talk-neutral" };
+                }
+                else if (voiceOnly)
+                {
+                    expressions = new string[] { };
+                }
+                for (int expressionIndex = 0; expressionIndex < expressions.Length; expressionIndex++)
+                {
+                    string expression = expressions[expressionIndex];
+                    string expressionFolder = Path.Combine(DrivingFramesFolder, $"expression-{expressionIndex}");
+                    Directory.CreateDirectory(expressionFolder);
+
+                    Logger.Log($"[Character] Processing expression: {expression} (index: {expressionIndex})");
+
+                    // Load the driving video for this expression
+                    VideoClip drivingVideo = LoadDrivingVideoForExpression(expression);
+                    if (drivingVideo == null)
+                    {
+                        Logger.LogWarning($"[Character] Could not load driving video for expression: {expression}");
+                        continue;
+                    }
+
+                    // Process this expression with coroutines outside try-catch
+                    yield return ProcessExpressionCoroutine(expression, drivingVideo, expressionFolder, liveTalkAPI);
+                }
+            }
         }
 
         /// <summary>
@@ -486,17 +530,18 @@ namespace LiveTalk.API
             // Process frames
             var processResult = new ProcessFramesResult();
             yield return ProcessFramesCoroutine(outputStream, expressionFolder, processResult);
+            videoPlayer.clip = null;
 
             Logger.LogVerbose($"[Character] Generated and saved {processResult.GeneratedFrames.Count} frames for expression: {expression}");
 
             // Generate and save cache data
-            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult.GeneratedFrames);
+            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult);
             yield return new WaitUntil(() => cacheTask.IsCompleted);
 
-            // Clean up generated textures
-            foreach (var frame in processResult.GeneratedFrames)
+            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
-                UnityEngine.Object.DestroyImmediate(frame);
+                yield return new WaitForSeconds(2f); // Wait for GC to complete
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
             }
         }
 
@@ -525,7 +570,15 @@ namespace LiveTalk.API
                     yield return new WaitUntil(() => writeTask.IsCompleted);
                     
                     // Keep reference for cache generation
-                    result.GeneratedFrames.Add(awaiter.Texture);
+                    if (LiveTalkAPI.Instance.Config.MemoryUsage != MemoryUsage.Optimal)
+                    {
+                        result.GeneratedFrames.Add(awaiter.Texture);
+                    }
+                    else
+                    {
+                        result.GeneratedFramePaths.Add(frameFileName);
+                        UnityEngine.Object.DestroyImmediate(awaiter.Texture);
+                    }
                     frameIndex++;
                 }
             }
@@ -576,11 +629,11 @@ namespace LiveTalk.API
         /// <summary>
         /// Generate and save cache data (latents and face data) for the processed frames using real MuseTalkInference
         /// </summary>
-        private async Task GenerateAndSaveCacheData(string expressionFolder, List<Texture2D> frames)
+        private async Task GenerateAndSaveCacheData(string expressionFolder, ProcessFramesResult processResult)
         {
             try
             {
-                Logger.LogVerbose($"[Character] Generating real cache data for {frames.Count} frames using MuseTalkInference");
+                Logger.LogVerbose($"[Character] Generating Cache Data...");
 
                 // Create a temporary MuseTalkInference instance for processing
                 var liveTalkAPI = LiveTalkAPI.Instance;
@@ -591,7 +644,7 @@ namespace LiveTalk.API
                 }
 
                 // Use MuseTalkInference to process the avatar images and extract real data
-                var avatarData = await ProcessAvatarImagesWithMuseTalk(liveTalkAPI, frames);
+                var avatarData = await ProcessAvatarImagesWithMuseTalk(liveTalkAPI, processResult);
 
                 if (avatarData != null && avatarData.Latents.Count > 0)
                 {
@@ -619,12 +672,19 @@ namespace LiveTalk.API
         /// Process avatar images using MuseTalkInference public API to extract real latents and face data
         /// This uses the actual MuseTalk face analysis and VAE encoder pipeline - NO FALLBACKS
         /// </summary>
-        private async Task<AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, List<Texture2D> avatarTextures)
+        private async Task<AvatarData> ProcessAvatarImagesWithMuseTalk(LiveTalkAPI liveTalkAPI, ProcessFramesResult processResult)
         {
-            Logger.LogVerbose($"[Character] Processing {avatarTextures.Count} avatar textures using real MuseTalk pipeline");
+            Logger.LogVerbose($"[Character] Processing avatar textures using MuseTalk pipeline");
 
-            // Use the public MuseTalk ProcessAvatarImages API directly - no reflection needed
-            var avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(avatarTextures);
+            AvatarData avatarData;
+            if (LiveTalkAPI.Instance.Config.MemoryUsage != MemoryUsage.Optimal)
+            {
+                avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(processResult.GeneratedFrames);
+            }
+            else
+            {
+                avatarData = await liveTalkAPI.MuseTalk.ProcessAvatarImages(processResult.GeneratedFramePaths);
+            }
             
             if (avatarData?.FaceRegions?.Count == 0 || avatarData?.Latents?.Count == 0)
             {
@@ -821,6 +881,22 @@ namespace LiveTalk.API
             }
             
             return texturePaths;
+        }
+
+        private async Task LoadVoiceFromReference(string voicePromptPath, string voiceFolder)
+        {
+            var voicePromptClip = await AudioLoaderService.LoadAudioClipAsync(voicePromptPath);
+            var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(voicePromptClip);
+            if (characterVoice != null)
+            {
+                await characterVoice.GenerateSpeechAsync("Hello, this is a test message");
+                await characterVoice.SaveVoiceAsync(voiceFolder);
+                characterVoice.Dispose();
+            }
+            else
+            {
+                Logger.LogError("[Character] Failed to load character voice from reference");
+            }
         }
 
         /// <summary>
@@ -1241,6 +1317,9 @@ namespace LiveTalk.API
             Action<Exception> onError)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
+
+            var characterId = Path.GetFileNameWithoutExtension(characterFolder);
+
             // Load character.json
             string configPath = Path.Combine(characterFolder, "character.json");
             if (!File.Exists(configPath))
@@ -1273,28 +1352,30 @@ namespace LiveTalk.API
 
             // Load character image
             string imagePath = Path.Combine(characterFolder, "image.png");
+            Texture2D texture = null;
             if (!File.Exists(imagePath))
             {
-                onError?.Invoke(new FileNotFoundException($"Character image not found: {imagePath}"));
-                yield break;
+                Debug.Log($"[Character] {config.name} image not found: {imagePath}");
             }
-
-            var readImageTask = File.ReadAllBytesAsync(imagePath);
-            yield return new WaitUntil(() => readImageTask.IsCompleted);
-
-            if (readImageTask.IsFaulted)
+            else
             {
-                onError?.Invoke(readImageTask.Exception?.InnerException ?? new Exception("Failed to read character image"));
-                yield break;
-            }
+                var readImageTask = File.ReadAllBytesAsync(imagePath);
+                yield return new WaitUntil(() => readImageTask.IsCompleted);
 
-            // Create texture from image bytes
-            var imageBytes = readImageTask.Result;
-            var texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
-            if (!texture.LoadImage(imageBytes))
-            {
-                onError?.Invoke(new Exception("Failed to load character image into texture"));
-                yield break;
+                if (readImageTask.IsFaulted)
+                {
+                    onError?.Invoke(readImageTask.Exception?.InnerException ?? new Exception("Failed to read character image"));
+                    yield break;
+                }
+
+                // Create texture from image bytes
+                var imageBytes = readImageTask.Result;
+                texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
+                if (!texture.LoadImage(imageBytes))
+                {
+                    onError?.Invoke(new Exception("Failed to load character image into texture"));
+                    yield break;
+                }
             }
 
             // Create character object
@@ -1308,7 +1389,8 @@ namespace LiveTalk.API
             )
             {
                 // Set character folder for data loading
-                CharacterFolder = characterFolder
+                CharacterFolder = characterFolder,
+                CharacterId = characterId
             };
 
             // Load all character data (expressions, voice, etc.)

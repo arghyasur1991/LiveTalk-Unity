@@ -26,9 +26,39 @@ namespace LiveTalk.API
 
     public enum CreationMode
     {
+        /// <summary>
+        /// Only generate voice.
+        /// </summary>
         VoiceOnly,
+        /// <summary>
+        /// Generate voice and single expression.
+        /// </summary>
         SingleExpression,
+        /// <summary>
+        /// Generate voice and all expressions.
+        /// </summary>
         AllExpressions,
+    }
+
+    public enum MemoryUsage
+    {
+        /// <summary>
+        /// Not Recommended (Not enough extra quality trade-off with performance and memory usage)
+        /// Requires all FP32 models to be packaged in StreamingAssets manually.
+        /// </summary>
+        Quality, 
+        /// <summary>
+        /// For desktop devices. Slower first use of any model.
+        /// </summary>
+        Performance, 
+        /// <summary>
+        /// Recommended for desktop devices. Prevent unnecessary model loading at startup. Default.
+        /// </summary>
+        Balanced, 
+        /// <summary>
+        /// For mobile devices (Not recommended for desktop)
+        /// </summary>
+        Optimal, 
     }
 
     /// <summary>
@@ -210,6 +240,11 @@ namespace LiveTalk.API
         /// </summary>
         internal GameObject Object => _liveTalkInstance;
 
+        /// <summary>
+        /// Gets the LiveTalk configuration for internal operations.
+        /// </summary>
+        internal LiveTalkConfig Config => _config;
+
         #endregion
 
         #region Constructor
@@ -219,14 +254,14 @@ namespace LiveTalk.API
         /// Initializes a new instance of the LiveTalkAPI class with the specified configuration and controller.
         /// </summary>
         /// <param name="logLevel">The logging level for the API (defaults to WARNING)</param>
-        /// <param name="initializeModelsOnDemand">Whether to initialize models on demand or immediately (defaults to true)</param>
         /// <param name="characterSaveLocation">The location to save the generated characters</param>
         /// <param name="parentModelPath">The parent path for model files (defaults to StreamingAssets if empty)</param>
+        /// <param name="memoryUsage">The memory usage level for the API (defaults to Balanced)</param>
         public void Initialize(
             LogLevel logLevel = LogLevel.INFO,
-            bool initializeModelsOnDemand = true,
             string characterSaveLocation = "",
-            string parentModelPath = "")
+            string parentModelPath = "",
+            MemoryUsage memoryUsage = MemoryUsage.Balanced)
         {
             if (_initialized)
             {
@@ -244,8 +279,8 @@ namespace LiveTalk.API
                 characterSaveLocation = Path.Combine(Application.persistentDataPath, "Characters");
             }
             
-            _config = new LiveTalkConfig(parentModelPath, logLevel, initializeModelsOnDemand);
-            Logger.LogLevel = _config.LogLevel;            
+            _config = new LiveTalkConfig(parentModelPath, logLevel, memoryUsage);
+            Logger.LogLevel = _config.LogLevel;
             _livePortrait = new LivePortraitInference(_config);
             _museTalk = new MuseTalkInference(_config);
             ModelUtils.Initialize(_config.LogLevel);
@@ -263,7 +298,7 @@ namespace LiveTalk.API
                 LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
                 _ => SparkTTS.Utils.LogLevel.WARNING,
             };
-            bool optimalMemoryUsage = Application.platform == RuntimePlatform.IPhonePlayer || Application.platform == RuntimePlatform.Android;
+            bool optimalMemoryUsage = memoryUsage == MemoryUsage.Optimal;
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel, optimalMemoryUsage);
             _initialized = true;
         }
@@ -405,6 +440,7 @@ namespace LiveTalk.API
         /// <param name="pitch">The pitch of the character</param>
         /// <param name="speed">The speed of the character</param>
         /// <param name="intro">The intro of the character</param>
+        /// <param name="voicePromptPath">The path to the voice prompt</param>
         /// <param name="onComplete">Callback when character is successfully created</param>
         /// <param name="onError">Callback when an error occurs</param>
         public IEnumerator CreateCharacterAsync(
@@ -414,10 +450,11 @@ namespace LiveTalk.API
             Pitch pitch,
             Speed speed,
             string intro,
+            string voicePromptPath,
             Action<Character> onComplete,
             Action<Exception> onError)
         {
-            return CreateCharacterAsync(name, gender, image, pitch, speed, intro, onComplete, onError, CreationMode.AllExpressions);
+            return CreateCharacterAsync(name, gender, image, pitch, speed, intro, voicePromptPath, onComplete, onError, CreationMode.AllExpressions);
         }
 
         /// <summary>
@@ -429,6 +466,7 @@ namespace LiveTalk.API
         /// <param name="pitch">The pitch of the character</param>
         /// <param name="speed">The speed of the character</param>
         /// <param name="intro">The intro of the character</param>
+        /// <param name="voicePromptPath">The path to the voice prompt</param>
         /// <param name="onComplete">Callback when character is successfully created</param>
         /// <param name="onError">Callback when an error occurs</param>
         /// <param name="creationMode">The creation mode to use</param>
@@ -440,6 +478,7 @@ namespace LiveTalk.API
             Pitch pitch,
             Speed speed,
             string intro,
+            string voicePromptPath,
             Action<Character> onComplete,
             Action<Exception> onError,
             CreationMode creationMode,
@@ -453,8 +492,33 @@ namespace LiveTalk.API
 
             var character = new Character(name, gender, image, pitch, speed, intro);
             useBundle = useBundle && CanUseBundle();
-            yield return character.CreateAvatarAsync(useBundle, creationMode);
+            yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
             onComplete?.Invoke(character);
+        }
+
+        /// <summary>
+        /// Load a character from a path
+        /// </summary>
+        /// <param name="characterPath">The path to the character</param>
+        /// <param name="onComplete">Callback when character is successfully loaded</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        public IEnumerator LoadCharacterAsyncFromPath(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(characterPath))
+            {
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
+                yield break;
+            }
+            yield return Character.LoadCharacterAsyncFromPath(characterPath, onComplete, onError);
         }
 
         /// <summary>
@@ -463,7 +527,7 @@ namespace LiveTalk.API
         /// <param name="characterId">The GUID/hash of the character to load</param>
         /// <param name="onComplete">Callback when character is successfully loaded</param>
         /// <param name="onError">Callback when an error occurs</param>
-        public IEnumerator LoadCharacterAsync(
+        public IEnumerator LoadCharacterAsyncFromId(
             string characterId,
             Action<Character> onComplete,
             Action<Exception> onError)
@@ -480,7 +544,7 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            yield return Character.LoadCharacterAsync(characterId, onComplete, onError);
+            yield return Character.LoadCharacterAsyncFromId(characterId, onComplete, onError);
         }
 
         /// <summary>

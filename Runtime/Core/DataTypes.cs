@@ -186,6 +186,11 @@ namespace LiveTalk.Core
             this.width = width;
             this.height = height;
         }        
+
+        /// <summary>
+        /// A zero frame with all dimensions set to 0
+        /// </summary>
+        public static Frame Zero = new(new byte[0], 0, 0);
     }
 
     /// <summary>

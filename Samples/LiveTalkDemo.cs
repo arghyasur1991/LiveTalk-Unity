@@ -126,6 +126,11 @@ namespace LiveTalk.Samples
                 
             UpdateStatus("Ready to initialize...");
         }
+
+        bool IsMobile()
+        {
+            return Application.platform == RuntimePlatform.IPhonePlayer || Application.platform == RuntimePlatform.Android;
+        }
         
         void InitializeAPI()
         {
@@ -134,7 +139,8 @@ namespace LiveTalk.Samples
                 UpdateStatus("Initializing LiveTalk...");
                 var logLevel = LogLevel.INFO;
                 _api = LiveTalkAPI.Instance;
-                _api.Initialize(logLevel);
+                MemoryUsage memoryUsage = IsMobile() ? MemoryUsage.Optimal : MemoryUsage.Balanced;
+                _api.Initialize(logLevel, memoryUsage: memoryUsage);
                 
                 UpdateStatus("LiveTalk and CharacterFactory initialized successfully!");
                 SetButtonsEnabled(true);
@@ -453,7 +459,7 @@ namespace LiveTalk.Samples
                 onError: (ex) => {
                     error = ex;
                 },
-                creationMode: CreationMode.VoiceOnly
+                creationMode: CreationMode.SingleExpression
             );
             
             // Handle the result
@@ -475,7 +481,7 @@ namespace LiveTalk.Samples
                 UpdateStatus("Character creation completed but no character was returned");
             }
             
-                        SetButtonsEnabled(true);
+            SetButtonsEnabled(true);
         }
         
         /// <summary>

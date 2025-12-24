@@ -40,6 +40,7 @@ namespace LiveTalk.Utils
         private static IntPtr _loggingParam = IntPtr.Zero;
         private static readonly Queue<Tuple<Task, string>> _taskQueue = new();
         private static bool _disposeLoadThread = false;
+        private static string _cacheDirectory = "";
         private static OrtLoggingLevel _ortLogLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
 
         #endregion
@@ -75,6 +76,8 @@ namespace LiveTalk.Utils
             _ortLogLevel = ortLogLevel;
 
             InitializeOnnxLogging();
+            _cacheDirectory = GetCoreMLCacheDirectory();
+            FileUtils.EnsureDirectoryExists(_cacheDirectory);
             
             // Start background task queue processor for asynchronous model loading
             Task.Run(async() => {
@@ -172,7 +175,7 @@ namespace LiveTalk.Utils
             var sessionOptions = CreateSessionOptions();
             if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML) 
             {
-                return LoadModelWithCoreML(config, modelPath, sessionOptions);
+                return LoadModelWithCoreML(modelPath, sessionOptions);
             }
             
             // Default CPU execution with optimized settings
@@ -436,6 +439,13 @@ namespace LiveTalk.Utils
             {
                 LogSeverityLevel = _ortLogLevel
             };
+
+            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                options.EnableMemoryPattern = false;
+                options.EnableCpuMemArena = false;
+                options.IntraOpNumThreads = 1;
+            }
             
             return options;
         }
@@ -454,35 +464,25 @@ namespace LiveTalk.Utils
         /// <param name="sessionOptions">The base session options to configure with CoreML provider</param>
         /// <returns>An InferenceSession with CoreML acceleration, or null if CoreML setup fails</returns>
         /// <exception cref="InvalidOperationException">Thrown when all CoreML configuration attempts fail</exception>
-        private static InferenceSession LoadModelWithCoreML(LiveTalkConfig config, string modelPath, SessionOptions sessionOptions)
+        private static InferenceSession LoadModelWithCoreML(string modelPath, SessionOptions sessionOptions)
         {
             try
             {
-                // Configure CoreML provider with caching support using dictionary API
-                string cacheDirectory = GetCoreMLCacheDirectory(config);
-                
-                // Ensure cache directory exists and is writable
-                EnsureCacheDirectoryExists(cacheDirectory);
-                
                 var coremlOptions = new Dictionary<string, string>
                 {
                     ["ModelFormat"] = "MLProgram",
                     ["MLComputeUnits"] = "CPUAndGPU",
                     ["RequireStaticInputShapes"] = "0",
                     ["EnableOnSubgraphs"] = "1",
-                    // Advanced options for optimization
-                    // ["SpecializationStrategy"] = "FastPrediction",
-                    // ["AllowLowPrecisionAccumulationOnGPU"] = "1",
-                    // ["ProfileComputePlan"] = "1"
                 };
                 
-                if (!string.IsNullOrEmpty(cacheDirectory))
+                if (!string.IsNullOrEmpty(_cacheDirectory))
                 {
-                    coremlOptions["ModelCacheDirectory"] = cacheDirectory;
+                    coremlOptions["ModelCacheDirectory"] = _cacheDirectory;
                 }
                 
                 sessionOptions.AppendExecutionProvider("CoreML", coremlOptions);
-                Logger.Log($"[ModelUtils] CoreML provider configured with caching (cache: {cacheDirectory})");
+                Logger.Log($"[ModelUtils] CoreML provider configured with caching (cache: {_cacheDirectory})");
                 
                 // Try creating the session - if it fails due to cache corruption, retry
                 try
@@ -546,11 +546,15 @@ namespace LiveTalk.Utils
         /// This method determines the best location for CoreML model caching based on configuration
         /// and platform-specific storage locations for optimal performance and persistence.
         /// </summary>
-        /// <param name="config">The LiveTalk configuration containing model path preferences</param>
         /// <returns>The full path to the CoreML cache directory</returns>
-        private static string GetCoreMLCacheDirectory(LiveTalkConfig config)
+        private static string GetCoreMLCacheDirectory()
         {
-            return Path.Combine(Application.dataPath, "Models", "coreml_cache");
+            var dataPath = Application.dataPath;
+            if (Application.platform == RuntimePlatform.IPhonePlayer)
+            {
+                dataPath = Application.persistentDataPath; // Use persistent data path for iOS
+            }
+            return Path.Combine(dataPath, "Models", "coreml_cache");
         }
 
         /// <summary>
@@ -575,31 +579,6 @@ namespace LiveTalk.Utils
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             }
             return modelPath;
-        }
-
-        /// <summary>
-        /// Ensures the CoreML cache directory exists and is writable with proper error handling.
-        /// This method creates the cache directory structure if it doesn't exist and handles
-        /// permission and filesystem errors gracefully.
-        /// </summary>
-        /// <param name="cacheDirectory">The cache directory path to create and validate</param>
-        private static void EnsureCacheDirectoryExists(string cacheDirectory)
-        {
-            if (string.IsNullOrEmpty(cacheDirectory))
-                return;
-                
-            try
-            {
-                if (!Directory.Exists(cacheDirectory))
-                {
-                    Directory.CreateDirectory(cacheDirectory);
-                    Logger.Log($"[ModelUtils] Created CoreML cache directory: {cacheDirectory}");
-                }
-            }
-            catch (Exception e)
-            {
-                Logger.LogWarning($"[ModelUtils] Failed to create cache directory {cacheDirectory}: {e.Message}");
-            }
         }
 
         #endregion

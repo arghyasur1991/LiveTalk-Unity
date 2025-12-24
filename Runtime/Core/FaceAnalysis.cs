@@ -154,6 +154,42 @@ namespace LiveTalk.Core
         #region Public Methods - Face Analysis
 
         /// <summary>
+        /// Starts the face analysis session for the face analysis models.
+        /// </summary>
+        public async Task StartFaceAnalysisSession()
+        {
+            await _detFace.StartSession();
+            await _landmark2d106.StartSession();
+            await _landmarkRunner.StartSession();
+        }
+
+        /// <summary>
+        /// Ends the face analysis session for the face analysis models.
+        /// </summary>
+        public void EndFaceAnalysisSession()
+        {
+            _detFace.EndSession();
+            _landmark2d106.EndSession();
+            _landmarkRunner.EndSession();
+        }
+
+        /// <summary>
+        /// Starts the face parsing session for the face parsing model.
+        /// </summary>
+        public async Task StartFaceParsingSession()
+        {
+            await _faceParsing.StartSession();
+        }
+
+        /// <summary>
+        /// Ends the face parsing session for the face parsing model.
+        /// </summary>
+        public void EndFaceParsingSession()
+        {
+            _faceParsing.EndSession();
+        }
+
+        /// <summary>
         /// Analyzes faces in the input image and returns detected faces with landmarks, sorted by area.
         /// This is the main entry point for comprehensive face analysis, combining detection and landmark extraction.
         /// </summary>
@@ -223,88 +259,57 @@ namespace LiveTalk.Core
         /// Asynchronously extracts facial landmarks and bounding boxes using a hybrid SCRFD+106landmark approach.
         /// This method combines SCRFD face detection with 106-point landmark extraction to provide accurate face localization
         /// </summary>
-        /// <param name="frames">The list of input frames to process for face detection and landmark extraction</param>
+        /// <param name="frame">The input frame to process for face detection and landmark extraction</param>
         /// <param name="bboxShift">Optional vertical shift to apply to bounding boxes for fine-tuning face region positioning</param>
         /// <returns>A task containing a tuple of bounding box coordinates (as Vector4 list) and the corresponding processed frames</returns>
-        public async Task<(List<Vector4>, List<Frame>)> GetLandmarkAndBbox(List<Frame> frames, int bboxShift = 0)
+        public async Task<Vector4> GetLandmarkAndBbox(Frame frame, int bboxShift = 0)
         {
-            var coordsList = new List<Vector4>();
-            var framesList = new List<Frame>();
-            var CoordPlaceholder = Vector4.zero; // Matching InsightFaceHelper.CoordPlaceholder
-            
-            Logger.LogVerbose($"[FaceAnalysis] Processing {frames.Count} images with hybrid SCRFD+106landmark approach");
-            
-            var averageRangeMinus = new List<float>();
-            var averageRangePlus = new List<float>();
-            
-            for (int idx = 0; idx < frames.Count; idx++)
+            var faces = await DetectFaces(frame);
+            if (faces.Count == 0)
             {
-                var frame = frames[idx];
-                
-                // Step 1: Detect faces using SCRFD (matching InsightFaceHelper exactly)
-                var faces = await DetectFaces(frame);   
-
-                if (faces.Count == 0)
-                {
-                    Logger.LogWarning($"[FaceAnalysis] No face detected in image {idx} ({frame.width}x{frame.height})");
-                    coordsList.Add(CoordPlaceholder);
-                    continue;
-                }
-                
-                // Get the best detection
-                var face = faces[0];
-                var bbox = face.BoundingBox;
-                var scrfdKps = face.Keypoints5;
-                
-                // Step 2: Extract 106 landmarks using face-aligned crop (matching InsightFaceHelper flow)
-                Vector2[] landmarks106;
-                Vector4 finalBbox;
-                
-                if (scrfdKps != null && scrfdKps.Length >= 5)
-                {
-                    // Use existing GetLandmarks method which already gives us 106 landmarks
-                    landmarks106 = await GetLandmarks(frame, face);
-                    if (landmarks106 != null && landmarks106.Length >= 106)
-                    {
-                        // Calculate final bbox using hybrid approach (adapted for 106 landmarks)
-                        finalBbox = CalculateHybridBbox106(landmarks106, bbox, bboxShift);
-                        
-                        // Calculate range information (adapted for 106 landmarks)
-                        var (rangeMinus, rangePlus) = CalculateLandmarkRanges106(landmarks106);
-                        averageRangeMinus.Add(rangeMinus);
-                        averageRangePlus.Add(rangePlus);
-                    }
-                    else
-                    {
-                        Logger.LogWarning($"[FaceAnalysis] Failed to extract 106 landmarks for image {idx}");
-                        finalBbox = CreateFallbackBbox(bbox, scrfdKps);
-                    }
-                }
-                else
-                {
-                    Logger.LogWarning($"[FaceAnalysis] No SCRFD keypoints for image {idx}, using detection bbox");
-                    finalBbox = CreateFallbackBbox(bbox, null);
-                }
-
-                float width_check = finalBbox.z - finalBbox.x;
-                float height_check = finalBbox.w - finalBbox.y;
-                if (height_check <= 0 || width_check <= 0 || finalBbox.x < 0)
-                {
-                    Logger.LogWarning($"[FaceAnalysis] Invalid landmark bbox: [{finalBbox.x:F1}, {finalBbox.y:F1}, {finalBbox.z:F1}, {finalBbox.w:F1}], using SCRFD bbox");
-                    coordsList.Add(CreateFallbackBbox(bbox, scrfdKps));
-                }
-                else
-                {
-                    coordsList.Add(finalBbox);
-                }
-                
-                // Store the processed data
-                framesList.Add(frame);
+                Logger.LogWarning($"[FaceAnalysis] No face detected in image {frame.width}x{frame.height}");
+                return Vector4.zero;
             }
-            
-            return (coordsList, framesList);
+
+            var face = faces[0];
+            var bbox = face.BoundingBox;
+            var scrfdKps = face.Keypoints5;
+
+            Vector2[] landmarks106;
+            Vector4 finalBbox;
+
+            if (scrfdKps != null && scrfdKps.Length >= 5)
+            {
+                // Use existing GetLandmarks method which already gives us 106 landmarks
+                landmarks106 = await GetLandmarks(frame, face);
+                if (landmarks106 != null && landmarks106.Length >= 106)
+                {
+                    // Calculate final bbox using hybrid approach (adapted for 106 landmarks)
+                    finalBbox = CalculateHybridBbox106(landmarks106, bbox, bboxShift);
+                }
+                else
+                {
+                    Logger.LogWarning($"[FaceAnalysis] Failed to extract 106 landmarks for image");
+                    finalBbox = CreateFallbackBbox(bbox, scrfdKps);
+                }
+            }
+            else
+            {
+                Logger.LogWarning($"[FaceAnalysis] No SCRFD keypoints for image, using detection bbox");
+                finalBbox = CreateFallbackBbox(bbox, null);
+            }
+
+            float width_check = finalBbox.z - finalBbox.x;
+            float height_check = finalBbox.w - finalBbox.y;
+            if (height_check <= 0 || width_check <= 0 || finalBbox.x < 0)
+            {
+                Logger.LogWarning($"[FaceAnalysis] Invalid landmark bbox: [{finalBbox.x:F1}, {finalBbox.y:F1}, {finalBbox.z:F1}, {finalBbox.w:F1}], using SCRFD bbox");
+                return CreateFallbackBbox(bbox, scrfdKps);
+            }
+
+            return finalBbox;
         }
-        
+
         /// <summary>
         /// Asynchronously creates a face mask with morphological operations for smooth blending.
         /// This method generates a base segmentation mask and applies morphological operations (dilation, erosion, blur)
@@ -974,26 +979,6 @@ namespace LiveTalk.Core
             }
             
             return new Vector4(x1, y1, x2, y2);
-        }
-        
-        /// <summary>
-        /// Calculates landmark range information using nose area landmarks for spatial analysis.
-        /// This method adapts the InsightFaceHelper.CalculateLandmarkRanges algorithm for 106 landmarks,
-        /// providing vertical range measurements that can be used for face region sizing and positioning.
-        /// </summary>
-        /// <param name="landmarks106">The array of 106 facial landmarks to analyze</param>
-        /// <returns>A tuple containing range measurements (rangeMinus, rangePlus) based on nose area landmark distances</returns>
-        private (float rangeMinus, float rangePlus) CalculateLandmarkRanges106(Vector2[] landmarks106)
-        {
-            if (landmarks106.Length < 68)
-                return (20f, 20f); // Default values
-            
-            // For 106 landmarks, use nose area landmarks for range calculation
-            // Map to equivalent nose landmarks in 106-point system (approximate mapping)
-            float rangeMinus = Mathf.Abs(landmarks106[67].y - landmarks106[66].y); // Nose area
-            float rangePlus = Mathf.Abs(landmarks106[66].y - landmarks106[65].y);  // Nose area
-            
-            return (rangeMinus, rangePlus);
         }
         
         /// <summary>

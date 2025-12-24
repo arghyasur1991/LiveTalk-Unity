@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEngine;
 
@@ -21,6 +22,34 @@ namespace LiveTalk.Utils
         /// broad compatibility across different image sources and platforms.
         /// </summary>
         private static readonly string[] SupportedExtensions = { ".png", ".jpg", ".jpeg" };
+
+        #endregion
+
+        #region Public Methods - Directory Management
+        /// <summary>
+        /// Ensures the directory exists and is writable with proper error handling.
+        /// This method creates the directory structure if it doesn't exist and handles
+        /// permission and filesystem errors gracefully.
+        /// </summary>
+        /// <param name="directory">The directory path to create and validate</param>
+        public static void EnsureDirectoryExists(string directory)
+        {
+            if (string.IsNullOrEmpty(directory))
+                return;
+                
+            try
+            {
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                    Logger.Log($"[FileUtils] Created directory: {directory}");
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"[FileUtils] Failed to create directory {directory}: {e.Message}");
+            }
+        }
 
         #endregion
 
@@ -110,7 +139,7 @@ namespace LiveTalk.Utils
                 
                 foreach (string filePath in files)
                 {
-                    Texture2D loadedTexture = LoadSingleFrame(filePath);
+                    Texture2D loadedTexture = LoadFrame(filePath);
                     if (loadedTexture != null)
                     {
                         framesList.Add(loadedTexture);
@@ -132,10 +161,6 @@ namespace LiveTalk.Utils
             return framesList;
         }
 
-        #endregion
-
-        #region Private Methods - Image Loading
-
         /// <summary>
         /// Loads a single image file and converts it to RGB24 format for processing.
         /// This method handles file reading, texture creation, format conversion, and error recovery
@@ -143,7 +168,7 @@ namespace LiveTalk.Utils
         /// </summary>
         /// <param name="filePath">The full file path to the image file to load</param>
         /// <returns>A Texture2D in RGB24 format with the filename as the texture name, or null if loading fails</returns>
-        private static Texture2D LoadSingleFrame(string filePath)
+        public static Texture2D LoadFrame(string filePath)
         {
             try
             {

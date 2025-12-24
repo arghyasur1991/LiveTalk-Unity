@@ -699,7 +699,7 @@ namespace LiveTalk.Utils
             
             // Allocate temporary buffer for horizontal pass
             int totalPixels = frame.width * frame.height;
-            byte* tempPtr = (byte*)UnsafeUtility.Malloc(totalPixels * 3, 4, Unity.Collections.Allocator.Persistent);
+            byte* tempPtr = (byte*)UnsafeUtility.Malloc(totalPixels * 3, 4, Unity.Collections.Allocator.TempJob);
             var outputFrame = new Frame(new byte[totalPixels * 3], frame.width, frame.height);
             try
             {
@@ -716,7 +716,7 @@ namespace LiveTalk.Utils
             finally
             {
                 // Clean up temporary buffer
-                UnsafeUtility.Free(tempPtr, Unity.Collections.Allocator.Persistent);
+                UnsafeUtility.Free(tempPtr, Unity.Collections.Allocator.TempJob);
             }
             return outputFrame;
         }

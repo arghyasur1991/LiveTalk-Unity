@@ -16,15 +16,39 @@ namespace LiveTalk.Core
     /// </summary>
     internal class Model : IDisposable
     {
+        #region Internal Enums
+        /// <summary>
+        /// The load policy for the model
+        /// </summary>
+        internal enum ModelLoadPolicy
+        {
+            /// <summary>
+            /// Load the model on startup. EndSession() is No-op
+            /// </summary>
+            OnStartup,
+            /// <summary>
+            /// Load the model on demand in StartSession() and EndSession() is No-op
+            /// </summary>
+            OnDemandKeepAlive,
+            /// <summary>
+            /// Load the model on demand. Dispose in EndSession()
+            /// </summary>
+            OnDemand,
+        }
+        #endregion
+
         #region Private Fields
         
         private readonly ModelConfig _config;
+        private readonly LiveTalkConfig _liveTalkConfig;
         private InferenceSession _session;
         private List<string> _inputNames = new();
         private List<NamedOnnxValue> _inputs;
         private List<NamedOnnxValue> _preallocatedOutputs;
-        private readonly Task<InferenceSession> _loadTask;
+        private Task<InferenceSession> _loadTask = null;
         private bool _disposed = false;
+        private bool _initialized = false;
+        private ModelLoadPolicy _loadPolicy = ModelLoadPolicy.OnStartup;
         
         #endregion
 
@@ -48,9 +72,27 @@ namespace LiveTalk.Core
         {
             if (config == null)
                 throw new ArgumentNullException(nameof(config));
-                
+            
+            switch (config.MemoryUsage)
+            {
+                case MemoryUsage.Quality:
+                case MemoryUsage.Performance:
+                    _loadPolicy = ModelLoadPolicy.OnStartup;
+                    break;
+                case MemoryUsage.Balanced:
+                    _loadPolicy = ModelLoadPolicy.OnDemandKeepAlive;
+                    break;
+                case MemoryUsage.Optimal:
+                    _loadPolicy = ModelLoadPolicy.OnDemand;
+                    break;
+            }
+
+            _liveTalkConfig = config;
             _config = new ModelConfig(modelName, modelRelativePath, preferredExecutionProvider, precision);
-            _loadTask = LoadModel(config);
+            if (_loadPolicy == ModelLoadPolicy.OnStartup)
+            {
+                _loadTask = LoadModel();
+            }
         }
 
         #endregion
@@ -58,19 +100,43 @@ namespace LiveTalk.Core
         #region Public Methods - Input Loading
 
         /// <summary>
-        /// Asynchronously loads a tensor input at the specified index.
+        /// Sets the load policy explicitly for the model to override global policy.
+        /// </summary>
+        /// <param name="loadPolicy">The load policy to set</param>
+        public void SetLoadPolicy(ModelLoadPolicy loadPolicy)
+        {
+            _loadPolicy = loadPolicy;
+        }
+
+        /// <summary>
+        /// Starts the session for the model. If the model is not initialized, it will be loaded.
+        /// </summary>
+        public async Task StartSession()
+        {
+            await AwaitLoadTask();
+        }
+
+        /// <summary>
+        /// Ends the session for the model. If the model is in OnDemand mode, it will be disposed.
+        /// </summary>
+        public void EndSession()
+        {
+            DisposeIfNeeded();
+        }
+
+        /// <summary>
+        /// Loads a tensor input at the specified index.
         /// </summary>
         /// <param name="index">The index of the input to load</param>
         /// <param name="inputTensor">The tensor to load as input</param>
-        /// <returns>A task that represents the asynchronous input loading operation</returns>
         /// <exception cref="ArgumentOutOfRangeException">Thrown when index is out of range</exception>
         /// <exception cref="ArgumentNullException">Thrown when inputTensor is null</exception>
-        public async Task LoadInput<T>(int index, Tensor<T> inputTensor)
+        public void LoadInput<T>(int index, Tensor<T> inputTensor)
         {
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
             if (inputTensor == null)
                 throw new ArgumentNullException(nameof(inputTensor));
-                
-            await _loadTask;
             
             if (index < 0 || index >= _inputNames.Count)
                 throw new ArgumentOutOfRangeException(nameof(index), $"Index must be between 0 and {_inputNames.Count - 1}");
@@ -79,20 +145,20 @@ namespace LiveTalk.Core
         }
         
         /// <summary>
-        /// Asynchronously loads multiple float tensor inputs in order.
+        /// Loads multiple float tensor inputs in order.
         /// The number of input tensors must match the model's expected input count.
         /// </summary>
         /// <param name="inputTensors">The list of float tensors to load as inputs</param>
-        /// <returns>A task that represents the asynchronous input loading operation</returns>
         /// <exception cref="ArgumentNullException">Thrown when inputTensors is null</exception>
         /// <exception cref="ArgumentException">Thrown when input tensor count doesn't match model requirements</exception>
-        public async Task LoadInputs(List<Tensor<float>> inputTensors)
+        public void LoadInputs(List<Tensor<float>> inputTensors)
         {
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
             if (inputTensors == null)
                 throw new ArgumentNullException(nameof(inputTensors));
-                
-            await _loadTask;
-            
+
             var inputNames = _session.InputMetadata.Keys.ToArray();
             if (inputTensors.Count != inputNames.Length)
             {
@@ -124,11 +190,12 @@ namespace LiveTalk.Core
         /// <exception cref="InvalidOperationException">Thrown when model execution fails</exception>
         public async Task<List<NamedOnnxValue>> Run(List<Tensor<float>> inputTensors)
         {
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
             if (inputTensors == null)
                 throw new ArgumentNullException(nameof(inputTensors));
-                
-            await _loadTask;
-            await LoadInputs(inputTensors);
+
+            LoadInputs(inputTensors);
             return await Run();
         }
 
@@ -140,8 +207,8 @@ namespace LiveTalk.Core
         /// <exception cref="InvalidOperationException">Thrown when no inputs are loaded or model execution fails</exception>
         public async Task<List<NamedOnnxValue>> Run()
         {
-            await _loadTask;
-            
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
             if (_inputs == null || _inputs.Count == 0)
                 throw new InvalidOperationException("No inputs loaded. Call LoadInputs() or LoadInput() first.");
             
@@ -184,8 +251,10 @@ namespace LiveTalk.Core
             if (inputTensors == null)
                 throw new ArgumentNullException(nameof(inputTensors));
                 
-            await _loadTask;
-            await LoadInputs(inputTensors);
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
+            LoadInputs(inputTensors);
             return await RunDisposable();
         }
 
@@ -197,8 +266,9 @@ namespace LiveTalk.Core
         /// <exception cref="InvalidOperationException">Thrown when no inputs are loaded or model execution fails</exception>
         public async Task<IDisposableReadOnlyCollection<DisposableNamedOnnxValue>> RunDisposable()
         {
-            await _loadTask;
-            
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
             if (_inputs == null || _inputs.Count == 0)
                 throw new InvalidOperationException("No inputs loaded. Call LoadInputs() or LoadInput() first.");
             
@@ -233,20 +303,21 @@ namespace LiveTalk.Core
         #region Public Methods - Output Management
 
         /// <summary>
-        /// Asynchronously retrieves a preallocated output tensor by name.
+        /// Retrieves a preallocated output tensor by name.
         /// </summary>
         /// <typeparam name="T">The tensor element type</typeparam>
         /// <param name="outputName">The name of the output tensor to retrieve</param>
-        /// <returns>A task containing the requested preallocated output tensor</returns>
+        /// <returns>The requested preallocated output tensor</returns>
         /// <exception cref="ArgumentNullException">Thrown when outputName is null or empty</exception>
         /// <exception cref="ArgumentException">Thrown when the specified output is not found</exception>
-        public async Task<Tensor<T>> GetPreallocatedOutput<T>(string outputName)
+        public Tensor<T> GetPreallocatedOutput<T>(string outputName)
         {
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
             if (string.IsNullOrEmpty(outputName))
                 throw new ArgumentNullException(nameof(outputName));
-                
-            await _loadTask;
-            
+
             var output = _preallocatedOutputs.FirstOrDefault(o => o.Name == outputName);
             if (output != null)
             {
@@ -257,33 +328,35 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Asynchronously retrieves all preallocated output tensors.
+        /// Retrieves all preallocated output tensors.
         /// </summary>
-        /// <returns>A task containing the list of all preallocated output tensors</returns>
-        public async Task<List<NamedOnnxValue>> GetPreallocatedOutputs()
+        /// <returns>The list of all preallocated output tensors</returns>
+        public List<NamedOnnxValue> GetPreallocatedOutputs()
         {
-            await _loadTask;
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
             return _preallocatedOutputs;
         }
 
         /// <summary>
-        /// Asynchronously updates the dimensions of a preallocated output tensor.
+        /// Updates the dimensions of a preallocated output tensor.
         /// Useful for handling dynamic shapes in model outputs.
         /// </summary>
         /// <param name="outputName">The name of the output tensor to update</param>
         /// <param name="newDimensions">The new dimensions for the output tensor</param>
-        /// <returns>A task that represents the asynchronous dimension update operation</returns>
         /// <exception cref="ArgumentNullException">Thrown when outputName is null or newDimensions is null</exception>
         /// <exception cref="ArgumentException">Thrown when the specified output is not found</exception>
-        public async Task UpdateOutputDimensions(string outputName, int[] newDimensions)
+        public void UpdateOutputDimensions(string outputName, int[] newDimensions)
         {
+            if (!_initialized)
+                throw new InvalidOperationException("Model is not initialized. Call StartSession() first.");
+
             if (string.IsNullOrEmpty(outputName))
                 throw new ArgumentNullException(nameof(outputName));
             if (newDimensions == null)
                 throw new ArgumentNullException(nameof(newDimensions));
-                
-            await _loadTask;
-            
+
             var outputIndex = _preallocatedOutputs.FindIndex(o => o.Name == outputName);
             if (outputIndex >= 0)
             {
@@ -301,6 +374,30 @@ namespace LiveTalk.Core
 
         #region Private Methods
 
+        /// <summary>
+        /// Awaits the model loading task if it is not already initialized.
+        /// </summary>
+        /// <returns>A task that represents the asynchronous model loading operation</returns>
+        private async Task AwaitLoadTask()
+        {
+            if (_initialized)
+                return;
+            _loadTask ??= LoadModel();
+            await _loadTask;
+            _disposed = false;
+        }
+
+        /// <summary>
+        /// Disposes of the model if it is in OnDemand mode and has been initialized.
+        /// </summary>
+        private void DisposeIfNeeded()
+        {
+            if (_loadPolicy == ModelLoadPolicy.OnDemand && _initialized)
+            {
+                Dispose();
+            }
+        }
+        
         /// <summary>
         /// Creates a preallocated tensor for the specified output with given dimensions.
         /// Replaces dynamic dimensions (-1) with 1 for tensor initialization.
@@ -323,10 +420,13 @@ namespace LiveTalk.Core
         /// <param name="config">The LiveTalk configuration for model loading</param>
         /// <returns>A task that represents the asynchronous model loading operation</returns>
         /// <exception cref="InvalidOperationException">Thrown when model loading fails</exception>
-        private async Task<InferenceSession> LoadModel(LiveTalkConfig config)
+        private async Task<InferenceSession> LoadModel()
         {
+            if (_initialized)
+                return _session;
+
             var task = new Task(() => {
-                _session = ModelUtils.LoadModel(config, _config);
+                _session = ModelUtils.LoadModel(_liveTalkConfig, _config);
             });
             
             ModelUtils.EnqueueTask(task, _config.modelName);
@@ -362,6 +462,7 @@ namespace LiveTalk.Core
                 // Additional type handling can be added here as needed
             }
             
+            _initialized = true;
             return _session;
         }
 
@@ -390,12 +491,20 @@ namespace LiveTalk.Core
                 {
                     // Dispose managed resources
                     _session?.Dispose();
-                    _inputs?.Clear();
                     _preallocatedOutputs?.Clear();
+                    _inputs?.Clear();
+                    _inputNames?.Clear();
+                    _preallocatedOutputs = null;
+                    _inputs = null;
+                    _inputNames = null;
+                    _initialized = false;
+                    _loadTask = null;
+                    _session = null;
                 }
                 // Release unmanaged resources.
-                // Set large fields to null.                
+                // Set large fields to null.
                 _disposed = true;
+                Logger.LogVerbose($"[Model] Disposed: {_config.modelName}");
             }
         }
         

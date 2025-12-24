@@ -9,6 +9,7 @@ using UnityEngine;
 
 namespace LiveTalk.Core
 {
+    using System.IO;
     using API;
     using Utils;
 
@@ -51,15 +52,40 @@ namespace LiveTalk.Core
         public MuseTalkInference(LiveTalkConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
-            if (!_config.InitializeModelsOnDemand)
-            {
-                InitializeAllModels();
-            }
+            InitializeAllModels();
         }
 
         #endregion
 
         #region Public Methods
+        
+        public async Task<AvatarData> ProcessAvatarImages(List<string> avatarFramePaths)
+        {
+            if (avatarFramePaths == null)
+                throw new ArgumentNullException(nameof(avatarFramePaths));
+            if (avatarFramePaths.Count == 0)
+                throw new ArgumentException("Avatar frame paths list cannot be empty", nameof(avatarFramePaths));
+
+            Logger.LogVerbose($"[MuseTalkInference] Processing {avatarFramePaths.Count} avatar frame paths");
+
+            AvatarData avatarData = new();
+            await _faceAnalysis.StartFaceAnalysisSession();
+            await _faceAnalysis.StartFaceParsingSession();
+            await _vaeEncoder.StartSession();
+            foreach (var path in avatarFramePaths)
+            {
+                var texture = FileUtils.LoadFrame(path);
+                await ComputeAvatarDataForFrame(texture, avatarData);
+            }
+            _faceAnalysis.EndFaceAnalysisSession();
+            _faceAnalysis.EndFaceParsingSession();
+            _vaeEncoder.EndSession();
+
+            Logger.LogVerbose($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
+                $"face regions with {avatarData.Latents.Count} latent sets across {avatarFramePaths.Count} avatar textures");
+
+            return avatarData;
+        }
         
         /// <summary>
         /// Asynchronously processes avatar images to extract face regions, landmarks, and latent representations.
@@ -77,93 +103,22 @@ namespace LiveTalk.Core
             if (avatarTextures.Count == 0)
                 throw new ArgumentException("Avatar textures list cannot be empty", nameof(avatarTextures));
 
-            InitializePreprocessorModels();
             Logger.LogVerbose($"[MuseTalkInference] Processing {avatarTextures.Count} avatar textures");
             
             var avatarData = new AvatarData();
-            var frames = new List<Frame>();
+            await _faceAnalysis.StartFaceAnalysisSession();
+            await _faceAnalysis.StartFaceParsingSession();
+            await _vaeEncoder.StartSession();
+
             foreach (var texture in avatarTextures)
             {
-                var frame = TextureUtils.Texture2DToFrame(texture);
-                frames.Add(frame);
+                await ComputeAvatarDataForFrame(texture, avatarData);
             }
 
-            await Task.Run(async () =>
-            {
-                var result = await _faceAnalysis.GetLandmarkAndBbox(frames);
-                List<Vector4> coordsList = result.Item1;
-                List<Frame> framesList = result.Item2;
-                
-                Logger.LogVerbose($"[MuseTalkInference] Face detection completed: {coordsList.Count} results for {avatarTextures.Count} input textures");
-                
-                // Process each detected face region
-                for (int i = 0; i < coordsList.Count; i++)
-                {
-                    var bbox = coordsList[i];
-                    if (bbox == Vector4.zero)
-                    {
-                        Logger.LogWarning($"[MuseTalkInference] No face detected in image {i}, skipping");
-                        continue;
-                    }
-                    
-                    try
-                    {                    
-                        var originalFrame = framesList[i];
-                        
-                        // Crop face region with version-specific margins
-                        var croppedFrame = CropFaceRegion(originalFrame, bbox, _config.Version);
-                        
-                        // Compute segmentation mask and cached data for blending
-                        var segmentationData = await ComputeSegmentationData(originalFrame, bbox);
-                    
-                        // Create face data for this region
-                        var faceData = new FaceData
-                        {
-                            HasFace = true,
-                            BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
-                            CroppedFaceTexture = croppedFrame,
-                            OriginalTexture = originalFrame,
-                            FaceLarge = segmentationData.FaceLarge,
-                            SegmentationMask = segmentationData.SegmentationMask,
-                            AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
-                            CropBox = segmentationData.CropBox,
-                            
-                            MaskSmall = segmentationData.MaskSmall,
-                            FullMask = segmentationData.FullMask,
-                            BoundaryMask = segmentationData.BoundaryMask,
-                            BlurredMask = segmentationData.BlurredMask
-                        };
-                        
-                        avatarData.FaceRegions.Add(faceData);
-                        
-                        // Generate latents using VAE encoder
-                        var latents = await GetLatentsForUNet(croppedFrame);
-                        avatarData.Latents.Add(latents);
-                    }
-                    catch (Exception e)
-                    {
-                        Logger.LogError($"[MuseTalkInference] Error processing face region {i}: {e.Message}");
-                        Logger.LogError($"[MuseTalkInference] Stack trace: {e.StackTrace}");
-                        // Continue processing other faces, but this will be caught in validation later
-                    }
-                }
-            });
-            
-            // Validate that we have processed at least one face successfully
-            if (avatarData.FaceRegions.Count == 0)
-            {
-                throw new InvalidOperationException($"No faces detected in any of the {avatarTextures.Count} avatar textures. Please check that the images contain visible faces.");
-            }
-            
-            if (avatarData.Latents.Count == 0)
-            {
-                throw new InvalidOperationException($"Failed to generate latents for any of the {avatarData.FaceRegions.Count} detected faces. Check VAE encoder initialization and texture format.");
-            }
-            
-            if (avatarData.Latents.Count != avatarData.FaceRegions.Count)
-            {
-                Logger.LogWarning($"[MuseTalkInference] Latent count ({avatarData.Latents.Count}) does not match face region count ({avatarData.FaceRegions.Count}). Some faces may have failed processing.");
-            }
+            _faceAnalysis.EndFaceAnalysisSession();
+            _faceAnalysis.EndFaceParsingSession();
+            _vaeEncoder.EndSession();
+
             Logger.LogVerbose($"[MuseTalkInference] Successfully processed {avatarData.FaceRegions.Count} " + 
                 $"face regions with {avatarData.Latents.Count} latent sets across {avatarTextures.Count} avatar textures");            
             return avatarData;
@@ -188,7 +143,6 @@ namespace LiveTalk.Core
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            InitializeAllModels();
             var avatarTask = ProcessAvatarImages(avatarTextures);
             yield return new WaitUntil(() => avatarTask.IsCompleted);
             var avatarData = avatarTask.Result;
@@ -217,8 +171,6 @@ namespace LiveTalk.Core
                 throw new ArgumentNullException(nameof(avatarData));
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
-
-            InitializeGeneratorModels();
             
             // Step 1: Process audio and extract features
             var audioTask = ProcessAudio(audioClip);
@@ -247,6 +199,29 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
+        /// Starts the session for the generator models
+        /// </summary>
+        private async Task StartGeneratorSession()
+        {
+            await _unet.StartSession();
+            await _vaeDecoder.StartSession();
+            await _positionalEncoding.StartSession();
+            // Whisper model is started in ProcessAudio()
+        }
+
+        /// <summary>
+        /// Ends the session for the generator models
+        /// </summary>
+        private void EndGeneratorSession()
+        {
+            _unet.EndSession();
+            _vaeDecoder.EndSession();
+            _positionalEncoding.EndSession();
+            // Whisper model is ended in ProcessAudio()
+            _reusableBatchArray = null;
+        }
+
+        /// <summary>
         /// Initializes the models required for video frame generation.
         /// Includes UNet, VAE decoder, Whisper model, and positional encoding components.
         /// </summary>
@@ -254,12 +229,20 @@ namespace LiveTalk.Core
         {
             if (_generatorModelsInitialized)
                 return;
-                
+            
+            bool forceFP32 = _config.MemoryUsage == MemoryUsage.Quality;
+            Precision fp16Precision = forceFP32 ? Precision.FP32 : Precision.FP16;
+
             Logger.LogVerbose("[MuseTalkInference] Initializing generator models...");
-            _unet = new Model(_config, "unet", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
-            _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, Precision.FP16);
+            _unet = new Model(_config, "unet", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, fp16Precision);
+            if (_config.MemoryUsage == MemoryUsage.Optimal)
+            {
+                // Unet needs to be kept alive for performance reasons as loading is very slow
+                _unet.SetLoadPolicy(Model.ModelLoadPolicy.OnDemandKeepAlive);
+            }
+            _vaeDecoder = new Model(_config, "vae_decoder", MODEL_RELATIVE_PATH, ExecutionProvider.CoreML, fp16Precision);
             _whisperModel = new WhisperModel(_config);
-            _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH, ExecutionProvider.CPU, Precision.FP32);
+            _positionalEncoding = new Model(_config, "positional_encoding", MODEL_RELATIVE_PATH);
             _generatorModelsInitialized = true;
         }
 
@@ -443,6 +426,8 @@ namespace LiveTalk.Core
             {
                 audioData = AudioUtils.StereoToMono(audioData);
             }
+
+            await _whisperModel.StartSession();
             
             if (_whisperModel == null || !_whisperModel.IsInitialized)
             {
@@ -451,6 +436,7 @@ namespace LiveTalk.Core
             
             // Use ONNX Whisper model
             var features = await ExtractWhisperFeatures(audioData, audioClip.frequency);
+            _whisperModel.EndSession();
             return features;
         }
         
@@ -494,9 +480,12 @@ namespace LiveTalk.Core
             {
                 Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
                 yield break;
-            }         
+            }
             Logger.LogVerbose($"[MuseTalkInference] Processing {numFrames} frames");
-            
+
+            var startSessionTask = StartGeneratorSession();
+            yield return new WaitUntil(() => startSessionTask.IsCompleted);
+
             // Create cycled latent list for smooth animation
             var cycleDLatents = new List<float[]>(avatarData.Latents);
             var reversedLatents = new List<float[]>(avatarData.Latents);
@@ -504,7 +493,7 @@ namespace LiveTalk.Core
             cycleDLatents.AddRange(reversedLatents);
             
             for (int idx = 0; idx < numFrames; idx++)
-            {                
+            {
                 // Prepare batch data using the frame index to cycle through latents
                 var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
                 var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
@@ -530,6 +519,53 @@ namespace LiveTalk.Core
                 // Log batch performance
                 Logger.LogVerbose($"[MuseTalkInference] Frame {idx} completed");
             }
+
+            EndGeneratorSession();
+        }
+
+        /// <summary>
+        /// Asynchronously computes avatar data for a single frame.
+        /// This method detects faces, crops the face region, generates segmentation masks,
+        /// and computes latents for the UNet model.
+        /// </summary>
+        /// <param name="texture"></param>
+        /// <param name="avatarData"></param>
+        /// <returns></returns>
+        private async Task ComputeAvatarDataForFrame(Texture2D texture, AvatarData avatarData)
+        {
+            var frame = TextureUtils.Texture2DToFrame(texture);
+            UnityEngine.Object.DestroyImmediate(texture);
+            await Task.Run(async () =>
+            {
+                var bbox = await _faceAnalysis.GetLandmarkAndBbox(frame);
+                if (bbox == Vector4.zero)
+                {
+                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {texture.width}x{texture.height}");
+                    return;
+                }
+
+                var croppedFrame = CropFaceRegion(frame, bbox, _config.Version);
+                var segmentationData = await ComputeSegmentationData(frame, bbox);
+                var faceData = new FaceData
+                {
+                    HasFace = true,
+                    BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
+                    CroppedFaceTexture = croppedFrame,
+                    OriginalTexture = frame,
+                    FaceLarge = segmentationData.FaceLarge,
+                    SegmentationMask = segmentationData.SegmentationMask,
+                    AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
+                    CropBox = segmentationData.CropBox,
+                    MaskSmall = segmentationData.MaskSmall,
+                    FullMask = segmentationData.FullMask,
+                    BoundaryMask = segmentationData.BoundaryMask,
+                    BlurredMask = segmentationData.BlurredMask
+                };
+                avatarData.FaceRegions.Add(faceData);
+
+                var latents = await GetLatentsForUNet(croppedFrame);
+                avatarData.Latents.Add(latents);
+            });
         }
 
         /// <summary>
