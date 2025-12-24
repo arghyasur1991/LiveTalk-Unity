@@ -372,8 +372,11 @@ namespace LiveTalk.API
         {
             Logger.LogVerbose($"[Character] Loading character data for {Name}");
 
-            // Load expressions data
-            yield return LoadExpressionsData();
+            if (Image != null)
+            {
+                // Load expressions data
+                yield return LoadExpressionsData();
+            }
 
             // Load voice data
             yield return LoadVoiceData();
@@ -1349,28 +1352,30 @@ namespace LiveTalk.API
 
             // Load character image
             string imagePath = Path.Combine(characterFolder, "image.png");
+            Texture2D texture = null;
             if (!File.Exists(imagePath))
             {
-                onError?.Invoke(new FileNotFoundException($"Character image not found: {imagePath}"));
-                yield break;
+                Debug.Log($"[Character] {config.name} image not found: {imagePath}");
             }
-
-            var readImageTask = File.ReadAllBytesAsync(imagePath);
-            yield return new WaitUntil(() => readImageTask.IsCompleted);
-
-            if (readImageTask.IsFaulted)
+            else
             {
-                onError?.Invoke(readImageTask.Exception?.InnerException ?? new Exception("Failed to read character image"));
-                yield break;
-            }
+                var readImageTask = File.ReadAllBytesAsync(imagePath);
+                yield return new WaitUntil(() => readImageTask.IsCompleted);
 
-            // Create texture from image bytes
-            var imageBytes = readImageTask.Result;
-            var texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
-            if (!texture.LoadImage(imageBytes))
-            {
-                onError?.Invoke(new Exception("Failed to load character image into texture"));
-                yield break;
+                if (readImageTask.IsFaulted)
+                {
+                    onError?.Invoke(readImageTask.Exception?.InnerException ?? new Exception("Failed to read character image"));
+                    yield break;
+                }
+
+                // Create texture from image bytes
+                var imageBytes = readImageTask.Result;
+                texture = new Texture2D(2, 2); // Temporary size, will be replaced by LoadImage
+                if (!texture.LoadImage(imageBytes))
+                {
+                    onError?.Invoke(new Exception("Failed to load character image into texture"));
+                    yield break;
+                }
             }
 
             // Create character object
@@ -1384,10 +1389,9 @@ namespace LiveTalk.API
             )
             {
                 // Set character folder for data loading
-                CharacterFolder = characterFolder
+                CharacterFolder = characterFolder,
+                CharacterId = characterId
             };
-
-            character.CharacterId = characterId;
 
             // Load all character data (expressions, voice, etc.)
             yield return character.LoadData();
