@@ -493,6 +493,45 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// Creates a new character with the specified parameters and voice prompt path
+        /// </summary>
+        /// <param name="name">The name of the character</param>
+        /// <param name="gender">The gender of the character</param>
+        /// <param name="image">The image of the character</param>
+        /// <param name="pitch">The pitch of the character</param>
+        /// <param name="speed">The speed of the character</param>
+        /// <param name="intro">The intro of the character</param>
+        /// <param name="voicePromptPath">The path to the voice prompt</param>
+        /// <param name="onComplete">Callback when character is successfully created</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        /// <param name="creationMode">The creation mode to use</param>
+        /// <param name="useBundle">Whether to use a bundle if possible</param>
+        public IEnumerator CreateCharacterAsync(
+            string name,
+            Gender gender,
+            Texture2D image,
+            Pitch pitch,
+            Speed speed,
+            string intro,
+            string voicePromptPath,
+            Action<Character> onComplete,
+            Action<Exception> onError,
+            CreationMode creationMode,
+            bool useBundle = true)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                yield break;
+            }
+
+            var character = new Character(name, gender, image, pitch, speed, intro);
+            useBundle = useBundle && CanUseBundle();
+            yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
+            onComplete?.Invoke(character);
+        }
+
+        /// <summary>
         /// Load a character from the saveLocation using the character GUID
         /// </summary>
         /// <param name="characterId">The GUID/hash of the character to load</param>
