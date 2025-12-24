@@ -497,12 +497,37 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// Load a character from a path
+        /// </summary>
+        /// <param name="characterPath">The path to the character</param>
+        /// <param name="onComplete">Callback when character is successfully loaded</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        public IEnumerator LoadCharacterAsyncFromPath(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(characterPath))
+            {
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
+                yield break;
+            }
+            yield return Character.LoadCharacterAsyncFromPath(characterPath, onComplete, onError);
+        }
+
+        /// <summary>
         /// Load a character from the saveLocation using the character GUID
         /// </summary>
         /// <param name="characterId">The GUID/hash of the character to load</param>
         /// <param name="onComplete">Callback when character is successfully loaded</param>
         /// <param name="onError">Callback when an error occurs</param>
-        public IEnumerator LoadCharacterAsync(
+        public IEnumerator LoadCharacterAsyncFromId(
             string characterId,
             Action<Character> onComplete,
             Action<Exception> onError)
@@ -519,7 +544,7 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            yield return Character.LoadCharacterAsync(characterId, onComplete, onError);
+            yield return Character.LoadCharacterAsyncFromId(characterId, onComplete, onError);
         }
 
         /// <summary>

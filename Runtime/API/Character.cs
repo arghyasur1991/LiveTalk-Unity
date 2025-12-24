@@ -192,30 +192,20 @@ namespace LiveTalk.API
             Intro = intro;
         }
 
-        public static IEnumerator LoadCharacterAsync(
-            string characterId,
+        public static IEnumerator LoadCharacterAsyncFromPath(
+            string characterPath,
             Action<Character> onComplete,
             Action<Exception> onError)
         {
-            if (string.IsNullOrEmpty(characterId))
+            if (string.IsNullOrEmpty(characterPath))
             {
-                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
                 yield break;
             }
-
-            // Support both folder and .bundle package formats
-            string characterPath = GetCharacterPath(characterId);
-            if (characterPath == null)
-            {
-                onError?.Invoke(new DirectoryNotFoundException($"Character not found: {characterId} (checked both folder and .bundle package)"));
-                yield break;
-            }
+            Logger.Log($"[Character] Loading character data from path: {characterPath}");
 
             Character loadedCharacter = null;
             Exception loadError = null;
-
-            bool isBundle = IsCharacterBundle(characterId);
-            Logger.Log($"[Character] Loading character data for {characterId} from {(isBundle ? "bundle" : "folder")}: {characterPath}");
 
             // Load character data in a coroutine
             yield return LoadCharacterDataCoroutine(characterPath, 
@@ -234,6 +224,28 @@ namespace LiveTalk.API
             {
                 onError?.Invoke(new Exception("Failed to load character: Unknown error"));
             }
+        }
+
+        public static IEnumerator LoadCharacterAsyncFromId(
+            string characterId,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (string.IsNullOrEmpty(characterId))
+            {
+                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                yield break;
+            }
+
+            // Support both folder and .bundle package formats
+            string characterPath = GetCharacterPath(characterId);
+            if (characterPath == null)
+            {
+                onError?.Invoke(new DirectoryNotFoundException($"Character not found: {characterId} (checked both folder and .bundle package)"));
+                yield break;
+            }
+
+            yield return LoadCharacterAsyncFromPath(characterPath, onComplete, onError);
         }
 
         /// <summary>
@@ -874,6 +886,7 @@ namespace LiveTalk.API
             var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(voicePromptClip);
             if (characterVoice != null)
             {
+                await characterVoice.GenerateSpeechAsync("Hello, this is a test message");
                 await characterVoice.SaveVoiceAsync(voiceFolder);
                 characterVoice.Dispose();
             }
@@ -1301,6 +1314,9 @@ namespace LiveTalk.API
             Action<Exception> onError)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
+
+            var characterId = Path.GetFileNameWithoutExtension(characterFolder);
+
             // Load character.json
             string configPath = Path.Combine(characterFolder, "character.json");
             if (!File.Exists(configPath))
@@ -1370,6 +1386,8 @@ namespace LiveTalk.API
                 // Set character folder for data loading
                 CharacterFolder = characterFolder
             };
+
+            character.CharacterId = characterId;
 
             // Load all character data (expressions, voice, etc.)
             yield return character.LoadData();
