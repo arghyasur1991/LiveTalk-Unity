@@ -251,26 +251,16 @@ namespace LiveTalk.API
             var start = System.Diagnostics.Stopwatch.StartNew();
 
             yield return CreateAvatarAsyncInternal(useBundle, creationMode);
-            var voicePromptClipTask = LoadVoiceFromReference(voicePromptPath, VoiceFolder);
-            yield return new WaitUntil(() => voicePromptClipTask.IsCompleted);
-
-            var stop = start.Elapsed;
-            Logger.Log($"[Character] Character creation completed for {Name} in {stop.TotalMilliseconds}ms");
-        }
-
-        /// <summary>
-        /// Create avatar with explicit format selection
-        /// </summary>
-        /// <param name="useBundle">True to create as macOS bundle, false to create as regular folder</param>
-        /// <param name="creationMode">The creation mode to use</param>
-        /// <returns>Coroutine for avatar creation</returns>
-        public IEnumerator CreateAvatarAsync(bool useBundle, CreationMode creationMode)
-        {
-            var start = System.Diagnostics.Stopwatch.StartNew();
-            yield return CreateAvatarAsyncInternal(useBundle, creationMode);
-            // Step 3: Generate voice sample using SparkTTS
-            var voiceTask = GenerateVoiceSample(VoiceFolder);
-            yield return new WaitUntil(() => voiceTask.IsCompleted);
+            if (!string.IsNullOrEmpty(voicePromptPath))
+            {
+                var voicePromptClipTask = LoadVoiceFromReference(voicePromptPath, VoiceFolder);
+                yield return new WaitUntil(() => voicePromptClipTask.IsCompleted);
+            }
+            else
+            {
+                var voiceTask = GenerateVoiceSample(VoiceFolder);
+                yield return new WaitUntil(() => voiceTask.IsCompleted);
+            }
 
             var stop = start.Elapsed;
             Logger.Log($"[Character] Character creation completed for {Name} in {stop.TotalMilliseconds}ms");
