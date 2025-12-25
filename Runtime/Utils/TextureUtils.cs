@@ -300,43 +300,6 @@ namespace LiveTalk.Utils
 
         #endregion
 
-        #region Public Methods - Utility Operations
-        
-        /// <summary>
-        /// Generates a fast content-based hash for a texture using dimensions, format, and pixel sampling.
-        /// This method provides good uniqueness for texture comparison while being much faster than hashing all pixels.
-        /// Samples a subset of pixels (32x32 maximum) and uses every 10th pixel for efficient hash generation.
-        /// </summary>
-        /// <param name="texture">The texture to generate a hash for</param>
-        /// <returns>A hexadecimal string hash representing the texture content and properties</returns>
-        /// <exception cref="ArgumentNullException">Thrown when texture is null</exception>
-        /// <exception cref="InvalidOperationException">Thrown when pixel data access fails</exception>
-        public static string GenerateTextureHash(Texture2D texture)
-        {
-            if (texture == null)
-                throw new ArgumentNullException(nameof(texture));
-            
-            // Use texture properties and a sample of pixels for hashing
-            // This is faster than hashing all pixels but still provides good uniqueness
-            unchecked
-            {
-                int hash = texture.width.GetHashCode();
-                hash = hash * 31 + texture.height.GetHashCode();
-                hash = hash * 31 + texture.format.GetHashCode();
-                
-                // Sample a few pixels for content-based hashing (much faster than full texture)
-                var pixels = texture.GetPixels(0, 0, Math.Min(32, texture.width), Math.Min(32, texture.height));
-                for (int i = 0; i < Math.Min(100, pixels.Length); i += 10) // Sample every 10th pixel
-                {
-                    hash = hash * 31 + pixels[i].GetHashCode();
-                }
-                
-                return hash.ToString("X8");
-            }
-        }
-
-        #endregion
-
         #region Private Methods - Helper Operations
         
         /// <summary>

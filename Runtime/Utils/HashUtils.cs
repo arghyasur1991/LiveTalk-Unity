@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using UnityEngine;
 
 namespace LiveTalk.Utils
 {
@@ -8,6 +9,7 @@ namespace LiveTalk.Utils
     /// Provides cryptographic-quality hashing for unique identification of:
     /// - Text content for speech caching
     /// - Character identity for voice generation
+    /// - Texture content for avatar identification
     /// - Combined voice hashes for global caching
     /// </summary>
     public static class HashUtils
@@ -44,6 +46,95 @@ namespace LiveTalk.Utils
                 }
                 return sb.ToString();
             }
+        }
+
+        /// <summary>
+        /// Generates a fast content-based hash for a texture using dimensions, format, and pixel sampling.
+        /// This method provides good uniqueness for texture comparison while being much faster than hashing all pixels.
+        /// Samples a subset of pixels (32x32 maximum) and uses every 10th pixel for efficient hash generation.
+        /// </summary>
+        /// <param name="texture">The texture to hash</param>
+        /// <returns>16-character hex string representing the texture content</returns>
+        public static string GenerateTextureHash(Texture2D texture)
+        {
+            if (texture == null)
+                return "0000000000000000";
+            
+            ulong hash = FNV_OFFSET_BASIS_64;
+            
+            // Hash texture properties
+            hash = HashInt(hash, texture.width);
+            hash = HashInt(hash, texture.height);
+            hash = HashInt(hash, (int)texture.format);
+            int maxSampleSize = 256;
+            
+            // Sample pixels for content-based hashing (faster than full texture)
+            try
+            {
+                int sampleWidth = Math.Min(maxSampleSize, texture.width);
+                int sampleHeight = Math.Min(maxSampleSize, texture.height);
+                var pixels = texture.GetPixels(0, 0, sampleWidth, sampleHeight);
+                
+                // Sample every 10th pixel for efficiency
+                for (int i = 0; i < pixels.Length; i += 10)
+                {
+                    var pixel = pixels[i];
+                    hash = HashInt(hash, (int)(pixel.r * 255));
+                    hash = HashInt(hash, (int)(pixel.g * 255));
+                    hash = HashInt(hash, (int)(pixel.b * 255));
+                    hash = HashInt(hash, (int)(pixel.a * 255));
+                }
+            }
+            catch
+            {
+                // If we can't read pixels (e.g., compressed texture), use only dimensions
+                hash = HashString(hash, "unreadable");
+            }
+            
+            return hash.ToString("x16");
+        }
+
+        /// <summary>
+        /// Generates a unique hash for a character based on all identifying properties.
+        /// Combines name, gender, pitch, speed, intro text, and optional image.
+        /// </summary>
+        /// <param name="name">Character name</param>
+        /// <param name="gender">Character gender</param>
+        /// <param name="pitch">Voice pitch setting</param>
+        /// <param name="speed">Voice speed setting</param>
+        /// <param name="intro">Intro/reference text for voice generation</param>
+        /// <param name="image">Optional character image texture</param>
+        /// <returns>16-character hex string uniquely identifying this character configuration</returns>
+        public static string GenerateCharacterHash(
+            string name, 
+            string gender, 
+            string pitch, 
+            string speed, 
+            string intro = null,
+            Texture2D image = null)
+        {
+            ulong hash = FNV_OFFSET_BASIS_64;
+            
+            // Hash all character properties
+            hash = HashString(hash, name ?? "unnamed");
+            hash = HashString(hash, gender ?? "unknown");
+            hash = HashString(hash, pitch ?? "moderate");
+            hash = HashString(hash, speed ?? "moderate");
+            
+            // Include intro text if provided (affects voice generation)
+            if (!string.IsNullOrEmpty(intro))
+            {
+                hash = HashString(hash, intro);
+            }
+            
+            // Include image hash if provided
+            if (image != null)
+            {
+                string imageHash = GenerateTextureHash(image);
+                hash = HashString(hash, imageHash);
+            }
+            
+            return hash.ToString("x16");
         }
 
         /// <summary>
@@ -126,33 +217,6 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
-        /// Generates a GUID-style identifier for new characters.
-        /// Uses multiple entropy sources for uniqueness.
-        /// </summary>
-        /// <param name="name">Character name</param>
-        /// <param name="timestamp">Optional timestamp (defaults to current UTC)</param>
-        /// <returns>32-character hex GUID-style identifier</returns>
-        public static string GenerateCharacterGuid(string name, DateTime? timestamp = null)
-        {
-            var time = timestamp ?? DateTime.UtcNow;
-            
-            // Combine multiple entropy sources
-            ulong hash1 = FNV_OFFSET_BASIS_64;
-            hash1 = HashString(hash1, name ?? "character");
-            hash1 = HashLong(hash1, time.Ticks);
-            hash1 = HashInt(hash1, Environment.TickCount);
-            
-            // Second hash with different seed for more entropy
-            ulong hash2 = 0xC96C5795D7870F42UL; // Different basis
-            hash2 = HashString(hash2, time.ToString("O"));
-            hash2 = HashInt(hash2, UnityEngine.Random.Range(0, int.MaxValue));
-            hash2 = HashString(hash2, Guid.NewGuid().ToString("N"));
-            
-            // Combine both hashes
-            return hash1.ToString("x16") + hash2.ToString("x16");
-        }
-
-        /// <summary>
         /// Generates a unique speech cache key for a specific utterance.
         /// </summary>
         /// <param name="text">The text to be spoken</param>
@@ -223,19 +287,6 @@ namespace LiveTalk.Utils
         private static ulong HashInt(ulong hash, int value)
         {
             for (int i = 0; i < 4; i++)
-            {
-                hash ^= (byte)(value >> (i * 8));
-                hash *= FNV_PRIME_64;
-            }
-            return hash;
-        }
-
-        /// <summary>
-        /// Hash a long into the running 64-bit hash value
-        /// </summary>
-        private static ulong HashLong(ulong hash, long value)
-        {
-            for (int i = 0; i < 8; i++)
             {
                 hash ^= (byte)(value >> (i * 8));
                 hash *= FNV_PRIME_64;

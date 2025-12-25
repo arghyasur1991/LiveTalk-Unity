@@ -454,8 +454,15 @@ namespace LiveTalk.API
             // Get the LiveTalkAPI instance
             var liveTalkAPI = LiveTalkAPI.Instance ?? throw new InvalidOperationException("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first.");
 
-            // Step 1: Generate a unique ID for this character based on name, gender, and image
-            CharacterId = GenerateCharacterHash();
+            // Step 1: Generate a unique ID for this character based on name, gender, voice settings, and image
+            CharacterId = HashUtils.GenerateCharacterHash(
+                Name,
+                Gender.ToString(),
+                Pitch.ToString(),
+                Speed.ToString(),
+                Intro,
+                Image
+            );
             CharacterFolder = Path.Combine(saveLocation, useBundle ? $"{CharacterId}.bundle" : CharacterId);
             // Create main character directory (clean slate approach)
             // Using .bundle extension makes this appear as a single file in macOS Finder
@@ -640,21 +647,6 @@ namespace LiveTalk.API
                     frameIndex++;
                 }
             }
-        }
-
-        /// <summary>
-        /// Generate a unique hash for this character based on name, gender, pitch, speed and image
-        /// </summary>
-        private string GenerateCharacterHash()
-        {
-            string nameHash = Name.GetHashCode().ToString("X8");
-            string genderHash = Gender.ToString().GetHashCode().ToString("X8");
-            string pitchHash = Pitch.ToString().GetHashCode().ToString("X8");
-            string speedHash = Speed.ToString().GetHashCode().ToString("X8");
-            string imageHash = Image != null ? TextureUtils.GenerateTextureHash(Image) : "00000000";
-
-            // use mixin for hashing
-            return StringUtils.MixHash(nameHash, genderHash, pitchHash, speedHash, imageHash);
         }
 
         /// <summary>
