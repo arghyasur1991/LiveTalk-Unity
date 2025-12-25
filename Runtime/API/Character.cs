@@ -166,6 +166,16 @@ namespace LiveTalk.API
         public Pitch Pitch { get; internal set; }
         public Speed Speed { get; internal set; }
         public string Intro { get; internal set; } = "Hello, this is a test message";
+        public AudioClip VoicePromptClip { 
+            get 
+            {
+                if (LoadedVoice != null)
+                {
+                    return LoadedVoice.ReferenceClip;
+                }
+                return null;
+            }
+        }
         internal static string saveLocation;
         
         // Loaded character data for inference
@@ -273,7 +283,7 @@ namespace LiveTalk.API
                 var voiceTask = GenerateVoiceSample(VoiceFolder);
                 yield return new WaitUntil(() => voiceTask.IsCompleted);
             }
-
+            yield return LoadData();
             var stop = start.Elapsed;
             Logger.Log($"[Character] Character creation completed for {Name} in {stop.TotalMilliseconds}ms");
         }

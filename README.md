@@ -20,6 +20,8 @@ LiveTalk is a unified, high-performance talking head generation system that comb
 * 🔊 **Integrated TTS**: Built-in SparkTTS integration for voice generation
 * 📦 **Cross-Platform Character Format**: Supports both folder and macOS bundle formats
 * 🎥 **Flexible Input**: Supports images, videos, and directory-based driving frames
+* 🧠 **Memory Management**: Configurable memory usage modes for desktop and mobile devices
+* 🎭 **Flexible Creation Modes**: Voice-only, single expression, or full character creation
 
 ## Perfect For
 
@@ -202,7 +204,6 @@ The export scripts will convert PyTorch models to ONNX format and apply CoreML o
 ```csharp
 using UnityEngine;
 using LiveTalk.API;
-using System.Collections;
 
 public class LiveTalkExample : MonoBehaviour
 {
@@ -211,12 +212,33 @@ public class LiveTalkExample : MonoBehaviour
         // Initialize the LiveTalk system
         LiveTalkAPI.Instance.Initialize(
             logLevel: LogLevel.INFO,
-            initializeModelsOnDemand: true, // Load models when needed (default: true)
-            characterSaveLocation: "", // Uses default location
-            parentModelPath: "" // Uses StreamingAssets
+            characterSaveLocation: "", // Uses default location (persistentDataPath/Characters)
+            parentModelPath: "",       // Uses StreamingAssets
+            memoryUsage: MemoryUsage.Balanced // Recommended for desktop
         );
     }
 }
+```
+
+### Memory Usage Modes
+
+LiveTalk supports different memory usage configurations optimized for various device types:
+
+```csharp
+// For desktop devices (default) - balanced memory and performance
+LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Balanced);
+
+// For performance-critical applications - loads all models upfront
+LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Performance);
+
+// For mobile devices - minimal memory footprint
+LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Optimal);
+
+// Automatic selection based on platform
+MemoryUsage memoryUsage = Application.isMobilePlatform 
+    ? MemoryUsage.Optimal 
+    : MemoryUsage.Balanced;
+LiveTalkAPI.Instance.Initialize(memoryUsage: memoryUsage);
 ```
 
 ### Character Creation
@@ -235,7 +257,7 @@ public class CharacterCreation : MonoBehaviour
         // Initialize API
         LiveTalkAPI.Instance.Initialize();
         
-        // Create a new character
+        // Create a new character with all expressions
         yield return LiveTalkAPI.Instance.CreateCharacterAsync(
             name: "MyCharacter",
             gender: Gender.Female,
@@ -243,6 +265,7 @@ public class CharacterCreation : MonoBehaviour
             pitch: Pitch.Moderate,
             speed: Speed.Moderate,
             intro: "Hello, I am your virtual assistant!",
+            voicePromptPath: null, // Generate voice from style parameters
             onComplete: (character) => {
                 Debug.Log($"Character created: {character.Name}");
             },
@@ -252,6 +275,73 @@ public class CharacterCreation : MonoBehaviour
         );
     }
 }
+```
+
+### Character Creation Modes
+
+LiveTalk supports different creation modes for flexibility:
+
+```csharp
+// Voice Only - fastest, no visual expressions generated
+yield return LiveTalkAPI.Instance.CreateCharacterAsync(
+    name: "VoiceOnlyCharacter",
+    gender: Gender.Male,
+    image: null, // No image needed for voice-only
+    pitch: Pitch.Low,
+    speed: Speed.Moderate,
+    intro: "Hello!",
+    voicePromptPath: null,
+    onComplete: OnCharacterCreated,
+    onError: OnError,
+    creationMode: CreationMode.VoiceOnly
+);
+
+// Single Expression - voice + talk-neutral expression only
+yield return LiveTalkAPI.Instance.CreateCharacterAsync(
+    name: "QuickCharacter",
+    gender: Gender.Female,
+    image: characterImage,
+    pitch: Pitch.Moderate,
+    speed: Speed.Moderate,
+    intro: "Hello!",
+    voicePromptPath: null,
+    onComplete: OnCharacterCreated,
+    onError: OnError,
+    creationMode: CreationMode.SingleExpression
+);
+
+// All Expressions - full character with all 7 expressions (default)
+yield return LiveTalkAPI.Instance.CreateCharacterAsync(
+    name: "FullCharacter",
+    gender: Gender.Female,
+    image: characterImage,
+    pitch: Pitch.High,
+    speed: Speed.High,
+    intro: "Hello!",
+    voicePromptPath: null,
+    onComplete: OnCharacterCreated,
+    onError: OnError,
+    creationMode: CreationMode.AllExpressions
+);
+```
+
+### Using a Voice Reference
+
+You can create a character voice from an existing audio reference instead of generating from style parameters:
+
+```csharp
+// Create character with voice cloned from reference audio
+yield return LiveTalkAPI.Instance.CreateCharacterAsync(
+    name: "ClonedVoiceCharacter",
+    gender: Gender.Female,
+    image: characterImage,
+    pitch: Pitch.Moderate,  // These are ignored when voicePromptPath is provided
+    speed: Speed.Moderate,
+    intro: "Hello!",
+    voicePromptPath: "/path/to/reference_voice.wav", // Clone voice from this audio
+    onComplete: OnCharacterCreated,
+    onError: OnError
+);
 ```
 
 ### Character Loading and Speech
@@ -270,9 +360,9 @@ public class CharacterSpeech : MonoBehaviour
         // Initialize API
         LiveTalkAPI.Instance.Initialize();
         
-        // Load an existing character
+        // Load an existing character by ID
         string characterId = "your-character-id";
-        yield return LiveTalkAPI.Instance.LoadCharacterAsync(
+        yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromId(
             characterId,
             onComplete: (character) => {
                 loadedCharacter = character;
@@ -291,6 +381,7 @@ public class CharacterSpeech : MonoBehaviour
     {
         if (loadedCharacter == null) yield break;
         
+        // Speak with lip sync animation
         yield return loadedCharacter.SpeakAsync(
             text: "Hello! I can speak with realistic lip sync!",
             expressionIndex: 0, // Use talk-neutral expression
@@ -324,6 +415,43 @@ public class CharacterSpeech : MonoBehaviour
         }
     }
 }
+```
+
+### Voice-Only Speech (No Animation)
+
+For scenarios where you only need audio without video frames:
+
+```csharp
+// Generate voice only (no lip sync animation)
+yield return loadedCharacter.SpeakAsync(
+    text: "This is voice-only output!",
+    expressionIndex: -1, // -1 means voice only, no video frames
+    onComplete: (frameStream, audioClip) => {
+        // frameStream will be empty, only audioClip is populated
+        GetComponent<AudioSource>().clip = audioClip;
+        GetComponent<AudioSource>().Play();
+    },
+    onError: (error) => {
+        Debug.LogError($"Speech generation failed: {error.Message}");
+    }
+);
+```
+
+### Loading Character from Path
+
+You can also load a character directly from a file path:
+
+```csharp
+// Load character from a specific path
+yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromPath(
+    "/path/to/character/folder",
+    onComplete: (character) => {
+        Debug.Log($"Character loaded: {character.Name}");
+    },
+    onError: (error) => {
+        Debug.LogError($"Loading failed: {error.Message}");
+    }
+);
 ```
 
 ### Facial Animation (LivePortrait Only)
@@ -381,6 +509,8 @@ Characters support 7 built-in expressions, each with its own index:
 - **5**: surprised (shocked reaction)
 - **6**: confused (puzzled expression)
 
+Use `expressionIndex: -1` in `SpeakAsync()` to generate voice-only output without video frames.
+
 ### Character Formats
 
 Characters support two storage formats:
@@ -419,34 +549,60 @@ Each character contains:
 ```csharp
 LiveTalkAPI.Instance.Initialize(
     LogLevel logLevel = LogLevel.INFO,
-    bool initializeModelsOnDemand = true,
     string characterSaveLocation = "",
-    string parentModelPath = ""
+    string parentModelPath = "",
+    MemoryUsage memoryUsage = MemoryUsage.Balanced
 )
 ```
 
 #### Character Management
 ```csharp
-// Create character
-IEnumerator CreateCharacterAsync(string name, Gender gender, Texture2D image, 
-    Pitch pitch, Speed speed, string intro, Action<Character> onComplete, Action<Exception> onError)
+// Create character with full options
+IEnumerator CreateCharacterAsync(
+    string name, 
+    Gender gender, 
+    Texture2D image, 
+    Pitch pitch, 
+    Speed speed, 
+    string intro,
+    string voicePromptPath,
+    Action<Character> onComplete, 
+    Action<Exception> onError,
+    CreationMode creationMode = CreationMode.AllExpressions,
+    bool useBundle = true
+)
 
-// Load character
-IEnumerator LoadCharacterAsync(string characterId, Action<Character> onComplete, Action<Exception> onError)
+// Load character by ID (from save location)
+IEnumerator LoadCharacterAsyncFromId(
+    string characterId, 
+    Action<Character> onComplete, 
+    Action<Exception> onError
+)
+
+// Load character from specific path
+IEnumerator LoadCharacterAsyncFromPath(
+    string characterPath, 
+    Action<Character> onComplete, 
+    Action<Exception> onError
+)
 
 // Get available characters
 string[] GetAvailableCharacterIds()
-string GetCharacterPath(string characterId)
-string GetCharacterFormat(string characterId)
-bool IsCharacterBundle(string characterId)
-bool IsCharacterFolder(string characterId)
+string CharacterSaveLocation { get; }
+
+// Check if bundle format is supported on current platform
+static bool CanUseBundle()
 ```
 
 #### Animation Generation
 ```csharp
-// LivePortrait animation
+// LivePortrait animation from texture list
 FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, List<Texture2D> drivingFrames)
+
+// LivePortrait animation from video
 FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
+
+// LivePortrait animation from directory
 FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
 
 // MuseTalk lip sync
@@ -458,6 +614,7 @@ FrameStream GenerateTalkingHeadAsync(Texture2D avatarTexture, string talkingHead
 #### Properties
 ```csharp
 string Name { get; }
+string CharacterId { get; }
 Gender Gender { get; }
 Texture2D Image { get; }
 Pitch Pitch { get; }
@@ -468,13 +625,26 @@ bool IsDataLoaded { get; }
 
 #### Methods
 ```csharp
-// Create character avatar data
-IEnumerator CreateAvatarAsync()
-IEnumerator CreateAvatarAsync(bool useBundle)
+// Make character speak with animation
+IEnumerator SpeakAsync(
+    string text, 
+    int expressionIndex = 0,  // Use -1 for voice-only
+    Action<FrameStream, AudioClip> onComplete = null, 
+    Action<Exception> onError = null
+)
 
-// Make character speak
-IEnumerator SpeakAsync(string text, int expressionIndex = 0, 
-    Action<FrameStream, AudioClip> onComplete = null, Action<Exception> onError = null)
+// Static methods for loading
+static IEnumerator LoadCharacterAsyncFromPath(
+    string characterPath,
+    Action<Character> onComplete,
+    Action<Exception> onError
+)
+
+static IEnumerator LoadCharacterAsyncFromId(
+    string characterId,
+    Action<Character> onComplete,
+    Action<Exception> onError
+)
 ```
 
 ### FrameStream Class
@@ -495,12 +665,20 @@ bool TryGetNext(out Texture2D texture) // Non-blocking retrieval
 
 ### LogLevel Enum
 - `VERBOSE`: Detailed debugging information
-- `INFO`: General information messages
+- `INFO`: General information messages (default)
 - `WARNING`: Warning messages only
 - `ERROR`: Error messages only
 
-### Initialization Options
-- **initializeModelsOnDemand**: When `true` (default), models are loaded only when needed for inference, reducing startup time and memory usage. When `false`, all models are loaded immediately during initialization for faster first-time inference.
+### MemoryUsage Enum
+- `Quality`: Uses FP32 models for maximum quality (not recommended - minimal quality improvement)
+- `Performance`: Loads all models upfront for faster first-time inference (desktop)
+- `Balanced`: Loads models on-demand, recommended for desktop devices (default)
+- `Optimal`: Minimal memory footprint, recommended for mobile devices
+
+### CreationMode Enum
+- `VoiceOnly`: Only generates voice, no visual expressions
+- `SingleExpression`: Generates voice and talk-neutral expression only
+- `AllExpressions`: Generates voice and all 7 expressions (default)
 
 ### Character Configuration
 - **Gender**: `Male`, `Female`
@@ -512,13 +690,14 @@ bool TryGetNext(out Texture2D texture) // Non-blocking retrieval
 - Unity 6000.0.46f1 or later
 - Platforms: macOS (CPU/CoreML), Windows (Not tested)
 - Minimum 32GB RAM recommended for character creations
-- Storage space for models (~6GB total: ~7GB LiveTalk + ~3GB SparkTTS)
+- Storage space for models (~10GB total: ~7GB LiveTalk + ~3GB SparkTTS)
 
 ## Performance
 
 **MacBook Pro M4 Max (Onnx with CoreML Execution Provider)**:
   - Speech With LipSync generation - 10-11 FPS
-  - Character Creation - 10 minutes per character
+  - Character Creation - 10 minutes per character (all expressions)
+  - Character Creation - ~2 minutes per character (single expression)
   
 ### Model Execution Times (Mac M4)
 
@@ -564,4 +743,4 @@ Contributions are welcome! Please read our contributing guidelines and submit pu
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes. 
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.

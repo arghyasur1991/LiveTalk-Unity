@@ -221,11 +221,6 @@ namespace LiveTalk.API
         #region Properties
 
         /// <summary>
-        /// Gets the LiveTalk configuration for internal operations.
-        /// </summary>
-        public string CharacterSaveLocation => Character.saveLocation;
-
-        /// <summary>
         /// Gets the MuseTalk inference engine for internal operations.
         /// </summary>
         internal MuseTalkInference MuseTalk => _museTalk;
@@ -244,6 +239,21 @@ namespace LiveTalk.API
         /// Gets the LiveTalk configuration for internal operations.
         /// </summary>
         internal LiveTalkConfig Config => _config;
+
+        /// <summary>
+        /// Gets or sets the location to save the generated characters.
+        /// </summary>
+        public static string CharacterSaveLocation 
+        { 
+            get 
+            {
+                return Character.saveLocation;
+            } 
+            set 
+            {
+                Character.saveLocation = value;
+            }
+        }
 
         #endregion
 
@@ -317,6 +327,10 @@ namespace LiveTalk.API
         /// <exception cref="ArgumentException">Thrown when source image or driving frames are null</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, List<Texture2D> drivingFrames)
         {
+            if (!_initialized)
+            {
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
             ValidateAnimationInputs(sourceImage, drivingFrames);
             Logger.Log($"[LiveTalkAPI] Generating animated textures: {drivingFrames.Count} driving frames");
             
@@ -339,6 +353,10 @@ namespace LiveTalk.API
         /// <exception cref="ArgumentException">Thrown when source image or video player is null</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
         {
+            if (!_initialized)
+            {
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
             ValidateAnimationInputs(sourceImage, videoPlayer);
 
             int frameCount = CalculateFrameCount(videoPlayer, maxFrames);
@@ -362,6 +380,10 @@ namespace LiveTalk.API
         /// <exception cref="ArgumentException">Thrown when source image or path is invalid, or no frames are found</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
         {
+            if (!_initialized)
+            {
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
             ValidateAnimationInputs(sourceImage, drivingFramesPath);
 
             var frameFiles = GetFrameFiles(drivingFramesPath, maxFrames);
@@ -390,6 +412,10 @@ namespace LiveTalk.API
         /// <exception cref="InvalidOperationException">Thrown when the controller is not available</exception>
         public FrameStream GenerateTalkingHeadAsync(Texture2D avatarTexture, string talkingHeadFolderPath, AudioClip audioClip)
         {
+            if (!_initialized)
+            {
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
             ValidateControllerAvailability();
             ValidateTalkingHeadInputs(avatarTexture, audioClip);
             
@@ -509,10 +535,9 @@ namespace LiveTalk.API
         {
             if (!_initialized)
             {
-                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call Initialize() first."));
                 yield break;
             }
-
             if (string.IsNullOrEmpty(characterPath))
             {
                 onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
@@ -534,10 +559,9 @@ namespace LiveTalk.API
         {
             if (!_initialized)
             {
-                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call Initialize() first."));
                 yield break;
             }
-
             if (string.IsNullOrEmpty(characterId))
             {
                 onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));

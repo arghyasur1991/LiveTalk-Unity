@@ -452,6 +452,7 @@ namespace LiveTalk.Samples
                 characterPitch,
                 characterSpeed,
                 characterIntro,
+                null,
                 onComplete: (character) => {
                     createdCharacter = character;
                     completed = true;
@@ -471,7 +472,7 @@ namespace LiveTalk.Samples
             else if (createdCharacter != null)
             {
                 UpdateStatus($"Character '{createdCharacter.Name}' created successfully!");
-                Debug.Log($"[LiveTalkDemo] Character saved to: {_api.CharacterSaveLocation}");
+                Debug.Log($"[LiveTalkDemo] Character saved to: {LiveTalkAPI.CharacterSaveLocation}");
                 Debug.Log($"[LiveTalkDemo] Character details: {createdCharacter.Name}, {createdCharacter.Gender}, Pitch: {createdCharacter.Pitch}, Speed: {createdCharacter.Speed}");
                 
                 // Character created - you can now use its ID to load it
@@ -504,7 +505,7 @@ namespace LiveTalk.Samples
             System.Exception error = null;
             
             // Load character asynchronously
-            yield return _api.LoadCharacterAsync(
+            yield return _api.LoadCharacterAsyncFromId(
                 characterIdToLoad,
                 onComplete: (character) => {
                     loadedCharacter = character;
@@ -861,7 +862,7 @@ namespace LiveTalk.Samples
                 return false;
             }
             
-            if (string.IsNullOrEmpty(_api.CharacterSaveLocation))
+            if (string.IsNullOrEmpty(LiveTalkAPI.CharacterSaveLocation))
             {
                 UpdateStatus("Please provide a save location for characters");
                 return false;
