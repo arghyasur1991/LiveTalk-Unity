@@ -289,7 +289,8 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Generate speech asynchronously using coroutines
+        /// Generate speech asynchronously using coroutines with optional caching.
+        /// Speech audio is automatically cached using the global Cache if enabled.
         /// </summary>
         /// <param name="text">Text to speak</param>
         /// <param name="expressionIndex">Expression to use, -1 for voice only</param>
@@ -336,28 +337,75 @@ namespace LiveTalk.API
 
             Logger.LogVerbose($"[Character] {Name} speaking async: \"{text}\" with expression {expressionIndex}");
 
-            // Generate audio using the loaded character voice
-            var audioTask = LoadedVoice.GenerateSpeechAsync(text);
-            yield return new WaitUntil(() => audioTask.IsCompleted);
+            AudioClip audioClip = null;
+            string cacheKey = null;
+            bool fromCache = false;
 
-            if (audioTask.IsFaulted)
+            // Check cache first
+            if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(CharacterId))
             {
-                onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
-                yield break;
+                cacheKey = HashUtils.GenerateSpeechCacheKey(text, CharacterId, expressionIndex == -1 ? -1 : expressionIndex);
+                var (exists, cachedPath) = LiveTalkCache.CheckExists(cacheKey);
+                
+                if (exists)
+                {
+                    Logger.LogVerbose($"[Character] Loading cached audio for: {text.Substring(0, Math.Min(30, text.Length))}...");
+                    var loadTask = AudioLoaderService.LoadAudioClipAsync(cachedPath);
+                    yield return new WaitUntil(() => loadTask.IsCompleted);
+                    
+                    if (!loadTask.IsFaulted && loadTask.Result != null)
+                    {
+                        audioClip = loadTask.Result;
+                        fromCache = true;
+                    }
+                }
             }
 
-            var audioClip = audioTask.Result;
+            // Generate new audio if not cached
+            if (audioClip == null)
+            {
+                var audioTask = LoadedVoice.GenerateSpeechAsync(text);
+                yield return new WaitUntil(() => audioTask.IsCompleted);
+
+                if (audioTask.IsFaulted)
+                {
+                    onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
+                    yield break;
+                }
+
+                audioClip = audioTask.Result;
+                
+                // Save to cache
+                if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey) && audioClip != null)
+                {
+                    string cachePath = LiveTalkCache.GetFilePath(cacheKey);
+                    if (!string.IsNullOrEmpty(cachePath))
+                    {
+                        var saveTask = AudioLoaderService.SaveAudioClipToFile(audioClip, cachePath);
+                        // Don't wait for save to complete - fire and forget for performance
+                        _ = saveTask.ContinueWith(t => 
+                        {
+                            if (t.IsFaulted)
+                                Logger.LogWarning($"[Character] Failed to save audio to cache: {t.Exception?.InnerException?.Message}");
+                            else
+                                Logger.LogVerbose($"[Character] Saved audio to cache: {cacheKey}");
+                        });
+                    }
+                }
+            }
+
             if (audioClip == null)
             {
                 onError?.Invoke(new InvalidOperationException("Generated audio clip is null."));
                 yield break;
             }
+
             var outputStream = new FrameStream(0);
             if (expressionIndex == -1)
             {
                 onComplete?.Invoke(outputStream, audioClip);
                 var stopLocal = start.Elapsed;
-                Logger.Log($"[Character] Speaking completed for {Name} in {stopLocal.TotalMilliseconds}ms");
+                Logger.Log($"[Character] Speaking completed for {Name} in {stopLocal.TotalMilliseconds}ms{(fromCache ? " (cached)" : "")}");
                 yield break;
             }
 
@@ -372,7 +420,7 @@ namespace LiveTalk.API
 
             onComplete?.Invoke(outputStream, audioClip);
             var stop = start.Elapsed;
-            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms");
+            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms{(fromCache ? " (cached)" : "")}");
         }
 
         /// <summary>

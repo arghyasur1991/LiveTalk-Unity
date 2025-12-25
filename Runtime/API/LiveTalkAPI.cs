@@ -255,6 +255,27 @@ namespace LiveTalk.API
             }
         }
 
+        /// <summary>
+        /// Gets the cache location path.
+        /// </summary>
+        public static string CacheLocation => LiveTalkCache.Path;
+
+        /// <summary>
+        /// Gets whether caching is enabled.
+        /// </summary>
+        public static bool IsCacheEnabled => LiveTalkCache.IsEnabled;
+
+        /// <summary>
+        /// Enable or disable caching at runtime.
+        /// </summary>
+        /// <param name="enabled">Whether to enable caching</param>
+        public static void SetCacheEnabled(bool enabled) => LiveTalkCache.SetEnabled(enabled);
+
+        /// <summary>
+        /// Clear all cached files.
+        /// </summary>
+        public static void ClearCache() => LiveTalkCache.Clear();
+
         #endregion
 
         #region Constructor
@@ -267,11 +288,15 @@ namespace LiveTalk.API
         /// <param name="characterSaveLocation">The location to save the generated characters</param>
         /// <param name="parentModelPath">The parent path for model files (defaults to StreamingAssets if empty)</param>
         /// <param name="memoryUsage">The memory usage level for the API (defaults to Balanced)</param>
+        /// <param name="cacheLocation">The location to cache generated content (null to disable caching)</param>
+        /// <param name="enableCache">Whether to enable caching (defaults to true if location provided)</param>
         public void Initialize(
             LogLevel logLevel = LogLevel.INFO,
             string characterSaveLocation = "",
             string parentModelPath = "",
-            MemoryUsage memoryUsage = MemoryUsage.Balanced)
+            MemoryUsage memoryUsage = MemoryUsage.Balanced,
+            string cacheLocation = null,
+            bool enableCache = true)
         {
             if (_initialized)
             {
@@ -288,6 +313,13 @@ namespace LiveTalk.API
             {
                 characterSaveLocation = Path.Combine(Application.persistentDataPath, "Characters");
             }
+
+            // Initialize cache
+            if (string.IsNullOrEmpty(cacheLocation) && enableCache)
+            {
+                cacheLocation = Path.Combine(Application.persistentDataPath, "LiveTalkCache");
+            }
+            LiveTalkCache.Initialize(cacheLocation, enableCache);
             
             _config = new LiveTalkConfig(parentModelPath, logLevel, memoryUsage);
             Logger.LogLevel = _config.LogLevel;

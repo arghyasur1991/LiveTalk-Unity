@@ -137,7 +137,7 @@ namespace LiveTalk.Samples
             try
             {
                 UpdateStatus("Initializing LiveTalk...");
-                var logLevel = LogLevel.INFO;
+                var logLevel = LogLevel.VERBOSE;
                 _api = LiveTalkAPI.Instance;
                 MemoryUsage memoryUsage = IsMobile() ? MemoryUsage.Optimal : MemoryUsage.Balanced;
                 _api.Initialize(logLevel, memoryUsage: memoryUsage);
