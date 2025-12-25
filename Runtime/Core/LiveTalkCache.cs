@@ -151,10 +151,9 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Clear all cached files with the specified extension.
+        /// Clear all cached content (files and folders).
         /// </summary>
-        /// <param name="extension">File extension pattern (default: *.wav)</param>
-        public static void Clear(string extension = "*.wav")
+        public static void Clear()
         {
             if (!_initialized || string.IsNullOrEmpty(_path))
                 return;
@@ -163,12 +162,26 @@ namespace LiveTalk.Core
             {
                 if (Directory.Exists(_path))
                 {
-                    var files = Directory.GetFiles(_path, extension);
+                    int filesCleared = 0;
+                    int foldersCleared = 0;
+                    
+                    // Clear all files
+                    var files = Directory.GetFiles(_path);
                     foreach (var file in files)
                     {
                         File.Delete(file);
+                        filesCleared++;
                     }
-                    Logger.Log($"[Cache] Cleared {files.Length} cached files");
+                    
+                    // Clear all subdirectories (voice sample folders, etc.)
+                    var directories = Directory.GetDirectories(_path);
+                    foreach (var dir in directories)
+                    {
+                        Directory.Delete(dir, true);
+                        foldersCleared++;
+                    }
+                    
+                    Logger.Log($"[Cache] Cleared {filesCleared} files and {foldersCleared} folders");
                 }
             }
             catch (Exception ex)
@@ -178,29 +191,43 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Get the total size of cached files in bytes.
+        /// Get the total size of all cached content in bytes (files and folders).
         /// </summary>
-        /// <param name="extension">File extension pattern (default: *.wav)</param>
-        public static long GetSize(string extension = "*.wav")
+        public static long GetSize()
         {
             if (!_initialized || string.IsNullOrEmpty(_path) || !Directory.Exists(_path))
                 return 0;
 
             try
             {
-                var files = Directory.GetFiles(_path, extension);
-                long totalSize = 0;
-                foreach (var file in files)
-                {
-                    var info = new FileInfo(file);
-                    totalSize += info.Length;
-                }
-                return totalSize;
+                return GetDirectorySize(_path);
             }
             catch
             {
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// Recursively calculate directory size.
+        /// </summary>
+        private static long GetDirectorySize(string path)
+        {
+            long size = 0;
+            
+            // Add file sizes
+            foreach (var file in Directory.GetFiles(path))
+            {
+                size += new FileInfo(file).Length;
+            }
+            
+            // Add subdirectory sizes
+            foreach (var dir in Directory.GetDirectories(path))
+            {
+                size += GetDirectorySize(dir);
+            }
+            
+            return size;
         }
     }
 }

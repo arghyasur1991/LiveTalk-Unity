@@ -245,19 +245,11 @@ namespace LiveTalk.Utils
         /// </summary>
         /// <param name="text">The text to be spoken</param>
         /// <param name="characterId">The character speaking</param>
-        /// <param name="expressionIndex">The expression being used (-1 for voice only)</param>
         /// <returns>Unique cache key for this specific speech</returns>
-        public static string GenerateSpeechCacheKey(string text, string characterId, int expressionIndex = -1)
+        public static string GenerateSpeechCacheKey(string text, string characterId)
         {
             string textHash = GenerateTextHash(text);
             string voiceHash = CreateGlobalVoiceHash(textHash, characterId);
-            
-            if (expressionIndex >= 0)
-            {
-                // Include expression in hash for animated speech
-                uint exprHash = (uint)expressionIndex * FNV_PRIME_32;
-                return voiceHash + "_" + exprHash.ToString("x4");
-            }
             
             return voiceHash;
         }

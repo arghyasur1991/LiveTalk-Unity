@@ -344,12 +344,12 @@ namespace LiveTalk.API
             // Check cache first
             if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(CharacterId))
             {
-                cacheKey = HashUtils.GenerateSpeechCacheKey(text, CharacterId, expressionIndex == -1 ? -1 : expressionIndex);
+                cacheKey = HashUtils.GenerateSpeechCacheKey(text, CharacterId);
                 var (exists, cachedPath) = LiveTalkCache.CheckExists(cacheKey);
                 
                 if (exists)
                 {
-                    Logger.LogVerbose($"[Character] Loading cached audio for: {text.Substring(0, Math.Min(30, text.Length))}...");
+                    Logger.LogVerbose($"[Character] Loading cached audio for: {text[..Math.Min(30, text.Length)]}...");
                     var loadTask = AudioLoaderService.LoadAudioClipAsync(cachedPath);
                     yield return new WaitUntil(() => loadTask.IsCompleted);
                     
