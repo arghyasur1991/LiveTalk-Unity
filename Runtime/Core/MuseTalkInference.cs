@@ -75,6 +75,11 @@ namespace LiveTalk.Core
             foreach (var path in avatarFramePaths)
             {
                 var texture = FileUtils.LoadFrame(path);
+                if (texture == null)
+                {
+                    Logger.LogWarning($"[MuseTalkInference] Failed to load texture from path {path}");
+                    continue;
+                }
                 await ComputeAvatarDataForFrame(texture, avatarData);
             }
             _faceAnalysis.EndFaceAnalysisSession();
@@ -95,7 +100,6 @@ namespace LiveTalk.Core
         /// <param name="avatarTextures">The list of avatar texture images to process</param>
         /// <returns>A task containing the processed avatar data with face regions and latent vectors</returns>
         /// <exception cref="ArgumentNullException">Thrown when avatarTextures is null</exception>
-        /// <exception cref="InvalidOperationException">Thrown when no faces are detected or latent generation fails</exception>
         public async Task<AvatarData> ProcessAvatarImages(List<Texture2D> avatarTextures)
         {
             if (avatarTextures == null)
@@ -540,7 +544,7 @@ namespace LiveTalk.Core
                 var bbox = await _faceAnalysis.GetLandmarkAndBbox(frame);
                 if (bbox == Vector4.zero)
                 {
-                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {texture.width}x{texture.height}");
+                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {frame.width}x{frame.height}");
                     return;
                 }
 
