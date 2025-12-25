@@ -130,7 +130,7 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Copy all files from source folder to destination folder.
+        /// Recursively copy all files and subdirectories from source folder to destination folder.
         /// </summary>
         /// <param name="sourceFolder">Source folder path</param>
         /// <param name="destFolder">Destination folder path</param>
@@ -142,11 +142,20 @@ namespace LiveTalk.Core
             if (!Directory.Exists(destFolder))
                 Directory.CreateDirectory(destFolder);
 
+            // Copy all files
             foreach (var file in Directory.GetFiles(sourceFolder))
             {
                 string fileName = System.IO.Path.GetFileName(file);
                 string destFile = System.IO.Path.Combine(destFolder, fileName);
                 File.Copy(file, destFile, true);
+            }
+
+            // Recursively copy all subdirectories
+            foreach (var dir in Directory.GetDirectories(sourceFolder))
+            {
+                string dirName = System.IO.Path.GetFileName(dir);
+                string destSubDir = System.IO.Path.Combine(destFolder, dirName);
+                CopyFolder(dir, destSubDir);
             }
         }
 
