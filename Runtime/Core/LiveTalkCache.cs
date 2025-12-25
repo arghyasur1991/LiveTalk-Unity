@@ -100,6 +100,57 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
+        /// Get the folder path for a given cache key (for caching folder-based content like voice data).
+        /// </summary>
+        /// <param name="cacheKey">The unique cache key</param>
+        /// <returns>Full path to the cached folder, or null if cache not initialized</returns>
+        public static string GetFolderPath(string cacheKey)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(cacheKey))
+                return null;
+            
+            return System.IO.Path.Combine(_path, cacheKey);
+        }
+
+        /// <summary>
+        /// Check if a cached folder exists for the given cache key.
+        /// </summary>
+        /// <param name="cacheKey">The unique cache key</param>
+        /// <returns>Tuple of (exists, folderPath)</returns>
+        public static (bool exists, string folderPath) CheckFolderExists(string cacheKey)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(cacheKey))
+                return (false, null);
+
+            string folderPath = GetFolderPath(cacheKey);
+            if (Directory.Exists(folderPath) && Directory.GetFiles(folderPath).Length > 0)
+                return (true, folderPath);
+
+            return (false, null);
+        }
+
+        /// <summary>
+        /// Copy all files from source folder to destination folder.
+        /// </summary>
+        /// <param name="sourceFolder">Source folder path</param>
+        /// <param name="destFolder">Destination folder path</param>
+        public static void CopyFolder(string sourceFolder, string destFolder)
+        {
+            if (!Directory.Exists(sourceFolder))
+                return;
+
+            if (!Directory.Exists(destFolder))
+                Directory.CreateDirectory(destFolder);
+
+            foreach (var file in Directory.GetFiles(sourceFolder))
+            {
+                string fileName = System.IO.Path.GetFileName(file);
+                string destFile = System.IO.Path.Combine(destFolder, fileName);
+                File.Copy(file, destFile, true);
+            }
+        }
+
+        /// <summary>
         /// Clear all cached files with the specified extension.
         /// </summary>
         /// <param name="extension">File extension pattern (default: *.wav)</param>
