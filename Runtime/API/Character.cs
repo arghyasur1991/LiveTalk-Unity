@@ -951,7 +951,7 @@ namespace LiveTalk.API
 
         /// <summary>
         /// Generate voice sample using SparkTTS with character parameters.
-        /// Voice samples are cached based on style parameters (gender, pitch, speed, intro).
+        /// Voice samples are cached based on style parameters and characterId (characterId, gender, pitch, speed, intro).
         /// </summary>
         private async Task GenerateVoiceSample(string voiceFolder)
         {
@@ -959,13 +959,12 @@ namespace LiveTalk.API
             string genderParam = ConvertGenderToString(Gender);
             string pitchParam = ConvertPitchToString(Pitch);
             string speedParam = ConvertSpeedToString(Speed);
+            string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(CharacterId, genderParam, pitchParam, speedParam, Intro);
 
             // Check cache first
             if (LiveTalkCache.IsEnabled)
             {
-                string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(genderParam, pitchParam, speedParam, Intro);
-                var (exists, cachedFolder) = LiveTalkCache.CheckFolderExists(cacheKey);
-                
+                var (exists, cachedFolder) = LiveTalkCache.CheckFolderExists(cacheKey);                
                 if (exists)
                 {
                     Logger.Log($"[Character] Using cached voice sample for style: {genderParam}/{pitchParam}/{speedParam}");
@@ -991,7 +990,6 @@ namespace LiveTalk.API
                 // Save to cache
                 if (LiveTalkCache.IsEnabled)
                 {
-                    string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(genderParam, pitchParam, speedParam, Intro);
                     string cacheFolder = LiveTalkCache.GetFolderPath(cacheKey);
                     if (!string.IsNullOrEmpty(cacheFolder))
                     {

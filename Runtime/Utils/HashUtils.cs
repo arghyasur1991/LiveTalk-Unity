@@ -220,15 +220,22 @@ namespace LiveTalk.Utils
         /// Generates a cache key for voice style configuration.
         /// Used to cache generated voice samples based on style parameters.
         /// </summary>
+        /// <param name="characterId">The character's unique identifier</param>
         /// <param name="gender">Voice gender parameter</param>
         /// <param name="pitch">Voice pitch parameter</param>
         /// <param name="speed">Voice speed parameter</param>
         /// <param name="introText">Reference text used for voice generation</param>
         /// <returns>Cache key for this voice style configuration</returns>
-        public static string GenerateVoiceStyleCacheKey(string gender, string pitch, string speed, string introText)
+        public static string GenerateVoiceStyleCacheKey(
+            string characterId, 
+            string gender, 
+            string pitch, 
+            string speed, 
+            string introText = null)
         {
             ulong hash = FNV_OFFSET_BASIS_64;
             
+            hash = HashString(hash, characterId ?? "narrator");
             hash = HashString(hash, gender ?? "female");
             hash = HashString(hash, pitch ?? "moderate");
             hash = HashString(hash, speed ?? "moderate");
