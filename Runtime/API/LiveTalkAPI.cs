@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
 
@@ -59,6 +60,48 @@ namespace LiveTalk.API
         /// For mobile devices (Not recommended for desktop)
         /// </summary>
         Optimal, 
+    }
+
+    /// <summary>
+    /// Result of a voice preview generation
+    /// </summary>
+    public class VoicePreviewResult
+    {
+        /// <summary>
+        /// Whether the generation was successful
+        /// </summary>
+        public bool Success { get; set; }
+        
+        /// <summary>
+        /// Error message if generation failed
+        /// </summary>
+        public string ErrorMessage { get; set; }
+        
+        /// <summary>
+        /// The generated audio clip for playback
+        /// </summary>
+        public AudioClip AudioClip { get; set; }
+        
+        /// <summary>
+        /// Path to the temporary voice folder containing saved voice data.
+        /// Can be used later when creating a character with this voice.
+        /// </summary>
+        public string VoiceFolderPath { get; set; }
+        
+        /// <summary>
+        /// The gender parameter used
+        /// </summary>
+        public string Gender { get; set; }
+        
+        /// <summary>
+        /// The pitch parameter used
+        /// </summary>
+        public string Pitch { get; set; }
+        
+        /// <summary>
+        /// The speed parameter used
+        /// </summary>
+        public string Speed { get; set; }
     }
 
     /// <summary>
@@ -662,6 +705,136 @@ namespace LiveTalk.API
         public static bool CanUseBundle()
         {
             return Application.platform == RuntimePlatform.OSXEditor || Application.platform == RuntimePlatform.OSXPlayer;
+        }
+
+        #endregion
+
+        #region Public Methods - Voice Preview
+
+        /// <summary>
+        /// Generate a preview voice sample with the specified parameters. No caching.
+        /// This is used for "rolling the dice" to preview different voices before committing.
+        /// </summary>
+        /// <param name="gender">Voice gender ("male" or "female")</param>
+        /// <param name="pitch">Voice pitch ("verylow", "low", "moderate", "high", "veryhigh")</param>
+        /// <param name="speed">Voice speed ("verylow", "low", "moderate", "high", "veryhigh")</param>
+        /// <param name="introText">Text to speak for the voice sample</param>
+        /// <returns>VoicePreviewResult containing the AudioClip and voice folder path</returns>
+        public async Task<VoicePreviewResult> GenerateVoicePreviewAsync(
+            string gender,
+            string pitch,
+            string speed,
+            string introText = "Hello, I am a detective ready to solve mysteries.")
+        {
+            if (!_initialized)
+            {
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
+
+            if (string.IsNullOrEmpty(gender))
+            {
+                throw new ArgumentException("Gender parameter is required.");
+            }
+
+            if (string.IsNullOrEmpty(introText))
+            {
+                introText = "Hello, I am a detective ready to solve mysteries.";
+            }
+
+            Logger.Log($"[LiveTalkAPI] Generating voice preview: {gender}/{pitch}/{speed}");
+
+            try
+            {
+                // Create voice using CharacterVoiceFactory (no caching)
+                var characterVoice = await CharacterVoiceFactory.Instance.CreateFromStyleAsync(
+                    gender: gender.ToLower(),
+                    pitch: pitch?.ToLower() ?? "moderate",
+                    speed: speed?.ToLower() ?? "moderate",
+                    referenceText: introText
+                );
+
+                if (characterVoice == null)
+                {
+                    Logger.LogError("[LiveTalkAPI] Failed to create voice preview");
+                    return new VoicePreviewResult { Success = false, ErrorMessage = "Failed to create voice" };
+                }
+
+                // Get the generated audio clip
+                var audioClip = characterVoice.ReferenceClip;
+
+                // Create a unique temp folder for this voice preview
+                string previewId = Guid.NewGuid().ToString("N").Substring(0, 8);
+                string tempVoiceFolder = Path.Combine(Application.temporaryCachePath, "VoicePreviews", previewId);
+                
+                if (!Directory.Exists(tempVoiceFolder))
+                {
+                    Directory.CreateDirectory(tempVoiceFolder);
+                }
+
+                // Save voice to temp folder so it can be used later if selected
+                await characterVoice.SaveVoiceAsync(tempVoiceFolder);
+                
+                characterVoice.Dispose();
+
+                Logger.Log($"[LiveTalkAPI] Voice preview generated: {tempVoiceFolder}");
+
+                return new VoicePreviewResult
+                {
+                    Success = true,
+                    AudioClip = audioClip,
+                    VoiceFolderPath = tempVoiceFolder,
+                    Gender = gender.ToLower(),
+                    Pitch = pitch?.ToLower() ?? "moderate",
+                    Speed = speed?.ToLower() ?? "moderate"
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[LiveTalkAPI] Error generating voice preview: {ex.Message}");
+                return new VoicePreviewResult { Success = false, ErrorMessage = ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// Clean up all voice preview temp folders
+        /// </summary>
+        public void CleanupVoicePreviews()
+        {
+            string previewsFolder = Path.Combine(Application.temporaryCachePath, "VoicePreviews");
+            if (Directory.Exists(previewsFolder))
+            {
+                try
+                {
+                    Directory.Delete(previewsFolder, true);
+                    Logger.Log("[LiveTalkAPI] Cleaned up voice previews folder");
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning($"[LiveTalkAPI] Failed to cleanup voice previews: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Delete a specific voice preview folder
+        /// </summary>
+        /// <param name="voiceFolderPath">Path to the voice folder to delete</param>
+        public void DeleteVoicePreview(string voiceFolderPath)
+        {
+            if (string.IsNullOrEmpty(voiceFolderPath) || !Directory.Exists(voiceFolderPath))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(voiceFolderPath, true);
+                Logger.LogVerbose($"[LiveTalkAPI] Deleted voice preview: {voiceFolderPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[LiveTalkAPI] Failed to delete voice preview: {ex.Message}");
+            }
         }
 
         #endregion

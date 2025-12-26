@@ -261,7 +261,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Create avatar with explicit voice prompt path
         /// </summary>
-        /// <param name="voicePromptPath">The path to the voice prompt</param>
+        /// <param name="voicePromptPath">The path to the voice prompt audio file</param>
         /// <param name="useBundle">True to create as macOS bundle, false to create as regular folder</param>
         /// <param name="creationMode">The creation mode to use</param>
         /// <returns>Coroutine for avatar creation</returns>
