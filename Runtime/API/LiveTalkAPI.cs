@@ -647,6 +647,58 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// Load only character metadata (image + config JSON) without expressions/voice data by ID.
+        /// Use this for thumbnail displays and lists. Call LoadCharacterAsyncFromId for full character.
+        /// </summary>
+        /// <param name="characterId">The GUID/hash of the character to load</param>
+        /// <param name="onComplete">Callback with loaded character (only Image and config populated)</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        public IEnumerator LoadCharacterMetadataAsync(
+            string characterId,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call Initialize() first."));
+                yield break;
+            }
+            if (string.IsNullOrEmpty(characterId))
+            {
+                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                yield break;
+            }
+
+            yield return Character.LoadCharacterMetadataAsync(characterId, onComplete, onError);
+        }
+
+        /// <summary>
+        /// Load only character metadata (image + config JSON) without expressions/voice data from path.
+        /// Use this for thumbnail displays and lists. Call LoadCharacterAsyncFromPath for full character.
+        /// </summary>
+        /// <param name="characterPath">The path to the character folder or bundle</param>
+        /// <param name="onComplete">Callback with loaded character (only Image and config populated)</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        public IEnumerator LoadCharacterMetadataFromPathAsync(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (!_initialized)
+            {
+                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call Initialize() first."));
+                yield break;
+            }
+            if (string.IsNullOrEmpty(characterPath))
+            {
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
+                yield break;
+            }
+
+            yield return Character.LoadCharacterMetadataFromPathAsync(characterPath, onComplete, onError);
+        }
+
+        /// <summary>
         /// Get all available character IDs from the saveLocation
         /// </summary>
         /// <returns>Array of character GUIDs/hashes</returns>

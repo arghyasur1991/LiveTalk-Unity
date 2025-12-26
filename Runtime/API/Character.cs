@@ -259,6 +259,67 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// Load only character metadata (image + config JSON) without expressions/voice by ID.
+        /// This is a lightweight load for thumbnails and lists.
+        /// </summary>
+        public static IEnumerator LoadCharacterMetadataAsync(
+            string characterId,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (string.IsNullOrEmpty(characterId))
+            {
+                onError?.Invoke(new ArgumentException("Character ID cannot be null or empty."));
+                yield break;
+            }
+
+            string characterPath = GetCharacterPath(characterId);
+            if (characterPath == null)
+            {
+                onError?.Invoke(new DirectoryNotFoundException($"Character not found: {characterId}"));
+                yield break;
+            }
+
+            yield return LoadCharacterMetadataFromPathAsync(characterPath, onComplete, onError);
+        }
+
+        /// <summary>
+        /// Load only character metadata (image + config JSON) without expressions/voice from path.
+        /// This is a lightweight load for thumbnails and lists.
+        /// </summary>
+        public static IEnumerator LoadCharacterMetadataFromPathAsync(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            if (string.IsNullOrEmpty(characterPath))
+            {
+                onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
+                yield break;
+            }
+
+            Character character = null;
+            Exception loadError = null;
+
+            yield return LoadCharacterMetadataCoroutine(characterPath,
+                (c) => character = c,
+                (e) => loadError = e);
+
+            if (loadError != null)
+            {
+                onError?.Invoke(loadError);
+            }
+            else if (character != null)
+            {
+                onComplete?.Invoke(character);
+            }
+            else
+            {
+                onError?.Invoke(new Exception("Failed to load character metadata: Unknown error"));
+            }
+        }
+
+        /// <summary>
         /// Create avatar with explicit voice prompt path
         /// </summary>
         /// <param name="voicePromptPath">The path to the voice prompt audio file</param>
@@ -441,6 +502,44 @@ namespace LiveTalk.API
 
             IsDataLoaded = true;
             Logger.LogVerbose($"[Character] Character data loaded successfully for {Name}");
+        }
+
+        /// <summary>
+        /// Internal coroutine to load character metadata (config + image only, no expressions/voice)
+        /// </summary>
+        private static IEnumerator LoadCharacterMetadataCoroutine(
+            string characterFolder,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            var characterId = Path.GetFileNameWithoutExtension(characterFolder);
+
+            // Load config and image using shared helper
+            Character character = null;
+            Exception loadError = null;
+            
+            yield return LoadCharacterConfigAndImageCoroutine(
+                characterFolder,
+                (c) => character = c,
+                (e) => loadError = e);
+
+            if (loadError != null)
+            {
+                onError?.Invoke(loadError);
+                yield break;
+            }
+
+            if (character == null)
+            {
+                onError?.Invoke(new Exception("Failed to load character config and image"));
+                yield break;
+            }
+
+            character.CharacterId = characterId;
+            character.IsDataLoaded = false;  // Mark as NOT fully loaded (metadata only)
+
+            Logger.Log($"[Character] Loaded metadata for {character.Name}");
+            onComplete?.Invoke(character);
         }
 
         /// <summary>
@@ -1381,20 +1480,13 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Load character data from the character folder or bundle
+        /// Shared helper to load character config JSON and image
         /// </summary>
-        /// <param name="characterFolder">The folder or bundle containing the character data</param>
-        /// <param name="onComplete">Callback when character data is successfully loaded</param>
-        /// <param name="onError">Callback when an error occurs</param>
-        private static IEnumerator LoadCharacterDataCoroutine(
+        private static IEnumerator LoadCharacterConfigAndImageCoroutine(
             string characterFolder,
             Action<Character> onComplete,
             Action<Exception> onError)
         {
-            var start = System.Diagnostics.Stopwatch.StartNew();
-
-            var characterId = Path.GetFileNameWithoutExtension(characterFolder);
-
             // Load character.json
             string configPath = Path.Combine(characterFolder, "character.json");
             if (!File.Exists(configPath))
@@ -1413,11 +1505,10 @@ namespace LiveTalk.API
             }
 
             // Parse character config
-            var configJson = readConfigTask.Result;
             CharacterConfig config;
             try
             {
-                config = JsonConvert.DeserializeObject<CharacterConfig>(configJson);
+                config = JsonConvert.DeserializeObject<CharacterConfig>(readConfigTask.Result);
             }
             catch (Exception ex)
             {
@@ -1453,7 +1544,7 @@ namespace LiveTalk.API
                 }
             }
 
-            // Create character object
+            // Create character object with config and image
             var character = new Character(
                 config.name,
                 config.gender,
@@ -1463,10 +1554,48 @@ namespace LiveTalk.API
                 config.intro
             )
             {
-                // Set character folder for data loading
-                CharacterFolder = characterFolder,
-                CharacterId = characterId
+                CharacterFolder = characterFolder
             };
+
+            onComplete?.Invoke(character);
+        }
+
+        /// <summary>
+        /// Load character data from the character folder or bundle (full load with expressions/voice)
+        /// </summary>
+        /// <param name="characterFolder">The folder or bundle containing the character data</param>
+        /// <param name="onComplete">Callback when character data is successfully loaded</param>
+        /// <param name="onError">Callback when an error occurs</param>
+        private static IEnumerator LoadCharacterDataCoroutine(
+            string characterFolder,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            var start = System.Diagnostics.Stopwatch.StartNew();
+            var characterId = Path.GetFileNameWithoutExtension(characterFolder);
+
+            // Load config and image using shared helper
+            Character character = null;
+            Exception loadError = null;
+            
+            yield return LoadCharacterConfigAndImageCoroutine(
+                characterFolder,
+                (c) => character = c,
+                (e) => loadError = e);
+
+            if (loadError != null)
+            {
+                onError?.Invoke(loadError);
+                yield break;
+            }
+
+            if (character == null)
+            {
+                onError?.Invoke(new Exception("Failed to load character config and image"));
+                yield break;
+            }
+
+            character.CharacterId = characterId;
 
             // Load all character data (expressions, voice, etc.)
             yield return character.LoadData();
