@@ -470,18 +470,164 @@ namespace LiveTalk.API
                 yield break;
             }
 
+            // Check for cached animation frames
+            if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
+            {
+                // We don't know expected frame count yet, but check if folder exists with frames
+                var (framesExist, framesFolder, frameCount) = LiveTalkCache.CheckFramesCacheExists(cacheKey);
+                
+                if (framesExist && frameCount > 0)
+                {
+                    Logger.LogVerbose($"[Character] Loading {frameCount} cached animation frames for: {text[..Math.Min(30, text.Length)]}...");
+                    
+                    // Load frames from cache into output stream
+                    outputStream = new FrameStream(frameCount);
+                    yield return LoadFramesFromCache(framesFolder, frameCount, outputStream);
+                    
+                    onComplete?.Invoke(outputStream, audioClip);
+                    var stopCached = start.Elapsed;
+                    Logger.Log($"[Character] Speaking completed for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached)");
+                    yield break;
+                }
+            }
+
             // Use the preloaded expression data for MuseTalk
             var expressionData = LoadedExpressions[expressionIndex];
             
             // Generate talking head using MuseTalk with preloaded data
-            outputStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
+            var generatedStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
                 expressionData.Data,
                 audioClip
             );
 
+            // If caching is enabled, wrap the stream to save frames as they're generated
+            if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
+            {
+                string framesFolder = LiveTalkCache.CreateFramesCacheFolder(cacheKey);
+                if (!string.IsNullOrEmpty(framesFolder))
+                {
+                    // Create output stream that will cache frames
+                    outputStream = new FrameStream(generatedStream.TotalExpectedFrames);
+                    
+                    // Start coroutine to forward frames and save to cache
+                    liveTalkAPI.Controller.StartCoroutine(
+                        ForwardAndCacheFrames(generatedStream, outputStream, framesFolder)
+                    );
+                }
+                else
+                {
+                    outputStream = generatedStream;
+                }
+            }
+            else
+            {
+                outputStream = generatedStream;
+            }
+
             onComplete?.Invoke(outputStream, audioClip);
             var stop = start.Elapsed;
-            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms{(fromCache ? " (cached)" : "")}");
+            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms{(fromCache ? " (audio cached)" : "")}");
+        }
+
+        /// <summary>
+        /// Load cached animation frames from disk into a FrameStream.
+        /// </summary>
+        /// <param name="framesFolder">Path to the folder containing cached frames</param>
+        /// <param name="frameCount">Number of frames to load</param>
+        /// <param name="outputStream">The output stream to populate with frames</param>
+        private static IEnumerator LoadFramesFromCache(string framesFolder, int frameCount, FrameStream outputStream)
+        {
+            outputStream.TotalExpectedFrames = frameCount;
+            
+            for (int i = 0; i < frameCount; i++)
+            {
+                string framePath = Path.Combine(framesFolder, $"frame_{i:D6}.png");
+                
+                if (!File.Exists(framePath))
+                {
+                    Logger.LogWarning($"[Character] Cached frame not found: {framePath}");
+                    continue;
+                }
+
+                // Load frame from disk
+                var loadTask = Task.Run(() => File.ReadAllBytes(framePath));
+                yield return new WaitUntil(() => loadTask.IsCompleted);
+
+                if (loadTask.IsFaulted)
+                {
+                    Logger.LogWarning($"[Character] Failed to load cached frame {i}: {loadTask.Exception?.InnerException?.Message}");
+                    continue;
+                }
+
+                // Create texture from bytes
+                var texture = new Texture2D(2, 2);
+                if (texture.LoadImage(loadTask.Result))
+                {
+                    texture.name = $"cached_frame_{i}";
+                    outputStream.Queue.Enqueue(texture);
+                }
+                else
+                {
+                    UnityEngine.Object.DestroyImmediate(texture);
+                    Logger.LogWarning($"[Character] Failed to decode cached frame {i}");
+                }
+            }
+
+            outputStream.Finished = true;
+            Logger.LogVerbose($"[Character] Loaded {frameCount} frames from cache");
+        }
+
+        /// <summary>
+        /// Forward frames from source stream to output stream while saving to cache.
+        /// </summary>
+        /// <param name="sourceStream">The source stream producing frames</param>
+        /// <param name="outputStream">The output stream to forward frames to</param>
+        /// <param name="framesFolder">Path to save cached frames</param>
+        private static IEnumerator ForwardAndCacheFrames(
+            FrameStream sourceStream, 
+            FrameStream outputStream, 
+            string framesFolder)
+        {
+            int frameIndex = 0;
+
+            while (sourceStream.HasMoreFrames)
+            {
+                // Wait for next frame
+                var awaiter = sourceStream.WaitForNext();
+                yield return awaiter;
+
+                if (awaiter.Texture != null)
+                {
+                    // Forward frame to output stream
+                    outputStream.Queue.Enqueue(awaiter.Texture);
+
+                    // Encode PNG on main thread (Unity API requirement)
+                    byte[] pngData = awaiter.Texture.EncodeToPNG();
+                    int currentIndex = frameIndex;
+                    
+                    // Save to disk in background (fire and forget)
+                    _ = Task.Run(() =>
+                    {
+                        try
+                        {
+                            string framePath = Path.Combine(framesFolder, $"frame_{currentIndex:D6}.png");
+                            File.WriteAllBytes(framePath, pngData);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.LogWarning($"[Character] Failed to cache frame {currentIndex}: {ex.Message}");
+                        }
+                    });
+
+                    frameIndex++;
+                }
+            }
+
+            // Update total expected frames in output stream
+            outputStream.TotalExpectedFrames = frameIndex;
+            outputStream.Finished = true;
+            
+            Logger.LogVerbose($"[Character] Forwarded {frameIndex} frames, cached to {framesFolder}");
         }
 
         /// <summary>
