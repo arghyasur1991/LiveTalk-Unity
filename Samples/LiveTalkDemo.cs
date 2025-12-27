@@ -576,10 +576,11 @@ namespace LiveTalk.Samples
             yield return _loadedCharacter.SpeakAsync(
                 textToSpeak,
                 expressionIndex: generateVoiceOnly ? -1 : 0, // Use talk-neutral expression
-                onComplete: (stream, audioClip) => {
+                onAudioReady: (stream, audioClip) => {
                     speechStream = stream;
                     audioSource.clip = audioClip;
                 },
+                onAnimationComplete: null,
                 onError: (ex) => {
                     speechError = ex;
                 }

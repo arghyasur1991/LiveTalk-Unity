@@ -382,12 +382,18 @@ public class CharacterSpeech : MonoBehaviour
         if (loadedCharacter == null) yield break;
         
         // Speak with lip sync animation
+        // Two callbacks: onAudioReady (when audio is ready), onAnimationComplete (when all frames are done)
         yield return loadedCharacter.SpeakAsync(
             text: "Hello! I can speak with realistic lip sync!",
             expressionIndex: 0, // Use talk-neutral expression
-            onComplete: (frameStream, audioClip) => {
-                // Process the generated frames and audio
+            onAudioReady: (frameStream, audioClip) => {
+                // Called as soon as audio is ready - can schedule next SpeakAsync here
+                // frameStream will receive animation frames as they're generated
                 StartCoroutine(PlayGeneratedVideo(frameStream, audioClip));
+            },
+            onAnimationComplete: (frameStream) => {
+                // Called when all animation frames have been generated
+                Debug.Log($"Animation complete: {frameStream.TotalExpectedFrames} frames");
             },
             onError: (error) => {
                 Debug.LogError($"Speech generation failed: {error.Message}");
@@ -401,7 +407,7 @@ public class CharacterSpeech : MonoBehaviour
         GetComponent<AudioSource>().clip = audioClip;
         GetComponent<AudioSource>().Play();
         
-        // Process video frames
+        // Process video frames as they arrive
         while (frameStream.HasMoreFrames)
         {
             var frameAwaiter = frameStream.WaitForNext();
@@ -426,11 +432,12 @@ For scenarios where you only need audio without video frames:
 yield return loadedCharacter.SpeakAsync(
     text: "This is voice-only output!",
     expressionIndex: -1, // -1 means voice only, no video frames
-    onComplete: (frameStream, audioClip) => {
+    onAudioReady: (frameStream, audioClip) => {
         // frameStream will be empty, only audioClip is populated
         GetComponent<AudioSource>().clip = audioClip;
         GetComponent<AudioSource>().Play();
     },
+    onAnimationComplete: null, // Optional - not needed for voice-only
     onError: (error) => {
         Debug.LogError($"Speech generation failed: {error.Message}");
     }

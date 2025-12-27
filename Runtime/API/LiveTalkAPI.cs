@@ -15,6 +15,52 @@ namespace LiveTalk.API
     using Core;
     using Utils;
 
+    #region Inference Queue
+
+    /// <summary>
+    /// Queue for serializing inference requests to prevent parallel model usage.
+    /// Models like MuseTalk and SparkTTS cannot handle concurrent requests.
+    /// </summary>
+    internal class InferenceQueue
+    {
+        private readonly SemaphoreSlim _semaphore = new(1, 1);
+        private readonly string _name;
+        private int _queuedCount = 0;
+
+        public InferenceQueue(string name)
+        {
+            _name = name;
+        }
+
+        /// <summary>
+        /// Number of requests currently waiting in queue (including the one being processed)
+        /// </summary>
+        public int QueuedCount => _queuedCount;
+
+        /// <summary>
+        /// Acquire the queue lock. Call Release() when done.
+        /// </summary>
+        public async Task AcquireAsync()
+        {
+            Interlocked.Increment(ref _queuedCount);
+            Logger.LogVerbose($"[{_name}Queue] Waiting for lock (queued: {_queuedCount})");
+            await _semaphore.WaitAsync();
+            Logger.LogVerbose($"[{_name}Queue] Lock acquired");
+        }
+
+        /// <summary>
+        /// Release the queue lock.
+        /// </summary>
+        public void Release()
+        {
+            Interlocked.Decrement(ref _queuedCount);
+            _semaphore.Release();
+            Logger.LogVerbose($"[{_name}Queue] Lock released (remaining: {_queuedCount})");
+        }
+    }
+
+    #endregion
+
     #region Public Data Types
 
     public enum LogLevel
@@ -258,6 +304,10 @@ namespace LiveTalk.API
         private GameObject _liveTalkInstance;
         private bool _disposed = false;
         private bool _initialized = false;
+        
+        // Request queues to prevent parallel model usage
+        private readonly InferenceQueue _voiceQueue = new("Voice");
+        private readonly InferenceQueue _museTalkQueue = new("MuseTalk");
 
         #endregion
 
@@ -287,6 +337,16 @@ namespace LiveTalk.API
         /// Gets the LiveTalkController for coroutine management.
         /// </summary>
         internal LiveTalkController Controller => _controller;
+
+        /// <summary>
+        /// Gets the voice inference queue for serializing TTS requests.
+        /// </summary>
+        internal InferenceQueue VoiceQueue => _voiceQueue;
+
+        /// <summary>
+        /// Gets the MuseTalk inference queue for serializing animation requests.
+        /// </summary>
+        internal InferenceQueue MuseTalkQueue => _museTalkQueue;
 
         /// <summary>
         /// Gets or sets the location to save the generated characters.

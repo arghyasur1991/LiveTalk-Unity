@@ -352,16 +352,22 @@ namespace LiveTalk.API
         /// <summary>
         /// Generate speech asynchronously using coroutines with optional caching.
         /// Speech audio is automatically cached using the global Cache if enabled.
+        /// Provides two callbacks: one when audio is ready, another when animation completes.
+        /// Uses queuing to prevent parallel model usage.
         /// </summary>
         /// <param name="text">Text to speak</param>
         /// <param name="expressionIndex">Expression to use, -1 for voice only</param>
-        /// <param name="onComplete">Callback when audio generation is complete</param>
+        /// <param name="onAudioReady">Callback when audio generation is complete. Called with (FrameStream, AudioClip). 
+        /// FrameStream will receive frames as they're generated. Caller can schedule next SpeakAsync here.</param>
+        /// <param name="onAnimationComplete">Callback when animation generation is complete. Called with the final FrameStream.
+        /// For voice-only mode (expressionIndex=-1), this is called immediately after onAudioReady.</param>
         /// <param name="onError">Callback when an error occurs</param>
-        /// <returns>Coroutine for audio generation, then FrameStream for video frames</returns>
+        /// <returns>Coroutine for audio generation</returns>
         public IEnumerator SpeakAsync(
             string text, 
             int expressionIndex = 0,
-            Action<FrameStream, AudioClip> onComplete = null,
+            Action<FrameStream, AudioClip> onAudioReady = null,
+            Action<FrameStream> onAnimationComplete = null,
             Action<Exception> onError = null)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
@@ -400,9 +406,9 @@ namespace LiveTalk.API
 
             AudioClip audioClip = null;
             string cacheKey = null;
-            bool fromCache = false;
+            bool audioFromCache = false;
 
-            // Check cache first
+            // Check audio cache first
             if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(CharacterId))
             {
                 cacheKey = HashUtils.GenerateSpeechCacheKey(text, CharacterId);
@@ -417,33 +423,44 @@ namespace LiveTalk.API
                     if (!loadTask.IsFaulted && loadTask.Result != null)
                     {
                         audioClip = loadTask.Result;
-                        fromCache = true;
+                        audioFromCache = true;
                     }
                 }
             }
 
-            // Generate new audio if not cached
+            // Generate new audio if not cached (with queuing)
             if (audioClip == null)
             {
-                var audioTask = LoadedVoice.GenerateSpeechAsync(text);
-                yield return new WaitUntil(() => audioTask.IsCompleted);
+                // Acquire voice queue lock
+                var acquireTask = liveTalkAPI.VoiceQueue.AcquireAsync();
+                yield return new WaitUntil(() => acquireTask.IsCompleted);
 
-                if (audioTask.IsFaulted)
+                try
                 {
-                    onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
-                    yield break;
-                }
+                    var audioTask = LoadedVoice.GenerateSpeechAsync(text);
+                    yield return new WaitUntil(() => audioTask.IsCompleted);
 
-                audioClip = audioTask.Result;
+                    if (audioTask.IsFaulted)
+                    {
+                        onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
+                        yield break;
+                    }
+
+                    audioClip = audioTask.Result;
+                }
+                finally
+                {
+                    // Release voice queue lock
+                    liveTalkAPI.VoiceQueue.Release();
+                }
                 
-                // Save to cache
+                // Save audio to cache (fire and forget)
                 if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey) && audioClip != null)
                 {
                     string cachePath = LiveTalkCache.GetFilePath(cacheKey);
                     if (!string.IsNullOrEmpty(cachePath))
                     {
                         var saveTask = AudioLoaderService.SaveAudioClipToFile(audioClip, cachePath);
-                        // Don't wait for save to complete - fire and forget for performance
                         _ = saveTask.ContinueWith(t => 
                         {
                             if (t.IsFaulted)
@@ -462,18 +479,20 @@ namespace LiveTalk.API
             }
 
             var outputStream = new FrameStream(0);
+            
+            // For voice-only mode, both callbacks immediately
             if (expressionIndex == -1)
             {
-                onComplete?.Invoke(outputStream, audioClip);
+                onAudioReady?.Invoke(outputStream, audioClip);
+                onAnimationComplete?.Invoke(outputStream);
                 var stopLocal = start.Elapsed;
-                Logger.Log($"[Character] Speaking completed for {Name} in {stopLocal.TotalMilliseconds}ms{(fromCache ? " (cached)" : "")}");
+                Logger.Log($"[Character] Speaking completed for {Name} in {stopLocal.TotalMilliseconds}ms{(audioFromCache ? " (cached)" : "")}");
                 yield break;
             }
 
             // Check for cached animation frames
             if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
             {
-                // We don't know expected frame count yet, but check if folder exists with frames
                 var (framesExist, framesFolder, frameCount) = LiveTalkCache.CheckFramesCacheExists(cacheKey);
                 
                 if (framesExist && frameCount > 0)
@@ -482,51 +501,127 @@ namespace LiveTalk.API
                     
                     // Load frames from cache into output stream
                     outputStream = new FrameStream(frameCount);
-                    yield return LoadFramesFromCache(framesFolder, frameCount, outputStream);
                     
-                    onComplete?.Invoke(outputStream, audioClip);
+                    // Audio ready callback
+                    onAudioReady?.Invoke(outputStream, audioClip);
+                    
+                    // Load frames and call animation complete when done
+                    liveTalkAPI.Controller.StartCoroutine(
+                        LoadFramesFromCacheWithCallback(framesFolder, frameCount, outputStream, onAnimationComplete)
+                    );
+                    
                     var stopCached = start.Elapsed;
-                    Logger.Log($"[Character] Speaking completed for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached)");
+                    Logger.Log($"[Character] Audio ready for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached, loading...)");
                     yield break;
                 }
             }
 
-            // Use the preloaded expression data for MuseTalk
+            // Audio ready - callback immediately, animation will be generated in background
             var expressionData = LoadedExpressions[expressionIndex];
+            outputStream = new FrameStream(0); // Will be updated with actual count when generation starts
             
-            // Generate talking head using MuseTalk with preloaded data
-            var generatedStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                expressionData.Data,
-                audioClip
+            // Audio ready callback
+            onAudioReady?.Invoke(outputStream, audioClip);
+            var stopAudio = start.Elapsed;
+            Logger.Log($"[Character] Audio ready for {Name} in {stopAudio.TotalMilliseconds}ms{(audioFromCache ? " (cached)" : "")}, animation pending...");
+
+            // Start animation generation in background with queuing
+            liveTalkAPI.Controller.StartCoroutine(
+                GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data, audioClip, outputStream, cacheKey, onAnimationComplete)
             );
+        }
 
-            // If caching is enabled, wrap the stream to save frames as they're generated
-            if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
-            {
-                string framesFolder = LiveTalkCache.CreateFramesCacheFolder(cacheKey);
-                if (!string.IsNullOrEmpty(framesFolder))
-                {
-                    // Create output stream that will cache frames
-                    outputStream = new FrameStream(generatedStream.TotalExpectedFrames);
-                    
-                    // Start coroutine to forward frames and save to cache
-                    liveTalkAPI.Controller.StartCoroutine(
-                        ForwardAndCacheFrames(generatedStream, outputStream, framesFolder)
-                    );
-                }
-                else
-                {
-                    outputStream = generatedStream;
-                }
-            }
-            else
-            {
-                outputStream = generatedStream;
-            }
+        /// <summary>
+        /// Generate animation frames with queuing to prevent parallel MuseTalk usage.
+        /// </summary>
+        private static IEnumerator GenerateAnimationWithQueue(
+            LiveTalkAPI liveTalkAPI,
+            AvatarData avatarData,
+            AudioClip audioClip,
+            FrameStream outputStream,
+            string cacheKey,
+            Action<FrameStream> onAnimationComplete)
+        {
+            // Acquire MuseTalk queue lock
+            var acquireTask = liveTalkAPI.MuseTalkQueue.AcquireAsync();
+            yield return new WaitUntil(() => acquireTask.IsCompleted);
 
-            onComplete?.Invoke(outputStream, audioClip);
-            var stop = start.Elapsed;
-            Logger.Log($"[Character] Speaking completed for {Name} in {stop.TotalMilliseconds}ms{(fromCache ? " (audio cached)" : "")}");
+            try
+            {
+                // Generate talking head using MuseTalk with preloaded data
+                var generatedStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
+                    avatarData,
+                    audioClip
+                );
+                outputStream.TotalExpectedFrames = generatedStream.TotalExpectedFrames;
+
+                // Forward frames from generated stream to output stream
+                // If caching is enabled, also save frames
+                string framesFolder = null;
+                if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
+                {
+                    framesFolder = LiveTalkCache.CreateFramesCacheFolder(cacheKey);
+                }
+
+                int frameIndex = 0;
+                while (generatedStream.HasMoreFrames)
+                {
+                    var awaiter = generatedStream.WaitForNext();
+                    yield return awaiter;
+
+                    if (awaiter.Texture != null)
+                    {
+                        // Forward frame to output stream
+                        outputStream.Queue.Enqueue(awaiter.Texture);
+
+                        // Cache frame if enabled
+                        if (!string.IsNullOrEmpty(framesFolder))
+                        {
+                            byte[] pngData = awaiter.Texture.EncodeToPNG();
+                            int currentIndex = frameIndex;
+                            _ = Task.Run(() =>
+                            {
+                                try
+                                {
+                                    string framePath = Path.Combine(framesFolder, $"frame_{currentIndex:D6}.png");
+                                    File.WriteAllBytes(framePath, pngData);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logger.LogWarning($"[Character] Failed to cache frame {currentIndex}: {ex.Message}");
+                                }
+                            });
+                        }
+
+                        frameIndex++;
+                    }
+                }
+
+                outputStream.TotalExpectedFrames = frameIndex;
+                outputStream.Finished = true;
+                Logger.LogVerbose($"[Character] Animation generation completed: {frameIndex} frames");
+                
+                // Animation complete callback
+                onAnimationComplete?.Invoke(outputStream);
+            }
+            finally
+            {
+                // Release MuseTalk queue lock
+                liveTalkAPI.MuseTalkQueue.Release();
+            }
+        }
+
+        /// <summary>
+        /// Load cached animation frames from disk into a FrameStream with completion callback.
+        /// </summary>
+        private static IEnumerator LoadFramesFromCacheWithCallback(
+            string framesFolder, 
+            int frameCount, 
+            FrameStream outputStream,
+            Action<FrameStream> onAnimationComplete)
+        {
+            yield return LoadFramesFromCache(framesFolder, frameCount, outputStream);
+            onAnimationComplete?.Invoke(outputStream);
         }
 
         /// <summary>
@@ -575,59 +670,6 @@ namespace LiveTalk.API
 
             outputStream.Finished = true;
             Logger.LogVerbose($"[Character] Loaded {frameCount} frames from cache");
-        }
-
-        /// <summary>
-        /// Forward frames from source stream to output stream while saving to cache.
-        /// </summary>
-        /// <param name="sourceStream">The source stream producing frames</param>
-        /// <param name="outputStream">The output stream to forward frames to</param>
-        /// <param name="framesFolder">Path to save cached frames</param>
-        private static IEnumerator ForwardAndCacheFrames(
-            FrameStream sourceStream, 
-            FrameStream outputStream, 
-            string framesFolder)
-        {
-            int frameIndex = 0;
-
-            while (sourceStream.HasMoreFrames)
-            {
-                // Wait for next frame
-                var awaiter = sourceStream.WaitForNext();
-                yield return awaiter;
-
-                if (awaiter.Texture != null)
-                {
-                    // Forward frame to output stream
-                    outputStream.Queue.Enqueue(awaiter.Texture);
-
-                    // Encode PNG on main thread (Unity API requirement)
-                    byte[] pngData = awaiter.Texture.EncodeToPNG();
-                    int currentIndex = frameIndex;
-                    
-                    // Save to disk in background (fire and forget)
-                    _ = Task.Run(() =>
-                    {
-                        try
-                        {
-                            string framePath = Path.Combine(framesFolder, $"frame_{currentIndex:D6}.png");
-                            File.WriteAllBytes(framePath, pngData);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.LogWarning($"[Character] Failed to cache frame {currentIndex}: {ex.Message}");
-                        }
-                    });
-
-                    frameIndex++;
-                }
-            }
-
-            // Update total expected frames in output stream
-            outputStream.TotalExpectedFrames = frameIndex;
-            outputStream.Finished = true;
-            
-            Logger.LogVerbose($"[Character] Forwarded {frameIndex} frames, cached to {framesFolder}");
         }
 
         /// <summary>
