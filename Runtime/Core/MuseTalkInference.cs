@@ -222,7 +222,7 @@ namespace LiveTalk.Core
             _vaeDecoder.EndSession();
             _positionalEncoding.EndSession();
             // Whisper model is ended in ProcessAudio()
-            _reusableBatchArray = null;
+            _reusableBatchArray = new float[0];
         }
 
         /// <summary>
@@ -864,7 +864,7 @@ namespace LiveTalk.Core
                 }
                 catch (Exception e)
                 {
-                    Logger.LogWarning($"[MuseTalkInference] Batch VAE decoding failed: {e.Message}");
+                    Logger.LogWarning($"[MuseTalkInference] Batch VAE decoding failed: {e.Message}, {e.StackTrace}");
                     throw;
                 }
                 var tensor = tensors[0];
@@ -955,7 +955,7 @@ namespace LiveTalk.Core
                 }
                 
                 // Release unmanaged resources and set large fields to null
-                _reusableBatchArray = null;
+                _reusableBatchArray = new float[0];
                 _disposed = true;
             }
         }
