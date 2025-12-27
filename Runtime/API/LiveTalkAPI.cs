@@ -284,6 +284,11 @@ namespace LiveTalk.API
         internal LiveTalkConfig Config => _config;
 
         /// <summary>
+        /// Gets the LiveTalkController for coroutine management.
+        /// </summary>
+        internal LiveTalkController Controller => _controller;
+
+        /// <summary>
         /// Gets or sets the location to save the generated characters.
         /// </summary>
         public static string CharacterSaveLocation 

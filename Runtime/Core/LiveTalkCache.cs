@@ -238,6 +238,124 @@ namespace LiveTalk.Core
             
             return size;
         }
+
+        #region Animation Frame Caching
+
+        /// <summary>
+        /// Get the folder path for cached animation frames.
+        /// Uses the same cache key as speech with "_frames" suffix.
+        /// </summary>
+        /// <param name="speechCacheKey">The speech cache key (from GenerateSpeechCacheKey)</param>
+        /// <returns>Full path to the frames folder, or null if cache not initialized</returns>
+        public static string GetFramesFolderPath(string speechCacheKey)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(speechCacheKey))
+                return null;
+            
+            return System.IO.Path.Combine(_path, $"{speechCacheKey}_frames");
+        }
+
+        /// <summary>
+        /// Check if cached animation frames exist for the given speech cache key.
+        /// Validates that all expected frames are present.
+        /// </summary>
+        /// <param name="speechCacheKey">The speech cache key</param>
+        /// <param name="expectedFrameCount">Expected number of frames (0 means check existence only)</param>
+        /// <returns>Tuple of (exists, folderPath, actualFrameCount)</returns>
+        public static (bool exists, string folderPath, int frameCount) CheckFramesCacheExists(
+            string speechCacheKey, 
+            int expectedFrameCount = 0)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(speechCacheKey))
+                return (false, null, 0);
+
+            string framesFolder = GetFramesFolderPath(speechCacheKey);
+            if (!Directory.Exists(framesFolder))
+                return (false, framesFolder, 0);
+
+            // Count PNG files in the folder
+            var pngFiles = Directory.GetFiles(framesFolder, "frame_*.png");
+            int frameCount = pngFiles.Length;
+
+            if (frameCount == 0)
+                return (false, framesFolder, 0);
+
+            // If expectedFrameCount is specified, check if we have all frames
+            if (expectedFrameCount > 0 && frameCount != expectedFrameCount)
+            {
+                Logger.LogVerbose($"[Cache] Frame cache incomplete: found {frameCount}/{expectedFrameCount} frames");
+                return (false, framesFolder, frameCount);
+            }
+
+            return (true, framesFolder, frameCount);
+        }
+
+        /// <summary>
+        /// Get the file path for a specific cached frame.
+        /// </summary>
+        /// <param name="speechCacheKey">The speech cache key</param>
+        /// <param name="frameIndex">The frame index (0-based)</param>
+        /// <returns>Full path to the frame file</returns>
+        public static string GetFramePath(string speechCacheKey, int frameIndex)
+        {
+            string framesFolder = GetFramesFolderPath(speechCacheKey);
+            if (string.IsNullOrEmpty(framesFolder))
+                return null;
+            
+            return System.IO.Path.Combine(framesFolder, $"frame_{frameIndex:D6}.png");
+        }
+
+        /// <summary>
+        /// Create the frames cache folder for storing animation frames.
+        /// </summary>
+        /// <param name="speechCacheKey">The speech cache key</param>
+        /// <returns>The created folder path, or null if failed</returns>
+        public static string CreateFramesCacheFolder(string speechCacheKey)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(speechCacheKey))
+                return null;
+
+            try
+            {
+                string framesFolder = GetFramesFolderPath(speechCacheKey);
+                if (!Directory.Exists(framesFolder))
+                {
+                    Directory.CreateDirectory(framesFolder);
+                }
+                return framesFolder;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[Cache] Error creating frames cache folder: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Delete cached animation frames for a given speech cache key.
+        /// </summary>
+        /// <param name="speechCacheKey">The speech cache key</param>
+        public static void DeleteFramesCache(string speechCacheKey)
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(speechCacheKey))
+                return;
+
+            try
+            {
+                string framesFolder = GetFramesFolderPath(speechCacheKey);
+                if (Directory.Exists(framesFolder))
+                {
+                    Directory.Delete(framesFolder, true);
+                    Logger.LogVerbose($"[Cache] Deleted frames cache: {speechCacheKey}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[Cache] Error deleting frames cache: {ex.Message}");
+            }
+        }
+
+        #endregion
     }
 }
 
