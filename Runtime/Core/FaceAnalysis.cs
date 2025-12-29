@@ -157,20 +157,16 @@ namespace LiveTalk.Core
         /// <summary>
         /// Waits for all models to be fully loaded.
         /// </summary>
-        /// <param name="cancellationToken">Optional cancellation token to stop waiting</param>
         /// <returns>A task that completes when all models are loaded</returns>
-        public async Task WaitForAllModelsAsync(CancellationToken cancellationToken = default)
+        public async Task WaitForAllModelsAsync()
         {
             var tasks = new List<Task>();
             
             if (_detFace?.LoadTask != null) tasks.Add(_detFace.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_landmark2d106?.LoadTask != null) tasks.Add(_landmark2d106.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_landmarkRunner?.LoadTask != null) tasks.Add(_landmarkRunner.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_faceParsing?.LoadTask != null) tasks.Add(_faceParsing.LoadTask);
             
@@ -178,8 +174,6 @@ namespace LiveTalk.Core
             {
                 await Task.WhenAll(tasks);
             }
-            
-            cancellationToken.ThrowIfCancellationRequested();
         }
 
         #endregion

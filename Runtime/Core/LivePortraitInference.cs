@@ -102,32 +102,25 @@ namespace LiveTalk.Core
         /// <summary>
         /// Waits for all models to be fully loaded.
         /// </summary>
-        /// <param name="cancellationToken">Optional cancellation token to stop waiting</param>
         /// <returns>A task that completes when all models are loaded</returns>
-        public async Task WaitForAllModelsAsync(CancellationToken cancellationToken = default)
+        public async Task WaitForAllModelsAsync()
         {
             var tasks = new List<Task>();
             
             if (_appearanceFeatureExtractor?.LoadTask != null) tasks.Add(_appearanceFeatureExtractor.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_motionExtractor?.LoadTask != null) tasks.Add(_motionExtractor.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_stitching?.LoadTask != null) tasks.Add(_stitching.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
             if (_warpingSpade?.LoadTask != null) tasks.Add(_warpingSpade.LoadTask);
-            cancellationToken.ThrowIfCancellationRequested();
             
-            if (_faceAnalysis != null) tasks.Add(_faceAnalysis.WaitForAllModelsAsync(cancellationToken));
+            if (_faceAnalysis != null) tasks.Add(_faceAnalysis.WaitForAllModelsAsync());
             
             if (tasks.Count > 0)
             {
                 await Task.WhenAll(tasks);
             }
-            
-            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
