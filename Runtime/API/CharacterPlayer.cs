@@ -66,6 +66,21 @@ namespace LiveTalk.API
         private Coroutine _speechCoroutine;
         private AudioSource _audioSource;
         
+        // Pipelined processing
+        private Queue<PendingSpeechItem> _pendingAnimations = new Queue<PendingSpeechItem>();
+        private bool _isSpeechProcessorRunning = false;
+        private bool _isAnimationPlayerRunning = false;
+        
+        private class PendingSpeechItem
+        {
+            public List<Texture2D> Frames { get; set; }
+            public AudioClip AudioClip { get; set; }
+            public bool AudioReady { get; set; }
+            public bool AnimationReady { get; set; }
+            public bool IsReady => AudioReady && AnimationReady;
+            public FrameStream FrameStream { get; set; }
+        }
+        
         // Events
         public event Action<Texture2D> OnFrameUpdate;
         public event Action OnSpeechStarted;
@@ -347,7 +362,9 @@ namespace LiveTalk.API
         {
             float frameInterval = 1f / idleFPS;
             
-            while (_state == PlaybackState.Idle)
+            // Continue while idle coroutine is running (controlled by Start/Stop)
+            // Don't check state - we explicitly start/stop this coroutine
+            while (true)
             {
                 if (_idleFrames == null || _idleFrames.Count == 0)
                 {
@@ -394,132 +411,233 @@ namespace LiveTalk.API
             if (_speechQueue.Count == 0)
                 return;
             
-            var request = _speechQueue.Dequeue();
-            _speechCoroutine = StartCoroutine(ProcessSpeechWithTransition(request.TextLines, request.ExpressionIndex));
-        }
-
-        private IEnumerator ProcessSpeechWithTransition(List<string> textLines, int expressionIndex)
-        {
             _state = PlaybackState.Speaking;
-            StopIdleAnimation();
+            // DON'T stop idle animation yet - let it play while speech is being generated
+            // AnimationPlayerLoop will stop it when first segment is ready to play
             OnSpeechStarted?.Invoke();
             
-            Debug.Log($"[CharacterPlayer] Starting speech: {textLines.Count} lines");
-            
-            List<Texture2D> allSpeechFrames = new List<Texture2D>();
-            List<AudioClip> allAudioClips = new List<AudioClip>();
-            
-            // Process each line separately (like SpeechPlaybackManager)
-            foreach (var line in textLines)
+            // Start both processor and player loops for pipelining
+            if (!_isSpeechProcessorRunning)
             {
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
-                
-                Debug.Log($"[CharacterPlayer] Processing line: {line.Substring(0, Math.Min(50, line.Length))}...");
-                
-                // Generate speech audio + animation for this line
-                FrameStream frameStream = null;
-                AudioClip audioClip = null;
-                bool audioReady = false;
-                bool hasError = false;
-                
-                IEnumerator speechCoroutine = _character.SpeakAsync(
-                    line,
-                    expressionIndex,
-                    onAudioReady: (stream, clip) =>
-                    {
-                        frameStream = stream;
-                        audioClip = clip;
-                        audioReady = true;
-                        Debug.Log($"[CharacterPlayer] Audio ready for line");
-                    },
-                    onAnimationComplete: (stream) =>
-                    {
-                        Debug.Log($"[CharacterPlayer] Animation generation complete: {stream?.TotalExpectedFrames ?? 0} frames");
-                    },
-                    onError: (ex) =>
-                    {
-                        Debug.LogError($"[CharacterPlayer] Speech error: {ex.Message}");
-                        OnError?.Invoke(ex);
-                        hasError = true;
-                    }
-                );
-                
-                yield return speechCoroutine;
-                
-                if (hasError)
-                {
-                    continue; // Skip this line but continue with others
-                }
-                
-                // Wait for audio to be ready
-                yield return new WaitUntil(() => audioReady);
-                
-                if (audioClip == null || frameStream == null)
-                {
-                    Debug.LogError("[CharacterPlayer] Audio or frame stream is null for line");
-                    continue;
-                }
-                
-                // Collect all frames for this line
-                List<Texture2D> lineFrames = new List<Texture2D>();
-                while (frameStream.HasMoreFrames)
-                {
-                    var awaiter = frameStream.WaitForNext();
-                    yield return awaiter;
-                    if (awaiter.Texture != null)
-                    {
-                        lineFrames.Add(awaiter.Texture);
-                    }
-                }
-                
-                Debug.Log($"[CharacterPlayer] Collected {lineFrames.Count} frames for line");
-                
-                // Add to combined lists
-                allSpeechFrames.AddRange(lineFrames);
-                allAudioClips.Add(audioClip);
+                _speechCoroutine = StartCoroutine(SpeechProcessorLoop());
             }
             
-            if (allAudioClips.Count == 0)
+            if (!_isAnimationPlayerRunning)
             {
-                Debug.LogError("[CharacterPlayer] No audio generated for any lines");
-                _state = PlaybackState.Idle;
-                _speechCoroutine = null;
-                StartIdleAnimation();
-                ProcessNextSpeech();
-                yield break;
+                StartCoroutine(AnimationPlayerLoop());
+            }
+        }
+
+        /// <summary>
+        /// Processes queued speech requests, generating audio/animation for each line.
+        /// Audio generation is serialized, but animation collection happens in parallel.
+        /// Runs in parallel with AnimationPlayerLoop for pipelining.
+        /// </summary>
+        private IEnumerator SpeechProcessorLoop()
+        {
+            _isSpeechProcessorRunning = true;
+            
+            while (_speechQueue.Count > 0)
+            {
+                var request = _speechQueue.Dequeue();
+                Debug.Log($"[CharacterPlayer] Processing speech request: {request.TextLines.Count} lines");
+                
+                foreach (var line in request.TextLines)
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+                    
+                    Debug.Log($"[CharacterPlayer] Generating line: {line.Substring(0, Math.Min(50, line.Length))}...");
+                    
+                    // Create pending item for this line
+                    var pendingItem = new PendingSpeechItem
+                    {
+                        Frames = new List<Texture2D>(),
+                        AudioClip = null,
+                        AudioReady = false,
+                        AnimationReady = false,
+                        FrameStream = null
+                    };
+                    
+                    _pendingAnimations.Enqueue(pendingItem);
+                    
+                    // Generate speech audio + animation
+                    FrameStream frameStream = null;
+                    AudioClip audioClip = null;
+                    bool hasError = false;
+                    
+                    IEnumerator speechCoroutine = _character.SpeakAsync(
+                        line,
+                        request.ExpressionIndex,
+                        onAudioReady: (stream, clip) =>
+                        {
+                            frameStream = stream;
+                            audioClip = clip;
+                            pendingItem.AudioClip = clip;
+                            pendingItem.FrameStream = stream;
+                            pendingItem.AudioReady = true;
+                            Debug.Log($"[CharacterPlayer] Audio ready: {clip.length}s - can start next audio generation!");
+                        },
+                        onAnimationComplete: (stream) =>
+                        {
+                            Debug.Log($"[CharacterPlayer] Animation generation complete: {stream?.TotalExpectedFrames ?? 0} frames");
+                        },
+                        onError: (ex) =>
+                        {
+                            Debug.LogError($"[CharacterPlayer] Speech error: {ex.Message}");
+                            OnError?.Invoke(ex);
+                            hasError = true;
+                        }
+                    );
+                    
+                    // Start the speech generation
+                    yield return speechCoroutine;
+                    
+                    if (hasError || audioClip == null || frameStream == null)
+                    {
+                        Debug.LogWarning($"[CharacterPlayer] Failed to generate speech for line");
+                        pendingItem.AudioReady = true;
+                        pendingItem.AnimationReady = true; // Mark as ready (but empty) so player can skip
+                        continue;
+                    }
+                    
+                    // Audio is ready! Start a separate coroutine to collect frames in parallel
+                    StartCoroutine(CollectAnimationFrames(pendingItem, frameStream));
+                    
+                    // DON'T wait for animation - immediately continue to next line's audio generation
+                    Debug.Log($"[CharacterPlayer] Audio done for line - starting next audio generation immediately!");
+                }
             }
             
-            Debug.Log($"[CharacterPlayer] Total collected: {allSpeechFrames.Count} frames, {allAudioClips.Count} audio clips");
+            _isSpeechProcessorRunning = false;
+            Debug.Log("[CharacterPlayer] Speech processor loop ended");
+        }
+        
+        /// <summary>
+        /// Collects animation frames in parallel with audio generation for next segment.
+        /// </summary>
+        private IEnumerator CollectAnimationFrames(PendingSpeechItem item, FrameStream frameStream)
+        {
+            Debug.Log($"[CharacterPlayer] Starting animation frame collection in parallel...");
             
-            // Concatenate audio clips
-            AudioClip combinedAudio = allAudioClips.Count == 1 
-                ? allAudioClips[0] 
-                : LiveTalk.Utils.AudioUtils.ConcatenateAudioClips(allAudioClips, 16000);
+            // Collect all frames
+            while (frameStream.HasMoreFrames)
+            {
+                var awaiter = frameStream.WaitForNext();
+                yield return awaiter;
+                
+                if (awaiter.Texture != null)
+                {
+                    item.Frames.Add(awaiter.Texture);
+                }
+            }
             
-            // Append transition frames to return to idle frame 0
-            var transitionFrames = GetTransitionToIdleFrames();
-            allSpeechFrames.AddRange(transitionFrames);
+            Debug.Log($"[CharacterPlayer] Animation frames collected: {item.Frames.Count} frames");
             
-            // Play frames synchronized with combined audio
-            yield return PlayFramesSynchronized(allSpeechFrames, combinedAudio);
+            // Mark animation as ready
+            item.AnimationReady = true;
+        }
+
+        /// <summary>
+        /// Plays generated animation frames synchronized with audio.
+        /// Runs in parallel with SpeechProcessorLoop for pipelining.
+        /// Returns to idle animation only if waiting for next segment.
+        /// </summary>
+        private IEnumerator AnimationPlayerLoop()
+        {
+            _isAnimationPlayerRunning = true;
+            bool isFirstSegment = true;
             
-            Debug.Log("[CharacterPlayer] Speech playback complete");
+            while (_isSpeechProcessorRunning || _pendingAnimations.Count > 0)
+            {
+                // Check if we need to wait for next segment
+                bool needsToWait = _pendingAnimations.Count == 0 || !_pendingAnimations.Peek().IsReady;
+                
+                if (needsToWait && !isFirstSegment)
+                {
+                    // Next segment not ready - return to idle while waiting
+                    Debug.Log("[CharacterPlayer] Next segment not ready - returning to idle while waiting");
+                    _idleFrameIndex = 0;
+                    _idleForward = true;
+                    StartIdleAnimation();
+                }
+                
+                // Wait for next segment to be ready (idle animates during this wait)
+                while (_pendingAnimations.Count == 0 || !_pendingAnimations.Peek().IsReady)
+                {
+                    yield return new WaitForSeconds(0.05f);
+                    
+                    // Exit if processor finished and no more pending
+                    if (!_isSpeechProcessorRunning && _pendingAnimations.Count == 0)
+                    {
+                        break;
+                    }
+                }
+                
+                if (_pendingAnimations.Count == 0)
+                    break;
+                
+                var item = _pendingAnimations.Dequeue();
+                
+                // Skip empty items
+                if (item.Frames.Count == 0 || item.AudioClip == null)
+                {
+                    Debug.LogWarning("[CharacterPlayer] Skipping empty speech item");
+                    continue;
+                }
+                
+                // Stop idle and transition to last idle frame before playing
+                if (needsToWait || isFirstSegment)
+                {
+                    // We were in idle (either first time or returned to idle) - do smooth transition
+                    Debug.Log("[CharacterPlayer] Segment ready - transitioning from idle to speech");
+                    StopIdleAnimation();
+                    
+                    // Transition idle to its last frame for smooth start
+                    if (_idleFrames != null && _idleFrames.Count > 0)
+                    {
+                        Texture2D lastIdleFrame = _idleFrames[_idleFrames.Count - 1];
+                        if (displayImage != null)
+                        {
+                            displayImage.texture = lastIdleFrame;
+                        }
+                        OnFrameUpdate?.Invoke(lastIdleFrame);
+                        
+                        // Brief pause to show transition
+                        yield return new WaitForSeconds(0.04f);
+                    }
+                }
+                else
+                {
+                    // Next segment was already ready - play immediately (no idle transition)
+                    Debug.Log("[CharacterPlayer] Next segment ready - playing immediately");
+                }
+                
+                Debug.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
+                
+                // Play this segment with its audio
+                yield return PlayFramesSynchronized(item.Frames, item.AudioClip);
+                
+                // After playing, we're no longer in first segment
+                isFirstSegment = false;
+            }
             
-            // Transition back to idle
-            _state = PlaybackState.Idle;
-            _idleFrameIndex = 0; // Start from frame 0
-            _idleForward = true;
+            _isAnimationPlayerRunning = false;
+            
+            Debug.Log("[CharacterPlayer] Animation player loop ended");
+            
+            // Speech complete
             _speechCoroutine = null;
+            _state = PlaybackState.Idle;
             OnSpeechEnded?.Invoke();
             
-            // Start idle animation
-            StartIdleAnimation();
+            // Return to idle (starting from frame 0 for smooth loop)
+            _idleFrameIndex = 0;
+            _idleForward = true;
             
-            // Process next speech in queue
-            if (_speechQueue.Count > 0)
+            if (autoPlayIdle)
             {
-                ProcessNextSpeech();
+                StartIdleAnimation();
             }
         }
 
