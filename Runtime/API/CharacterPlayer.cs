@@ -8,6 +8,7 @@ using UnityEngine.UI;
 
 namespace LiveTalk.API
 {
+    using Utils;
     /// <summary>
     /// Playback state of the character player
     /// </summary>
@@ -166,8 +167,7 @@ namespace LiveTalk.API
                 return;
             }
             
-            // Break text into lines using TextUtils (same as SpeechPlaybackManager)
-            var lines = LiveTalk.Utils.TextUtils.BreakTextIntoLines(text);
+            var lines = TextUtils.BreakTextIntoLines(text);
             if (lines.Length == 0)
             {
                 Debug.LogWarning("[CharacterPlayer] No lines after text processing");
