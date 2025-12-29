@@ -471,11 +471,10 @@ namespace LiveTalk.API
         /// Waits for all models to be loaded. Call this after Initialize() to ensure all models are ready.
         /// This is particularly useful when using MemoryUsage.Performance mode where models load at startup.
         /// </summary>
-        /// <param name="cancellationToken">Optional cancellation token to stop waiting for models</param>
+        /// <param name="onProgress">Optional callback for progress updates (modelName, progress 0-1)</param>
         /// <returns>A task that completes when all models are loaded</returns>
         /// <exception cref="InvalidOperationException">Thrown when API is not initialized</exception>
-        /// <exception cref="OperationCanceledException">Thrown when cancellation is requested</exception>
-        public async Task WaitForAllModelsAsync(CancellationToken cancellationToken = default)
+        public async Task WaitForAllModelsAsync(Action<string, float> onProgress = null)
         {
             if (!_initialized)
             {
@@ -484,33 +483,41 @@ namespace LiveTalk.API
 
             Logger.Log("[LiveTalkAPI] Waiting for all models to load...");
             
-            var tasks = new List<Task>();
+            // Total: 3 model groups (LivePortrait, MuseTalk, SparkTTS)
+            int totalGroups = 3;
+            int currentGroup = 0;
             
             // Wait for LivePortrait models
             if (_livePortrait != null)
             {
-                tasks.Add(_livePortrait.WaitForAllModelsAsync(cancellationToken));
+                onProgress?.Invoke("LivePortrait Animation", (float)currentGroup / totalGroups);
+                await _livePortrait.WaitForAllModelsAsync();
+                currentGroup++;
+                onProgress?.Invoke("LivePortrait Animation", (float)currentGroup / totalGroups);
             }
-            
-            // Check for cancellation between model groups
-            cancellationToken.ThrowIfCancellationRequested();
+            else
+            {
+                currentGroup++;
+            }
             
             // Wait for MuseTalk models
             if (_museTalk != null)
             {
-                tasks.Add(_museTalk.WaitForAllModelsAsync(cancellationToken));
+                onProgress?.Invoke("MuseTalk Animation", (float)currentGroup / totalGroups);
+                await _museTalk.WaitForAllModelsAsync();
+                currentGroup++;
+                onProgress?.Invoke("MuseTalk Animation", (float)currentGroup / totalGroups);
+            }
+            else
+            {
+                currentGroup++;
             }
             
-            // Check for cancellation
-            cancellationToken.ThrowIfCancellationRequested();
-            
             // Wait for SparkTTS models (CharacterVoiceFactory)
-            tasks.Add(CharacterVoiceFactory.WaitForModelsLoadedAsync(cancellationToken));
-            
-            await Task.WhenAll(tasks);
-            
-            // Final cancellation check
-            cancellationToken.ThrowIfCancellationRequested();
+            onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
+            await CharacterVoiceFactory.WaitForModelsLoadedAsync();
+            currentGroup++;
+            onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
             
             Logger.Log("[LiveTalkAPI] All models loaded successfully");
         }
