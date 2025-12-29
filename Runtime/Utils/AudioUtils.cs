@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using SparkTTS.Utils;
 using UnityEngine;
 
 namespace LiveTalk.Utils
@@ -9,7 +11,7 @@ namespace LiveTalk.Utils
     /// and advanced mel spectrogram extraction with librosa compatibility for cross-platform consistency.
     /// All methods are optimized for real-time audio processing in Unity environments.
     /// </summary>
-    internal static class AudioUtils
+    public static class AudioUtils
     {
         #region Audio Processing Constants
 
@@ -119,6 +121,35 @@ namespace LiveTalk.Utils
             }
             
             return monoSamples;
+        }
+
+        #endregion
+
+        #region Public Methods - Audio Clip Utilities
+
+        /// <summary>
+        /// Creates a silence audio clip of specified duration.
+        /// Delegates to SparkTTS AudioLoaderService for implementation.
+        /// </summary>
+        /// <param name="sampleRate">The sample rate for the silence clip</param>
+        /// <param name="duration">The duration in seconds</param>
+        /// <returns>An AudioClip containing silence</returns>
+        public static AudioClip CreateSilence(int sampleRate = 16000, float duration = 0.25f)
+        {
+            return AudioLoaderService.CreateSilence(sampleRate, duration);
+        }
+
+        /// <summary>
+        /// Concatenates multiple audio clips into a single clip with optional silence padding between them.
+        /// Delegates to SparkTTS AudioLoaderService for implementation.
+        /// </summary>
+        /// <param name="clips">List of audio clips to concatenate</param>
+        /// <param name="sampleRate">Target sample rate for the output clip</param>
+        /// <param name="silenceDuration">Duration of silence between clips in seconds</param>
+        /// <returns>A single AudioClip containing all input clips concatenated together</returns>
+        public static AudioClip ConcatenateAudioClips(List<AudioClip> clips, int sampleRate = 16000, float silenceDuration = 0.25f)
+        {
+            return AudioLoaderService.ConcatenateAudioClips(clips, sampleRate);
         }
 
         #endregion

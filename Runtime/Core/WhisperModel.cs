@@ -32,6 +32,26 @@ namespace LiveTalk.Core
         /// </summary>
         public bool IsInitialized => _isInitialized;
 
+        /// <summary>
+        /// Gets the loading task for the underlying model.
+        /// </summary>
+        public Task LoadTask => _model?.LoadTask;
+
+        #endregion
+
+        #region Public Methods - Loading
+
+        /// <summary>
+        /// Waits for the model to be fully loaded.
+        /// </summary>
+        public async Task WaitForLoadAsync()
+        {
+            if (_model?.LoadTask != null)
+            {
+                await _model.LoadTask;
+            }
+        }
+
         #endregion
 
         #region Constructor

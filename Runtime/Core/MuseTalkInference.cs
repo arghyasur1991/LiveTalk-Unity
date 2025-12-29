@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -58,6 +59,32 @@ namespace LiveTalk.Core
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Waits for all models to be loaded. Call this after initialization to ensure models are ready.
+        /// </summary>
+        /// <returns>A task that completes when all models are loaded</returns>
+        public async Task WaitForAllModelsAsync()
+        {
+            var tasks = new List<Task>();
+            
+            if (_unet?.LoadTask != null) tasks.Add(_unet.LoadTask);
+            
+            if (_vaeEncoder?.LoadTask != null) tasks.Add(_vaeEncoder.LoadTask);
+            
+            if (_vaeDecoder?.LoadTask != null) tasks.Add(_vaeDecoder.LoadTask);
+            
+            if (_positionalEncoding?.LoadTask != null) tasks.Add(_positionalEncoding.LoadTask);
+            
+            if (_whisperModel != null) tasks.Add(_whisperModel.WaitForLoadAsync());
+            
+            if (_faceAnalysis != null) tasks.Add(_faceAnalysis.WaitForAllModelsAsync());
+            
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+        }
         
         public async Task<AvatarData> ProcessAvatarImages(List<string> avatarFramePaths)
         {

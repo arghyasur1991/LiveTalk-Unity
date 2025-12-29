@@ -199,6 +199,60 @@ The export scripts will convert PyTorch models to ONNX format and apply CoreML o
 
 ## Usage
 
+### Initialization and Model Loading
+
+```csharp
+using UnityEngine;
+using LiveTalk.API;
+using System.Threading.Tasks;
+
+public class LiveTalkExample : MonoBehaviour
+{
+    async void Start()
+    {
+        // Initialize the LiveTalk system
+        LiveTalkAPI.Instance.Initialize(
+            logLevel: LogLevel.INFO,
+            characterSaveLocation: "", // Uses default location (persistentDataPath/Characters)
+            parentModelPath: "",       // Uses StreamingAssets
+            memoryUsage: MemoryUsage.Performance // Load all models at startup
+        );
+        
+        // Wait for all models to be loaded (Performance mode)
+        // This includes LivePortrait, MuseTalk, and SparkTTS models
+        await LiveTalkAPI.Instance.WaitForAllModelsAsync(
+            onProgress: (modelName, progress) => {
+                Debug.Log($"Loading {modelName}: {progress * 100:F0}%");
+            }
+        );
+        
+        Debug.Log("All models loaded and ready!");
+        
+        // Now you can create characters and generate speech...
+    }
+}
+```
+
+#### Model Loading Progress (Performance Mode)
+
+When using `MemoryUsage.Performance` mode, you can track model loading progress:
+
+```csharp
+// Simple usage - just wait for completion
+await LiveTalkAPI.Instance.WaitForAllModelsAsync();
+
+// With progress tracking
+await LiveTalkAPI.Instance.WaitForAllModelsAsync(
+    onProgress: (modelName, progress) => {
+        // progress is 0.0 to 1.0 for each model group
+        // modelName will be: "LivePortrait Animation", "MuseTalk Animation", or "Voice Synthesis"
+        UpdateLoadingUI($"Loading {modelName}", progress);
+    }
+);
+```
+
+**Note**: Model loading is only necessary in `MemoryUsage.Performance` mode. In `Balanced` and `Optimal` modes, models load on-demand during first use.
+
 ### Basic Setup
 
 ```csharp
@@ -383,17 +437,19 @@ public class CharacterSpeech : MonoBehaviour
         
         // Speak with lip sync animation
         // Two callbacks: onAudioReady (when audio is ready), onAnimationComplete (when all frames are done)
-        yield return loadedCharacter.SpeakAsync(
+        // Audio and animation generation are pipelined - audio for next segment can generate while current animates
+        yield return loadedCharacter.StartSpeakWithCallbacks(
             text: "Hello! I can speak with realistic lip sync!",
             expressionIndex: 0, // Use talk-neutral expression
             onAudioReady: (frameStream, audioClip) => {
-                // Called as soon as audio is ready - can schedule next SpeakAsync here
+                // Called as soon as audio is ready - you can schedule next speech here
                 // frameStream will receive animation frames as they're generated
+                Debug.Log($"Audio ready, expecting {frameStream.TotalExpectedFrames} frames");
                 StartCoroutine(PlayGeneratedVideo(frameStream, audioClip));
             },
-            onAnimationComplete: (frameStream) => {
+            onAnimationComplete: () => {
                 // Called when all animation frames have been generated
-                Debug.Log($"Animation complete: {frameStream.TotalExpectedFrames} frames");
+                Debug.Log("Animation generation complete");
             },
             onError: (error) => {
                 Debug.LogError($"Speech generation failed: {error.Message}");
@@ -429,7 +485,7 @@ For scenarios where you only need audio without video frames:
 
 ```csharp
 // Generate voice only (no lip sync animation)
-yield return loadedCharacter.SpeakAsync(
+yield return loadedCharacter.StartSpeakWithCallbacks(
     text: "This is voice-only output!",
     expressionIndex: -1, // -1 means voice only, no video frames
     onAudioReady: (frameStream, audioClip) => {
@@ -443,6 +499,37 @@ yield return loadedCharacter.SpeakAsync(
     }
 );
 ```
+
+### Pipelined Speech Generation
+
+The `StartSpeakWithCallbacks` method enables pipelined audio and animation processing:
+
+```csharp
+// Start first speech
+yield return character.StartSpeakWithCallbacks(
+    text: "First sentence.",
+    expressionIndex: 0,
+    onAudioReady: (stream1, audio1) => {
+        PlayAudioAndAnimation(stream1, audio1);
+        
+        // As soon as audio is ready, schedule next speech
+        // Audio for segment 2 generates while segment 1 animates
+        StartCoroutine(character.StartSpeakWithCallbacks(
+            text: "Second sentence immediately after.",
+            expressionIndex: 0,
+            onAudioReady: (stream2, audio2) => {
+                EnqueueAudioAndAnimation(stream2, audio2);
+            },
+            onAnimationComplete: null,
+            onError: OnError
+        ));
+    },
+    onAnimationComplete: null,
+    onError: OnError
+);
+```
+
+This pipelining significantly improves responsiveness by overlapping audio generation for the next segment with animation generation for the current segment.
 
 ### Loading Character from Path
 
@@ -632,7 +719,16 @@ bool IsDataLoaded { get; }
 
 #### Methods
 ```csharp
-// Make character speak with animation
+// Make character speak with animation (pipelined audio/animation)
+IEnumerator StartSpeakWithCallbacks(
+    string text, 
+    int expressionIndex = 0,  // Use -1 for voice-only
+    Action<FrameStream, AudioClip> onAudioReady = null,  // Called when audio is ready
+    Action onAnimationComplete = null,  // Called when all frames are generated
+    Action<Exception> onError = null
+)
+
+// Legacy method (still supported but StartSpeakWithCallbacks is preferred)
 IEnumerator SpeakAsync(
     string text, 
     int expressionIndex = 0,  // Use -1 for voice-only

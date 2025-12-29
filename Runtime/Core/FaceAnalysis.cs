@@ -3,6 +3,7 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -151,6 +152,32 @@ namespace LiveTalk.Core
             }
         }
         
+        #region Public Methods - Loading
+
+        /// <summary>
+        /// Waits for all models to be fully loaded.
+        /// </summary>
+        /// <returns>A task that completes when all models are loaded</returns>
+        public async Task WaitForAllModelsAsync()
+        {
+            var tasks = new List<Task>();
+            
+            if (_detFace?.LoadTask != null) tasks.Add(_detFace.LoadTask);
+            
+            if (_landmark2d106?.LoadTask != null) tasks.Add(_landmark2d106.LoadTask);
+            
+            if (_landmarkRunner?.LoadTask != null) tasks.Add(_landmarkRunner.LoadTask);
+            
+            if (_faceParsing?.LoadTask != null) tasks.Add(_faceParsing.LoadTask);
+            
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+        }
+
+        #endregion
+
         #region Public Methods - Face Analysis
 
         /// <summary>

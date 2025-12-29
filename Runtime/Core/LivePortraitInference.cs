@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -97,6 +98,30 @@ namespace LiveTalk.Core
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Waits for all models to be fully loaded.
+        /// </summary>
+        /// <returns>A task that completes when all models are loaded</returns>
+        public async Task WaitForAllModelsAsync()
+        {
+            var tasks = new List<Task>();
+            
+            if (_appearanceFeatureExtractor?.LoadTask != null) tasks.Add(_appearanceFeatureExtractor.LoadTask);
+            
+            if (_motionExtractor?.LoadTask != null) tasks.Add(_motionExtractor.LoadTask);
+            
+            if (_stitching?.LoadTask != null) tasks.Add(_stitching.LoadTask);
+            
+            if (_warpingSpade?.LoadTask != null) tasks.Add(_warpingSpade.LoadTask);
+            
+            if (_faceAnalysis != null) tasks.Add(_faceAnalysis.WaitForAllModelsAsync());
+            
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+        }
 
         /// <summary>
         /// Asynchronously generates animated frames from a source image using driving frames for motion transfer.

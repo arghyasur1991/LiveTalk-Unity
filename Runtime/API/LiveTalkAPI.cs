@@ -448,9 +448,90 @@ namespace LiveTalk.API
                 LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
                 _ => SparkTTS.Utils.LogLevel.WARNING,
             };
-            bool optimalMemoryUsage = memoryUsage == MemoryUsage.Optimal;
-            CharacterVoiceFactory.Initialize(sparkTTSLogLevel, optimalMemoryUsage);
+            
+            // Map LiveTalk MemoryUsage to SparkTTS MemoryUsage
+            var sparkTTSMemoryUsage = memoryUsage switch
+            {
+                MemoryUsage.Performance => SparkTTS.Models.MemoryUsage.Performance,
+                MemoryUsage.Balanced => SparkTTS.Models.MemoryUsage.Balanced,
+                MemoryUsage.Optimal => SparkTTS.Models.MemoryUsage.Optimal,
+                MemoryUsage.Quality => SparkTTS.Models.MemoryUsage.Performance, // Quality maps to Performance for SparkTTS
+                _ => SparkTTS.Models.MemoryUsage.Balanced,
+            };
+            
+            CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
             _initialized = true;
+        }
+
+        #endregion
+
+        #region Public Methods - Model Loading
+
+        /// <summary>
+        /// Waits for all models to be loaded. Call this after Initialize() to ensure all models are ready.
+        /// This is particularly useful when using MemoryUsage.Performance mode where models load at startup.
+        /// </summary>
+        /// <param name="onProgress">Optional callback for progress updates (modelName, progress 0-1)</param>
+        /// <returns>A task that completes when all models are loaded</returns>
+        /// <exception cref="InvalidOperationException">Thrown when API is not initialized</exception>
+        public async Task WaitForAllModelsAsync(Action<string, float> onProgress = null)
+        {
+            if (!_initialized)
+            {
+                throw new InvalidOperationException("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
+
+            Logger.Log("[LiveTalkAPI] Waiting for all models to load...");
+            
+            // Total: 3 model groups (LivePortrait, MuseTalk, SparkTTS)
+            int totalGroups = 3;
+            int currentGroup = 0;
+            
+            // Wait for LivePortrait models
+            if (_livePortrait != null)
+            {
+                onProgress?.Invoke("LivePortrait Animation", (float)currentGroup / totalGroups);
+                await _livePortrait.WaitForAllModelsAsync();
+                currentGroup++;
+                onProgress?.Invoke("LivePortrait Animation", (float)currentGroup / totalGroups);
+            }
+            else
+            {
+                currentGroup++;
+            }
+            
+            // Wait for MuseTalk models
+            if (_museTalk != null)
+            {
+                onProgress?.Invoke("MuseTalk Animation", (float)currentGroup / totalGroups);
+                await _museTalk.WaitForAllModelsAsync();
+                currentGroup++;
+                onProgress?.Invoke("MuseTalk Animation", (float)currentGroup / totalGroups);
+            }
+            else
+            {
+                currentGroup++;
+            }
+            
+            // Wait for SparkTTS models (CharacterVoiceFactory)
+            onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
+            await CharacterVoiceFactory.WaitForModelsLoadedAsync();
+            currentGroup++;
+            onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
+            
+            Logger.Log("[LiveTalkAPI] All models loaded successfully");
+        }
+
+        /// <summary>
+        /// Gets whether all models have been loaded.
+        /// </summary>
+        public bool AreAllModelsLoaded
+        {
+            get
+            {
+                if (!_initialized) return false;
+                return CharacterVoiceFactory.IsReady;
+            }
         }
 
         #endregion
