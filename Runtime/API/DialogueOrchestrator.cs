@@ -53,6 +53,7 @@ namespace LiveTalk.API
             public string CharacterId { get; set; }
             public string Text { get; set; }
             public int ExpressionIndex { get; set; }
+            public bool WithAnimation { get; set; } = true;
         }
         
         /// <summary>
@@ -99,7 +100,8 @@ namespace LiveTalk.API
         /// <summary>
         /// Queue a single dialogue line
         /// </summary>
-        public void QueueDialogue(string characterId, string text, int expressionIndex = 0)
+        /// <param name="withAnimation">If false, plays audio only (useful for characters without avatars like narrator)</param>
+        public void QueueDialogue(string characterId, string text, int expressionIndex = 0, bool withAnimation = true)
         {
             if (!_characterPlayers.ContainsKey(characterId))
             {
@@ -111,10 +113,11 @@ namespace LiveTalk.API
             {
                 CharacterId = characterId,
                 Text = text,
-                ExpressionIndex = expressionIndex
+                ExpressionIndex = expressionIndex,
+                WithAnimation = withAnimation
             });
             
-            Debug.Log($"[DialogueOrchestrator] Queued dialogue for {characterId}: {text.Substring(0, Math.Min(50, text.Length))}... (Queue size: {_dialogueQueue.Count})");
+            Debug.Log($"[DialogueOrchestrator] Queued dialogue for {characterId}: {text.Substring(0, Math.Min(50, text.Length))}... (Queue size: {_dialogueQueue.Count}, Animation: {withAnimation})");
             
             // Start processing if not already running
             if (!_isProcessing)
@@ -221,9 +224,9 @@ namespace LiveTalk.API
                 SwitchSpeaker(segment.CharacterId, player);
                 
                 // Queue speech to the character's player
-                player.QueueSpeech(segment.Text, segment.ExpressionIndex);
+                player.QueueSpeech(segment.Text, segment.ExpressionIndex, segment.WithAnimation);
                 
-                Debug.Log($"[DialogueOrchestrator] {segment.CharacterId} speaking: {segment.Text.Substring(0, Math.Min(50, segment.Text.Length))}...");
+                Debug.Log($"[DialogueOrchestrator] {segment.CharacterId} speaking: {segment.Text.Substring(0, Math.Min(50, segment.Text.Length))}... (Animation: {segment.WithAnimation})");
                 
                 // Wait for this character to finish speaking
                 while (player.IsPlaying || player.QueuedSpeechCount > 0)

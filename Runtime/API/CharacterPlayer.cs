@@ -28,6 +28,7 @@ namespace LiveTalk.API
     {
         public List<string> TextLines { get; set; } = new List<string>();
         public int ExpressionIndex { get; set; }
+        public bool WithAnimation { get; set; } = true;
     }
 
     /// <summary>
@@ -51,6 +52,7 @@ namespace LiveTalk.API
         [SerializeField] private RawImage displayImage;
         [SerializeField] private bool autoPlayIdle = true;
         [SerializeField] private float idleFPS = 25f;
+        [SerializeField] private bool audioOnly = false; // For characters without avatars (e.g., narrator)
         
         // Runtime state
         private Character _character;
@@ -80,6 +82,7 @@ namespace LiveTalk.API
             public bool AnimationReady { get; set; }
             public bool IsReady => AudioReady && AnimationReady;
             public FrameStream FrameStream { get; set; }
+            public bool WithAnimation { get; set; } = true;
         }
         
         // Events
@@ -153,7 +156,8 @@ namespace LiveTalk.API
         /// Queue speech for the character. Speech will be played in order.
         /// Text is automatically broken into lines/sentences for smoother playback.
         /// </summary>
-        public void QueueSpeech(string text, int expressionIndex = 0)
+        /// <param name="withAnimation">If false, plays audio only (useful for characters without avatars)</param>
+        public void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true)
         {
             if (_character == null || !_character.IsDataLoaded)
             {
@@ -167,6 +171,11 @@ namespace LiveTalk.API
                 return;
             }
             
+            // Override animation if in audio-only mode or explicitly disabled
+            if (audioOnly)
+                withAnimation = false;
+            
+            // Break text into lines using TextUtils (same as SpeechPlaybackManager)
             var lines = TextUtils.BreakTextIntoLines(text);
             if (lines.Length == 0)
             {
@@ -177,12 +186,13 @@ namespace LiveTalk.API
             var request = new SpeechRequest 
             { 
                 TextLines = new List<string>(lines),
-                ExpressionIndex = expressionIndex 
+                ExpressionIndex = expressionIndex,
+                WithAnimation = withAnimation
             };
             
             _speechQueue.Enqueue(request);
             
-            Debug.Log($"[CharacterPlayer] Queued speech: {lines.Length} lines from text: {text.Substring(0, Math.Min(50, text.Length))}...");
+            Debug.Log($"[CharacterPlayer] Queued speech: {lines.Length} lines from text: {text.Substring(0, Math.Min(50, text.Length))}... (Animation: {withAnimation})");
             
             // Start processing if not already speaking
             if (_state != PlaybackState.Speaking && _speechCoroutine == null)
@@ -272,14 +282,28 @@ namespace LiveTalk.API
 
         private void OnCharacterLoadedInternal()
         {
-            // Extract idle frames (expression 0)
+            // Extract idle frames (expression 0) if available
             LoadIdleFrames();
+            
+            // If no idle frames and not audio-only, log warning
+            if (_idleFrames == null || _idleFrames.Count == 0)
+            {
+                if (!audioOnly)
+                {
+                    Debug.LogWarning($"[CharacterPlayer] No idle frames loaded for {_character?.Name}. Using audio-only mode.");
+                    audioOnly = true;
+                }
+                else
+                {
+                    Debug.Log($"[CharacterPlayer] Audio-only mode for {_character?.Name}");
+                }
+            }
             
             _state = PlaybackState.Idle;
             OnCharacterLoaded?.Invoke();
             
-            // Start idle animation
-            if (autoPlayIdle)
+            // Start idle animation only if we have frames
+            if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
             {
                 StartIdleAnimation();
             }
@@ -456,15 +480,59 @@ namespace LiveTalk.API
                         AudioClip = null,
                         AudioReady = false,
                         AnimationReady = false,
-                        FrameStream = null
+                        FrameStream = null,
+                        WithAnimation = request.WithAnimation
                     };
                     
                     _pendingAnimations.Enqueue(pendingItem);
                     
+                    // For audio-only mode, generate only audio
+                    if (!request.WithAnimation || audioOnly)
+                    {
+                        // Generate audio only using SpeakAsync with expressionIndex = -1
+                        AudioClip audioClip = null;
+                        bool hasError = false;
+                        
+                        IEnumerator audioCoroutine = _character.SpeakAsync(
+                            line,
+                            expressionIndex: -1, // -1 means audio-only
+                            onAudioReady: (stream, clip) =>
+                            {
+                                audioClip = clip;
+                                // stream will be null for audio-only
+                            },
+                            onAnimationComplete: null,
+                            onError: (ex) =>
+                            {
+                                Debug.LogError($"[CharacterPlayer] Audio generation error: {ex.Message}");
+                                OnError?.Invoke(ex);
+                                hasError = true;
+                            }
+                        );
+                        
+                        yield return audioCoroutine;
+                        
+                        if (audioClip != null && !hasError)
+                        {
+                            pendingItem.AudioClip = audioClip;
+                            pendingItem.AudioReady = true;
+                            pendingItem.AnimationReady = true; // No animation needed
+                            Debug.Log($"[CharacterPlayer] Audio-only ready: {audioClip.length}s");
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[CharacterPlayer] Failed to generate audio for line");
+                            pendingItem.AudioReady = true;
+                            pendingItem.AnimationReady = true;
+                        }
+                        
+                        continue;
+                    }
+                    
                     // Generate speech audio + animation
                     FrameStream frameStream = null;
-                    AudioClip audioClip = null;
-                    bool hasError = false;
+                    AudioClip audioClip2 = null;
+                    bool hasError2 = false;
                     
                     IEnumerator speechCoroutine = _character.SpeakAsync(
                         line,
@@ -472,7 +540,7 @@ namespace LiveTalk.API
                         onAudioReady: (stream, clip) =>
                         {
                             frameStream = stream;
-                            audioClip = clip;
+                            audioClip2 = clip;
                             pendingItem.AudioClip = clip;
                             pendingItem.FrameStream = stream;
                             pendingItem.AudioReady = true;
@@ -486,14 +554,14 @@ namespace LiveTalk.API
                         {
                             Debug.LogError($"[CharacterPlayer] Speech error: {ex.Message}");
                             OnError?.Invoke(ex);
-                            hasError = true;
+                            hasError2 = true;
                         }
                     );
                     
                     // Start the speech generation
                     yield return speechCoroutine;
                     
-                    if (hasError || audioClip == null || frameStream == null)
+                    if (hasError2 || audioClip2 == null || frameStream == null)
                     {
                         Debug.LogWarning($"[CharacterPlayer] Failed to generate speech for line");
                         pendingItem.AudioReady = true;
@@ -580,9 +648,29 @@ namespace LiveTalk.API
                 var item = _pendingAnimations.Dequeue();
                 
                 // Skip empty items
-                if (item.Frames.Count == 0 || item.AudioClip == null)
+                if (item.AudioClip == null)
                 {
                     Debug.LogWarning("[CharacterPlayer] Skipping empty speech item");
+                    continue;
+                }
+                
+                // For audio-only playback
+                if (!item.WithAnimation || item.Frames.Count == 0)
+                {
+                    Debug.Log($"[CharacterPlayer] Playing audio-only: {item.AudioClip.length}s");
+                    
+                    // Just play the audio
+                    _audioSource.clip = item.AudioClip;
+                    _audioSource.Play();
+                    
+                    // Wait for audio to finish
+                    while (_audioSource.isPlaying)
+                    {
+                        yield return new WaitForSeconds(0.1f);
+                    }
+                    
+                    // After playing, we're no longer in first segment
+                    isFirstSegment = false;
                     continue;
                 }
                 
