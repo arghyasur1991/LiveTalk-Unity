@@ -97,6 +97,21 @@ namespace LiveTalk.Core
 
         #endregion
 
+        #region Public Properties
+
+        /// <summary>
+        /// Gets whether the model is fully loaded and ready for inference.
+        /// </summary>
+        public bool IsLoaded => _initialized;
+
+        /// <summary>
+        /// Gets the loading task for the model (null if not loading or already loaded).
+        /// Can be awaited to ensure model is loaded.
+        /// </summary>
+        public Task LoadTask => _loadTask;
+
+        #endregion
+
         #region Public Methods - Input Loading
 
         /// <summary>

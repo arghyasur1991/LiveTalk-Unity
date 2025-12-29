@@ -448,9 +448,83 @@ namespace LiveTalk.API
                 LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
                 _ => SparkTTS.Utils.LogLevel.WARNING,
             };
-            bool optimalMemoryUsage = memoryUsage == MemoryUsage.Optimal;
-            CharacterVoiceFactory.Initialize(sparkTTSLogLevel, optimalMemoryUsage);
+            
+            // Map LiveTalk MemoryUsage to SparkTTS MemoryUsage
+            var sparkTTSMemoryUsage = memoryUsage switch
+            {
+                MemoryUsage.Performance => SparkTTS.Models.MemoryUsage.Performance,
+                MemoryUsage.Balanced => SparkTTS.Models.MemoryUsage.Balanced,
+                MemoryUsage.Optimal => SparkTTS.Models.MemoryUsage.Optimal,
+                MemoryUsage.Quality => SparkTTS.Models.MemoryUsage.Performance, // Quality maps to Performance for SparkTTS
+                _ => SparkTTS.Models.MemoryUsage.Balanced,
+            };
+            
+            CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
             _initialized = true;
+        }
+
+        #endregion
+
+        #region Public Methods - Model Loading
+
+        /// <summary>
+        /// Waits for all models to be loaded. Call this after Initialize() to ensure all models are ready.
+        /// This is particularly useful when using MemoryUsage.Performance mode where models load at startup.
+        /// </summary>
+        /// <param name="cancellationToken">Optional cancellation token to stop waiting for models</param>
+        /// <returns>A task that completes when all models are loaded</returns>
+        /// <exception cref="InvalidOperationException">Thrown when API is not initialized</exception>
+        /// <exception cref="OperationCanceledException">Thrown when cancellation is requested</exception>
+        public async Task WaitForAllModelsAsync(CancellationToken cancellationToken = default)
+        {
+            if (!_initialized)
+            {
+                throw new InvalidOperationException("LiveTalkAPI not initialized. Call Initialize() first.");
+            }
+
+            Logger.Log("[LiveTalkAPI] Waiting for all models to load...");
+            
+            var tasks = new List<Task>();
+            
+            // Wait for LivePortrait models
+            if (_livePortrait != null)
+            {
+                tasks.Add(_livePortrait.WaitForAllModelsAsync(cancellationToken));
+            }
+            
+            // Check for cancellation between model groups
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            // Wait for MuseTalk models
+            if (_museTalk != null)
+            {
+                tasks.Add(_museTalk.WaitForAllModelsAsync(cancellationToken));
+            }
+            
+            // Check for cancellation
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            // Wait for SparkTTS models (CharacterVoiceFactory)
+            tasks.Add(CharacterVoiceFactory.WaitForModelsLoadedAsync(cancellationToken));
+            
+            await Task.WhenAll(tasks);
+            
+            // Final cancellation check
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            Logger.Log("[LiveTalkAPI] All models loaded successfully");
+        }
+
+        /// <summary>
+        /// Gets whether all models have been loaded.
+        /// </summary>
+        public bool AreAllModelsLoaded
+        {
+            get
+            {
+                if (!_initialized) return false;
+                return CharacterVoiceFactory.IsReady;
+            }
         }
 
         #endregion

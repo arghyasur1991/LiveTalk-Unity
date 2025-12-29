@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace LiveTalk.Utils
@@ -9,7 +11,7 @@ namespace LiveTalk.Utils
     /// and advanced mel spectrogram extraction with librosa compatibility for cross-platform consistency.
     /// All methods are optimized for real-time audio processing in Unity environments.
     /// </summary>
-    internal static class AudioUtils
+    public static class AudioUtils
     {
         #region Audio Processing Constants
 
@@ -119,6 +121,100 @@ namespace LiveTalk.Utils
             }
             
             return monoSamples;
+        }
+
+        #endregion
+
+        #region Public Methods - Audio Clip Utilities
+
+        /// <summary>
+        /// Cache for silence clips to avoid repeated allocations.
+        /// </summary>
+        private static readonly Dictionary<string, AudioClip> s_silenceCache = new();
+
+        /// <summary>
+        /// Creates a silence audio clip of specified duration.
+        /// Clips are cached by sample rate and duration for reuse.
+        /// </summary>
+        /// <param name="sampleRate">The sample rate for the silence clip</param>
+        /// <param name="duration">The duration in seconds</param>
+        /// <returns>An AudioClip containing silence</returns>
+        public static AudioClip CreateSilence(int sampleRate = 16000, float duration = 0.25f)
+        {
+            string cacheKey = $"{sampleRate}_{duration}";
+            if (s_silenceCache.TryGetValue(cacheKey, out AudioClip cachedClip))
+            {
+                return cachedClip;
+            }
+
+            int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+            AudioClip silenceClip = AudioClip.Create("Silence", sampleCount, 1, sampleRate, false);
+            float[] silenceData = new float[sampleCount];
+            silenceClip.SetData(silenceData, 0);
+            
+            s_silenceCache[cacheKey] = silenceClip;
+            return silenceClip;
+        }
+
+        /// <summary>
+        /// Concatenates multiple audio clips into a single clip with optional silence padding between them.
+        /// </summary>
+        /// <param name="clips">List of audio clips to concatenate</param>
+        /// <param name="sampleRate">Target sample rate for the output clip</param>
+        /// <param name="silenceDuration">Duration of silence between clips in seconds</param>
+        /// <returns>A single AudioClip containing all input clips concatenated together</returns>
+        public static AudioClip ConcatenateAudioClips(List<AudioClip> clips, int sampleRate = 16000, float silenceDuration = 0.25f)
+        {
+            if (clips == null || clips.Count == 0)
+                return null;
+            
+            // Calculate total duration
+            float totalDuration = clips.Sum(clip => clip.length);
+            totalDuration += silenceDuration * (clips.Count - 1);
+            
+            AudioClip combinedClip = AudioClip.Create("Combined Audio", (int)(totalDuration * sampleRate), 1, sampleRate, false);
+            
+            // Concatenate the clips
+            float[] combinedData = new float[(int)(totalDuration * sampleRate)];
+            int offset = 0;
+            int silenceSamples = (int)(silenceDuration * sampleRate);
+            
+            for (int i = 0; i < clips.Count; i++)
+            {
+                AudioClip clip = clips[i];
+                float[] clipData = new float[clip.samples * clip.channels];
+                clip.GetData(clipData, 0);
+                
+                // Convert to mono if needed
+                if (clip.channels > 1)
+                {
+                    float[] monoData = new float[clip.samples];
+                    for (int j = 0; j < clip.samples; j++)
+                    {
+                        monoData[j] = clipData[j * clip.channels];
+                    }
+                    clipData = monoData;
+                }
+                
+                // Resample if needed
+                if (clip.frequency != sampleRate)
+                {
+                    clipData = ResampleAudio(clipData, clip.frequency, sampleRate);
+                }
+                
+                // Copy clip data to combined array
+                Array.Copy(clipData, 0, combinedData, offset, clipData.Length);
+                offset += clipData.Length;
+                
+                // Add silence between clips (except after last clip)
+                if (i < clips.Count - 1)
+                {
+                    offset += silenceSamples;
+                }
+            }
+            
+            combinedClip.SetData(combinedData, 0);
+            return combinedClip;
         }
 
         #endregion

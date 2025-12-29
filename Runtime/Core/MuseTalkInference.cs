@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -58,6 +59,40 @@ namespace LiveTalk.Core
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Waits for all models to be loaded. Call this after initialization to ensure models are ready.
+        /// </summary>
+        /// <param name="cancellationToken">Optional cancellation token to stop waiting</param>
+        /// <returns>A task that completes when all models are loaded</returns>
+        public async Task WaitForAllModelsAsync(CancellationToken cancellationToken = default)
+        {
+            var tasks = new List<Task>();
+            
+            if (_unet?.LoadTask != null) tasks.Add(_unet.LoadTask);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (_vaeEncoder?.LoadTask != null) tasks.Add(_vaeEncoder.LoadTask);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (_vaeDecoder?.LoadTask != null) tasks.Add(_vaeDecoder.LoadTask);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (_positionalEncoding?.LoadTask != null) tasks.Add(_positionalEncoding.LoadTask);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (_whisperModel != null) tasks.Add(_whisperModel.WaitForLoadAsync());
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (_faceAnalysis != null) tasks.Add(_faceAnalysis.WaitForAllModelsAsync(cancellationToken));
+            
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+            
+            cancellationToken.ThrowIfCancellationRequested();
+        }
         
         public async Task<AvatarData> ProcessAvatarImages(List<string> avatarFramePaths)
         {
