@@ -282,8 +282,14 @@ namespace LiveTalk.API
 
         private void OnCharacterLoadedInternal()
         {
-            // Extract idle frames (expression 0) if available
-            LoadIdleFrames();
+            // Extract idle frames (expression 0) if available - use coroutine for non-blocking load
+            StartCoroutine(LoadIdleFramesAndStartAnimation());
+        }
+        
+        private IEnumerator LoadIdleFramesAndStartAnimation()
+        {
+            // Load idle frames with yielding
+            yield return StartCoroutine(LoadIdleFramesCoroutine());
             
             // If no idle frames and not audio-only, log warning
             if (_idleFrames == null || _idleFrames.Count == 0)
@@ -300,23 +306,25 @@ namespace LiveTalk.API
             }
             
             _state = PlaybackState.Idle;
-            OnCharacterLoaded?.Invoke();
             
             // Start idle animation only if we have frames
             if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
             {
                 StartIdleAnimation();
             }
+            
+            // Fire event AFTER idle frames are loaded and state is set
+            OnCharacterLoaded?.Invoke();
         }
 
-        private void LoadIdleFrames()
+        private IEnumerator LoadIdleFramesCoroutine()
         {
             _idleFrames = new List<Texture2D>();
             
             if (_character == null || string.IsNullOrEmpty(_character.CharacterFolder))
             {
                 Debug.LogWarning($"[CharacterPlayer] Cannot load idle frames: character or folder is null");
-                return;
+                yield break;
             }
             
             // Expression 0 folder path
@@ -325,7 +333,7 @@ namespace LiveTalk.API
             if (!Directory.Exists(expression0Folder))
             {
                 Debug.LogWarning($"[CharacterPlayer] Expression 0 folder not found: {expression0Folder}");
-                return;
+                yield break;
             }
             
             // Load all PNG frames from the expression folder
@@ -336,18 +344,32 @@ namespace LiveTalk.API
             if (framePaths.Length == 0)
             {
                 Debug.LogWarning($"[CharacterPlayer] No frames found in: {expression0Folder}");
-                return;
+                yield break;
             }
             
-            // Load textures from disk
+            // Load textures from disk with yielding between each
             foreach (var framePath in framePaths)
             {
-                byte[] fileData = File.ReadAllBytes(framePath);
-                Texture2D texture = new Texture2D(2, 2);
-                if (texture.LoadImage(fileData))
+                // Read file asynchronously
+                var readTask = File.ReadAllBytesAsync(framePath);
+                yield return new WaitUntil(() => readTask.IsCompleted);
+                
+                if (readTask.IsCompletedSuccessfully)
                 {
-                    _idleFrames.Add(texture);
+                    byte[] fileData = readTask.Result;
+                    Texture2D texture = new Texture2D(2, 2);
+                    if (texture.LoadImage(fileData))
+                    {
+                        _idleFrames.Add(texture);
+                    }
                 }
+                else if (readTask.IsFaulted)
+                {
+                    Debug.LogError($"[CharacterPlayer] Failed to read frame: {readTask.Exception?.Message}");
+                }
+                
+                // Yield after each texture to avoid blocking
+                yield return null;
             }
             
             if (_idleFrames.Count == 0)
