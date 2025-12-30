@@ -186,6 +186,24 @@ namespace LiveTalk.API
         internal string DrivingFramesFolder { get; set; }
         internal string VoiceFolder { get; set; }
         
+        // CharacterPlayer for animation and playback
+        private CharacterPlayer _characterPlayer;
+        
+        /// <summary>
+        /// Gets the CharacterPlayer for this character (creates if needed after data is loaded)
+        /// </summary>
+        public CharacterPlayer CharacterPlayer
+        {
+            get
+            {
+                if (_characterPlayer == null && IsDataLoaded)
+                {
+                    CreateCharacterPlayer();
+                }
+                return _characterPlayer;
+            }
+        }
+        
         internal Character(
             string name,
             Gender gender,
@@ -690,6 +708,9 @@ namespace LiveTalk.API
 
             IsDataLoaded = true;
             Logger.LogVerbose($"[Character] Character data loaded successfully for {Name}");
+            
+            // Create CharacterPlayer automatically after full load
+            CreateCharacterPlayer();
         }
 
         /// <summary>
@@ -1864,6 +1885,44 @@ namespace LiveTalk.API
             if (IsCharacterBundle(characterId)) return "bundle";
             if (IsCharacterFolder(characterId)) return "folder";
             return null;
+        }
+        
+        /// <summary>
+        /// Creates and initializes the CharacterPlayer for this character
+        /// </summary>
+        private void CreateCharacterPlayer()
+        {
+            if (_characterPlayer != null || !IsDataLoaded)
+                return;
+            
+            // Create GameObject for CharacterPlayer
+            var playerObject = new GameObject($"CharacterPlayer_{Name}");
+            playerObject.transform.SetParent(null); // Keep at root for persistence
+            GameObject.DontDestroyOnLoad(playerObject); // Persist across scenes
+            
+            // Add CharacterPlayer component
+            _characterPlayer = playerObject.AddComponent<CharacterPlayer>();
+            
+            // Assign this character to the player
+            _characterPlayer.AssignCharacter(this);
+            
+            Debug.Log($"[LiveTalk.Character] Created CharacterPlayer for {Name}");
+        }
+        
+        /// <summary>
+        /// Cleanup the CharacterPlayer when character is disposed
+        /// </summary>
+        public void CleanupCharacterPlayer()
+        {
+            if (_characterPlayer != null)
+            {
+                _characterPlayer.Stop();
+                if (_characterPlayer.gameObject != null)
+                {
+                    GameObject.Destroy(_characterPlayer.gameObject);
+                }
+                _characterPlayer = null;
+            }
         }
     }
 
