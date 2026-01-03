@@ -56,6 +56,7 @@ namespace LiveTalk.API
         
         // Runtime state
         private Character _character;
+        public Texture2D DisplayImage => (Texture2D)displayImage.texture;
         private PlaybackState _state = PlaybackState.Uninitialized;
         private readonly Queue<SpeechRequest> _speechQueue = new();
         
@@ -112,7 +113,7 @@ namespace LiveTalk.API
             // Auto-find RawImage if not assigned
             if (displayImage == null)
             {
-                displayImage = GetComponent<RawImage>();
+                displayImage = gameObject.AddComponent<RawImage>();
             }
         }
 
