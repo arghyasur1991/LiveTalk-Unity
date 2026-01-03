@@ -1730,7 +1730,7 @@ namespace LiveTalk.API
             Texture2D texture = null;
             if (!File.Exists(imagePath))
             {
-                Debug.Log($"[Character] {config.name} image not found: {imagePath}");
+                Logger.Log($"[Character] {config.name} image not found: {imagePath}");
             }
             else
             {
@@ -1810,7 +1810,7 @@ namespace LiveTalk.API
             yield return character.LoadData();
             var elapsed = start.Elapsed;
             bool isBundle = characterFolder.EndsWith(".bundle");
-            Logger.Log($"[Character] Character data for {character.Name} loaded from {(isBundle ? "bundle" : "folder")} in {elapsed.TotalMilliseconds} milliseconds");
+            Logger.LogVerbose($"[Character] Character data for {character.Name} loaded from {(isBundle ? "bundle" : "folder")} in {elapsed.TotalMilliseconds} milliseconds");
             onComplete?.Invoke(character);
         }
 
@@ -1905,7 +1905,7 @@ namespace LiveTalk.API
             // Assign this character to the player
             _characterPlayer.AssignCharacter(this);
             
-            Debug.Log($"[LiveTalk.Character] Created CharacterPlayer for {Name}");
+            Logger.Log($"[LiveTalk.Character] Created CharacterPlayer for {Name}");
         }
         
         /// <summary>
@@ -1918,10 +1918,12 @@ namespace LiveTalk.API
                 _characterPlayer.Stop();
                 if (_characterPlayer.gameObject != null)
                 {
+                    Logger.Log($"[LiveTalk.Character] Destroying CharacterPlayer GameObject for {Name}");
                     UnityEngine.Object.Destroy(_characterPlayer.gameObject);
                 }
                 if (CharacterPlayer.ParentTransform.childCount == 0)
                 {
+                    Logger.Log($"[LiveTalk.Character] Destroying CharacterPlayers_Parent GameObject");
                     UnityEngine.Object.Destroy(CharacterPlayer.ParentTransform.gameObject);
                 }
                 _characterPlayer = null;

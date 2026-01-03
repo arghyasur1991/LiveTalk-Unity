@@ -68,6 +68,7 @@ namespace LiveTalk.API
         
         // Speech animation
         private Coroutine _speechCoroutine;
+        private Coroutine _animationCoroutine;
         private AudioSource _audioSource;
         
         // Pipelined processing
@@ -218,7 +219,11 @@ namespace LiveTalk.API
         public void Stop()
         {
             StopIdleAnimation();
-            
+            if (_animationCoroutine != null)
+            {
+                StopCoroutine(_animationCoroutine);
+                _animationCoroutine = null;
+            }
             if (_speechCoroutine != null)
             {
                 StopCoroutine(_speechCoroutine);
@@ -488,7 +493,7 @@ namespace LiveTalk.API
             
             if (!_isAnimationPlayerRunning)
             {
-                StartCoroutine(AnimationPlayerLoop());
+                _animationCoroutine = StartCoroutine(AnimationPlayerLoop());
             }
         }
 
@@ -756,6 +761,7 @@ namespace LiveTalk.API
             
             // Speech complete
             _speechCoroutine = null;
+            _animationCoroutine = null;
             _state = PlaybackState.Idle;
             OnSpeechEnded?.Invoke();
             
@@ -767,23 +773,6 @@ namespace LiveTalk.API
             {
                 StartIdleAnimation();
             }
-        }
-
-        private List<Texture2D> GetTransitionToIdleFrames()
-        {
-            List<Texture2D> transition = new();
-            
-            if (_idleFrames != null && _idleFrames.Count > 0)
-            {
-                // Add last few idle frames in reverse to smoothly return to frame 0
-                int transitionFrameCount = Math.Min(3, _idleFrames.Count);
-                for (int i = transitionFrameCount - 1; i >= 0; i--)
-                {
-                    transition.Add(_idleFrames[i]);
-                }
-            }
-            
-            return transition;
         }
 
         private IEnumerator PlayFramesSynchronized(List<Texture2D> frames, AudioClip audioClip)
