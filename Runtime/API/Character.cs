@@ -1907,28 +1907,6 @@ namespace LiveTalk.API
             
             Logger.Log($"[LiveTalk.Character] Created CharacterPlayer for {Name}");
         }
-        
-        /// <summary>
-        /// Cleanup the CharacterPlayer when character is disposed
-        /// </summary>
-        public void CleanupCharacterPlayer()
-        {
-            if (_characterPlayer != null)
-            {
-                _characterPlayer.Stop();
-                if (_characterPlayer.gameObject != null)
-                {
-                    Logger.Log($"[LiveTalk.Character] Destroying CharacterPlayer GameObject for {Name}");
-                    UnityEngine.Object.Destroy(_characterPlayer.gameObject);
-                }
-                if (CharacterPlayer.ParentTransform.childCount == 0)
-                {
-                    Logger.Log($"[LiveTalk.Character] Destroying CharacterPlayers_Parent GameObject");
-                    UnityEngine.Object.Destroy(CharacterPlayer.ParentTransform.gameObject);
-                }
-                _characterPlayer = null;
-            }
-        }
     }
 
 }
