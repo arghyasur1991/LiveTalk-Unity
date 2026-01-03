@@ -19,14 +19,13 @@ namespace LiveTalk.API
     public class DialogueOrchestrator : MonoBehaviour
     {
         [Header("Display Settings")]
-        [SerializeField] private RawImage displayTarget;
-        [SerializeField] private bool autoHideInactiveSpeakers = true;
+        [SerializeField] private readonly RawImage displayTarget;
         
         // Registered characters
-        private Dictionary<string, CharacterPlayer> _characterPlayers = new();
+        private readonly Dictionary<string, CharacterPlayer> _characterPlayers = new();
         
         // Dialogue queue
-        private Queue<DialogueSegment> _dialogueQueue = new();
+        private readonly Queue<DialogueSegment> _dialogueQueue = new();
         private bool _isProcessing = false;
         private Coroutine _dialogueCoroutine;
         

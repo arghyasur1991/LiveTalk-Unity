@@ -1920,6 +1920,10 @@ namespace LiveTalk.API
                 {
                     UnityEngine.Object.Destroy(_characterPlayer.gameObject);
                 }
+                if (CharacterPlayer.ParentTransform.childCount == 0)
+                {
+                    UnityEngine.Object.Destroy(CharacterPlayer.ParentTransform.gameObject);
+                }
                 _characterPlayer = null;
             }
         }

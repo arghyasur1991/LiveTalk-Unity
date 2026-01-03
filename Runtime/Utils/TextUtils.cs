@@ -25,7 +25,7 @@ namespace LiveTalk.Utils
                 byte[] hashBytes = md5.ComputeHash(inputBytes);
                 
                 // Convert the byte array to hexadecimal string
-                StringBuilder sb = new StringBuilder();
+                StringBuilder sb = new();
                 for (int i = 0; i < hashBytes.Length; i++)
                 {
                     sb.Append(hashBytes[i].ToString("x2"));
@@ -77,7 +77,7 @@ namespace LiveTalk.Utils
                 return new string[0];
 
             // Common abbreviations that contain periods but shouldn't be split
-            HashSet<string> commonAbbreviations = new HashSet<string>
+            HashSet<string> commonAbbreviations = new()
             {
                 "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Rev.", "Sr.", "Jr.", "Ph.D.", "M.D.", "B.A.", "B.S.",
                 "i.e.", "e.g.", "etc.", "vs.", "a.m.", "p.m.", "U.S.", "U.K.", "Fig."
