@@ -97,6 +97,16 @@ namespace LiveTalk.API
         // Public properties
         public PlaybackState State => _state;
         public Character Character => _character;
+        public static Transform ParentTransform {
+            get {
+                GameObject parent = GameObject.Find("CharacterPlayers_Parent");
+                if (parent == null) {
+                    parent = new GameObject("CharacterPlayers_Parent");
+                    parent.transform.SetParent(null); // Keep at root for persistence
+                }
+                return parent.transform;
+            }
+        }
         public bool IsPlaying => _state == PlaybackState.Speaking || _state == PlaybackState.Idle;
         public int QueuedSpeechCount => _speechQueue.Count;
 

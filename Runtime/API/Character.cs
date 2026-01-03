@@ -1897,8 +1897,7 @@ namespace LiveTalk.API
             
             // Create GameObject for CharacterPlayer
             var playerObject = new GameObject($"CharacterPlayer_{Name}");
-            playerObject.transform.SetParent(null); // Keep at root for persistence
-            GameObject.DontDestroyOnLoad(playerObject); // Persist across scenes
+            playerObject.transform.SetParent(CharacterPlayer.ParentTransform);
             
             // Add CharacterPlayer component
             _characterPlayer = playerObject.AddComponent<CharacterPlayer>();
@@ -1919,7 +1918,7 @@ namespace LiveTalk.API
                 _characterPlayer.Stop();
                 if (_characterPlayer.gameObject != null)
                 {
-                    GameObject.Destroy(_characterPlayer.gameObject);
+                    UnityEngine.Object.Destroy(_characterPlayer.gameObject);
                 }
                 _characterPlayer = null;
             }
