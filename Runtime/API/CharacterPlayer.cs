@@ -50,14 +50,14 @@ namespace LiveTalk.API
     {
         // Inspector-assignable
         [SerializeField] private RawImage displayImage;
-        [SerializeField] private bool autoPlayIdle = true;
-        [SerializeField] private float idleFPS = 25f;
-        [SerializeField] private bool audioOnly = false; // For characters without avatars (e.g., narrator)
+        [SerializeField] private readonly bool autoPlayIdle = true;
+        [SerializeField] private readonly float idleFPS = 25f;
+        [SerializeField] private bool audioOnly = false; // For characters without avatars
         
         // Runtime state
         private Character _character;
         private PlaybackState _state = PlaybackState.Uninitialized;
-        private Queue<SpeechRequest> _speechQueue = new Queue<SpeechRequest>();
+        private readonly Queue<SpeechRequest> _speechQueue = new();
         
         // Idle animation
         private List<Texture2D> _idleFrames;
@@ -70,7 +70,7 @@ namespace LiveTalk.API
         private AudioSource _audioSource;
         
         // Pipelined processing
-        private Queue<PendingSpeechItem> _pendingAnimations = new Queue<PendingSpeechItem>();
+        private readonly Queue<PendingSpeechItem> _pendingAnimations = new();
         private bool _isSpeechProcessorRunning = false;
         private bool _isAnimationPlayerRunning = false;
         
@@ -364,7 +364,7 @@ namespace LiveTalk.API
                 if (readTask.IsCompletedSuccessfully)
                 {
                     byte[] fileData = readTask.Result;
-                    Texture2D texture = new Texture2D(2, 2);
+                    Texture2D texture = new(2, 2);
                     if (texture.LoadImage(fileData))
                     {
                         _idleFrames.Add(texture);
@@ -760,7 +760,7 @@ namespace LiveTalk.API
 
         private List<Texture2D> GetTransitionToIdleFrames()
         {
-            List<Texture2D> transition = new List<Texture2D>();
+            List<Texture2D> transition = new();
             
             if (_idleFrames != null && _idleFrames.Count > 0)
             {

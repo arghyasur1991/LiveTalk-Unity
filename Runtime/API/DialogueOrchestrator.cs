@@ -23,10 +23,10 @@ namespace LiveTalk.API
         [SerializeField] private bool autoHideInactiveSpeakers = true;
         
         // Registered characters
-        private Dictionary<string, CharacterPlayer> _characterPlayers = new Dictionary<string, CharacterPlayer>();
+        private Dictionary<string, CharacterPlayer> _characterPlayers = new();
         
         // Dialogue queue
-        private Queue<DialogueSegment> _dialogueQueue = new Queue<DialogueSegment>();
+        private Queue<DialogueSegment> _dialogueQueue = new();
         private bool _isProcessing = false;
         private Coroutine _dialogueCoroutine;
         
@@ -59,10 +59,9 @@ namespace LiveTalk.API
         /// <summary>
         /// Register a character for dialogue orchestration
         /// </summary>
-        /// <param name="characterId">Unique ID for this character (e.g., "detective", "narrator")</param>
+        /// <param name="characterId">Unique ID for this character</param>
         /// <param name="player">CharacterPlayer instance for this character</param>
-        /// <param name="visualElement">Optional: UI element to show/hide for this character</param>
-        public void RegisterCharacter(string characterId, CharacterPlayer player, GameObject visualElement = null)
+        public void RegisterCharacter(string characterId, CharacterPlayer player)
         {
             if (_characterPlayers.ContainsKey(characterId))
             {
