@@ -750,6 +750,270 @@ static IEnumerator LoadCharacterAsyncFromId(
 )
 ```
 
+### CharacterPlayer Component
+
+A reusable MonoBehaviour that handles character loading, idle animation, speech playback, and smooth transitions. This is the recommended way to integrate LiveTalk characters into your Unity scenes.
+
+#### Features
+
+- **Auto-loads character** when assigned
+- **Idle animation** playback (expression 0) at 25 FPS with ping-pong cycling
+- **Speech queueing** with automatic playback
+- **Smooth transitions** between idle and speech states
+- **Event-driven** architecture for UI integration
+- **Audio-only mode** for characters without avatars (narrators, phone voices, etc.)
+- **Static image fallback** for characters without idle animations
+
+#### Quick Setup
+
+```csharp
+using LiveTalk.API;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class CharacterPlayerExample : MonoBehaviour
+{
+    [SerializeField] private Character myCharacter;
+    
+    void Start()
+    {
+        // CharacterPlayer is automatically created by the Character
+        var player = myCharacter.CharacterPlayer;
+        
+        // Subscribe to events
+        player.OnFrameUpdate += (frame) => {
+            // Display frame in your UI (e.g., RawImage)
+            GetComponent<RawImage>().texture = frame;
+        };
+        
+        player.OnSpeechStarted += () => Debug.Log("Character started speaking");
+        player.OnSpeechEnded += () => Debug.Log("Character finished speaking");
+        player.OnCharacterLoaded += () => Debug.Log("Character loaded and ready");
+        
+        // Queue speech (automatically plays idle animation between speeches)
+        player.QueueSpeech("Hello! I'm ready to talk.", expressionIndex: 0);
+        player.QueueSpeech("This is my second line.", expressionIndex: 3); // smile
+    }
+}
+```
+
+#### Properties
+
+```csharp
+PlaybackState State { get; }           // Uninitialized, Loading, Idle, Speaking, Paused
+Character Character { get; }           // The LiveTalk Character
+Texture2D DisplayImage { get; }        // Current display frame
+bool HasQueuedSpeech { get; }          // True if speech is in queue
+int QueuedSpeechCount { get; }         // Number of queued speech items
+```
+
+#### Methods
+
+```csharp
+// Queue a single speech line
+void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true)
+
+// Queue multiple speech lines at once
+void QueueSpeechBatch(List<string> textLines, int expressionIndex = 0, bool withAnimation = true)
+
+// Control playback
+void Pause()
+void Resume()
+void Stop()              // Stops all speech and returns to idle
+void ClearQueue()        // Removes queued speech
+```
+
+#### Events
+
+```csharp
+event Action<Texture2D> OnFrameUpdate;    // Fired for each new frame (idle or speech)
+event Action OnSpeechStarted;             // Speech playback started
+event Action OnSpeechEnded;               // Speech playback ended
+event Action<Exception> OnError;          // Error occurred
+event Action OnCharacterLoaded;           // Character finished loading
+event Action OnIdleStarted;               // Idle animation started
+```
+
+#### Audio-Only Mode
+
+For characters without avatars (narrators, phone voices, etc.):
+
+```csharp
+// CharacterPlayer automatically detects if character has no idle frames
+// and switches to audio-only mode
+player.QueueSpeech("This is narrator voice without animation.", withAnimation: false);
+```
+
+#### Integration with UI Toolkit
+
+CharacterPlayer works seamlessly with Unity UI Toolkit by firing `OnFrameUpdate` events that you can display in VisualElements:
+
+```csharp
+// In your UI Controller
+private VisualElement _avatarDisplay;
+private CharacterPlayer _player;
+
+void SetupCharacter(Character character)
+{
+    _player = character.CharacterPlayer;
+    
+    // Display frames in UI Toolkit VisualElement
+    _player.OnFrameUpdate += (frame) => {
+        if (_avatarDisplay != null)
+        {
+            _avatarDisplay.style.backgroundImage = new StyleBackground(frame);
+        }
+    };
+}
+```
+
+### DialogueOrchestrator Component
+
+Orchestrates multi-character turn-based dialogue, handling speaker switching, audio coordination, and visual display management. Perfect for conversations, cutscenes, and interactive dialogues.
+
+#### Features
+
+- **Multi-character support** with automatic speaker switching
+- **Turn-based dialogue** with automatic queuing
+- **Visual switching** - shows speaking character's animation
+- **Audio coordination** - ensures only one character speaks at a time
+- **Event-driven** - integrates easily with UI systems
+- **Supports audio-only characters** (narrators)
+
+#### Quick Setup
+
+```csharp
+using LiveTalk.API;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class DialogueExample : MonoBehaviour
+{
+    [SerializeField] private Character detective;
+    [SerializeField] private Character suspect;
+    [SerializeField] private RawImage dialogueDisplay;
+    
+    private DialogueOrchestrator _orchestrator;
+    
+    void Start()
+    {
+        // Create orchestrator
+        var orchestratorObj = new GameObject("DialogueOrchestrator");
+        _orchestrator = orchestratorObj.AddComponent<DialogueOrchestrator>();
+        
+        // Register characters
+        _orchestrator.RegisterCharacter("detective", detective.CharacterPlayer);
+        _orchestrator.RegisterCharacter("suspect", suspect.CharacterPlayer);
+        
+        // Subscribe to events
+        _orchestrator.OnFrameUpdate += (frame) => {
+            dialogueDisplay.texture = frame;
+        };
+        
+        _orchestrator.OnSpeakerChanged += (speakerId) => {
+            Debug.Log($"Now speaking: {speakerId}");
+        };
+        
+        // Queue a conversation
+        PlayConversation();
+    }
+    
+    void PlayConversation()
+    {
+        _orchestrator.QueueDialogue("detective", "Where were you on the night of the murder?", expressionIndex: 0);
+        _orchestrator.QueueDialogue("suspect", "I was at home, I swear!", expressionIndex: 5); // surprised
+        _orchestrator.QueueDialogue("detective", "Can anyone confirm that?", expressionIndex: 0);
+        _orchestrator.QueueDialogue("suspect", "My... my wife can.", expressionIndex: 4); // sad
+    }
+}
+```
+
+#### Batch Dialogue
+
+Queue multiple dialogue segments at once:
+
+```csharp
+var conversation = new List<DialogueOrchestrator.DialogueSegment>
+{
+    new() { CharacterId = "detective", Text = "Let's review the evidence.", ExpressionIndex = 0 },
+    new() { CharacterId = "suspect", Text = "I didn't do it!", ExpressionIndex = 5 },
+    new() { CharacterId = "detective", Text = "Then explain this.", ExpressionIndex = 0 }
+};
+
+_orchestrator.QueueDialogueBatch(conversation);
+```
+
+#### Properties
+
+```csharp
+bool IsPlaying { get; }                 // True if dialogue is currently playing
+int QueuedDialogueCount { get; }        // Number of queued dialogue segments
+string CurrentSpeakerId { get; }        // ID of currently speaking character
+```
+
+#### Methods
+
+```csharp
+// Register/unregister characters
+void RegisterCharacter(string characterId, CharacterPlayer player)
+void UnregisterCharacter(string characterId)
+
+// Queue dialogue
+void QueueDialogue(string characterId, string text, int expressionIndex = 0, bool withAnimation = true)
+void QueueDialogueBatch(List<DialogueSegment> segments)
+
+// Control
+void Stop()              // Stop all dialogue
+void ClearQueue()        // Remove queued dialogue
+```
+
+#### Events
+
+```csharp
+event Action<string> OnSpeakerChanged;    // Fired when active speaker changes (characterId)
+event Action<Texture2D> OnFrameUpdate;    // Fired for each frame of current speaker
+event Action OnDialogueStarted;           // Dialogue sequence started
+event Action OnDialogueEnded;             // All dialogue completed
+event Action<Exception> OnError;          // Error occurred
+```
+
+#### With Narrator (Audio-Only)
+
+```csharp
+// Register narrator as audio-only character
+_orchestrator.RegisterCharacter("narrator", narratorCharacter.CharacterPlayer);
+
+// Queue narrator dialogue without animation
+_orchestrator.QueueDialogue("narrator", "Meanwhile, in another part of town...", 
+    expressionIndex: 0, withAnimation: false);
+```
+
+#### Integration with UI Toolkit
+
+```csharp
+// In your UI Controller
+private DialogueOrchestrator _orchestrator;
+private VisualElement _speakerDisplay;
+private Label _speakerNameLabel;
+
+void SetupDialogue()
+{
+    // Subscribe to frame updates
+    _orchestrator.OnFrameUpdate += (frame) => {
+        _speakerDisplay.style.backgroundImage = new StyleBackground(frame);
+    };
+    
+    // Update UI when speaker changes
+    _orchestrator.OnSpeakerChanged += (speakerId) => {
+        _speakerNameLabel.text = speakerId;
+    };
+    
+    _orchestrator.OnDialogueEnded += () => {
+        Debug.Log("Conversation finished!");
+    };
+}
+```
+
 ### FrameStream Class
 
 #### Properties

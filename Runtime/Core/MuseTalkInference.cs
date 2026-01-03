@@ -517,11 +517,21 @@ namespace LiveTalk.Core
             var startSessionTask = StartGeneratorSession();
             yield return new WaitUntil(() => startSessionTask.IsCompleted);
 
-            // Create cycled latent list for smooth animation
+            // Create cycled latent list for smooth ping-pong animation
+            // Pattern: [0,1,2,3,2,1] instead of [0,1,2,3,3,2,1,0] to avoid duplicate frames
             var cycleDLatents = new List<float[]>(avatarData.Latents);
             var reversedLatents = new List<float[]>(avatarData.Latents);
             reversedLatents.Reverse();
+            
+            // Remove first element of reversed (duplicate of last forward frame)
+            if (reversedLatents.Count > 0)
+                reversedLatents.RemoveAt(0);
+            
             cycleDLatents.AddRange(reversedLatents);
+            
+            // Remove last element (duplicate of first forward frame) to complete the cycle
+            if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
+                cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
             
             for (int idx = 0; idx < numFrames; idx++)
             {

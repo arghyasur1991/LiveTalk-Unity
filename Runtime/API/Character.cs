@@ -186,6 +186,24 @@ namespace LiveTalk.API
         internal string DrivingFramesFolder { get; set; }
         internal string VoiceFolder { get; set; }
         
+        // CharacterPlayer for animation and playback
+        private CharacterPlayer _characterPlayer;
+        
+        /// <summary>
+        /// Gets the CharacterPlayer for this character (creates if needed after data is loaded)
+        /// </summary>
+        public CharacterPlayer CharacterPlayer
+        {
+            get
+            {
+                if (_characterPlayer == null && IsDataLoaded)
+                {
+                    CreateCharacterPlayer();
+                }
+                return _characterPlayer;
+            }
+        }
+        
         internal Character(
             string name,
             Gender gender,
@@ -690,6 +708,9 @@ namespace LiveTalk.API
 
             IsDataLoaded = true;
             Logger.LogVerbose($"[Character] Character data loaded successfully for {Name}");
+            
+            // Create CharacterPlayer automatically after full load
+            CreateCharacterPlayer();
         }
 
         /// <summary>
@@ -1709,7 +1730,7 @@ namespace LiveTalk.API
             Texture2D texture = null;
             if (!File.Exists(imagePath))
             {
-                Debug.Log($"[Character] {config.name} image not found: {imagePath}");
+                Logger.Log($"[Character] {config.name} image not found: {imagePath}");
             }
             else
             {
@@ -1789,7 +1810,7 @@ namespace LiveTalk.API
             yield return character.LoadData();
             var elapsed = start.Elapsed;
             bool isBundle = characterFolder.EndsWith(".bundle");
-            Logger.Log($"[Character] Character data for {character.Name} loaded from {(isBundle ? "bundle" : "folder")} in {elapsed.TotalMilliseconds} milliseconds");
+            Logger.LogVerbose($"[Character] Character data for {character.Name} loaded from {(isBundle ? "bundle" : "folder")} in {elapsed.TotalMilliseconds} milliseconds");
             onComplete?.Invoke(character);
         }
 
@@ -1864,6 +1885,27 @@ namespace LiveTalk.API
             if (IsCharacterBundle(characterId)) return "bundle";
             if (IsCharacterFolder(characterId)) return "folder";
             return null;
+        }
+        
+        /// <summary>
+        /// Creates and initializes the CharacterPlayer for this character
+        /// </summary>
+        private void CreateCharacterPlayer()
+        {
+            if (_characterPlayer != null || !IsDataLoaded)
+                return;
+            
+            // Create GameObject for CharacterPlayer
+            var playerObject = new GameObject($"CharacterPlayer_{Name}");
+            playerObject.transform.SetParent(CharacterPlayer.ParentTransform);
+            
+            // Add CharacterPlayer component
+            _characterPlayer = playerObject.AddComponent<CharacterPlayer>();
+            
+            // Assign this character to the player
+            _characterPlayer.AssignCharacter(this);
+            
+            Logger.Log($"[LiveTalk.Character] Created CharacterPlayer for {Name}");
         }
     }
 
