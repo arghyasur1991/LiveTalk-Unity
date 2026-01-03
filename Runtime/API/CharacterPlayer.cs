@@ -291,12 +291,19 @@ namespace LiveTalk.API
             // Load idle frames with yielding
             yield return StartCoroutine(LoadIdleFramesCoroutine());
             
-            // If no idle frames and not audio-only, log warning
+            // If no idle frames and not audio-only, use static character image as fallback
             if (_idleFrames == null || _idleFrames.Count == 0)
             {
-                if (!audioOnly)
+                if (!audioOnly && _character?.Image != null && displayImage != null)
                 {
-                    Debug.LogWarning($"[CharacterPlayer] No idle frames loaded for {_character?.Name}. Using audio-only mode.");
+                    Debug.Log($"[CharacterPlayer] No idle frames loaded for {_character?.Name}. Using static character image.");
+                    displayImage.texture = _character.Image;
+                    displayImage.enabled = true;
+                    audioOnly = true; // Switch to audio-only mode for speech
+                }
+                else if (!audioOnly)
+                {
+                    Debug.LogWarning($"[CharacterPlayer] No idle frames or static image available for {_character?.Name}. Using audio-only mode.");
                     audioOnly = true;
                 }
                 else
