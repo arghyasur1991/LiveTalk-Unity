@@ -802,7 +802,7 @@ public class CharacterPlayerExample : MonoBehaviour
 ```csharp
 PlaybackState State { get; }           // Uninitialized, Loading, Idle, Speaking, Paused
 Character Character { get; }           // The LiveTalk Character
-Texture2D DisplayImage { get; }        // Current display frame
+Texture DisplayImage { get; }          // Current display frame
 bool HasQueuedSpeech { get; }          // True if speech is in queue
 int QueuedSpeechCount { get; }         // Number of queued speech items
 ```
@@ -826,7 +826,7 @@ void ClearQueue()        // Removes queued speech
 #### Events
 
 ```csharp
-event Action<Texture2D> OnFrameUpdate;    // Fired for each new frame (idle or speech)
+event Action<Texture> OnFrameUpdate;      // Fired for each new frame (idle or speech)
 event Action OnSpeechStarted;             // Speech playback started
 event Action OnSpeechEnded;               // Speech playback ended
 event Action<Exception> OnError;          // Error occurred
@@ -971,7 +971,7 @@ void ClearQueue()        // Remove queued dialogue
 
 ```csharp
 event Action<string> OnSpeakerChanged;    // Fired when active speaker changes (characterId)
-event Action<Texture2D> OnFrameUpdate;    // Fired for each frame of current speaker
+event Action<Texture> OnFrameUpdate;      // Fired for each frame of current speaker
 event Action OnDialogueStarted;           // Dialogue sequence started
 event Action OnDialogueEnded;             // All dialogue completed
 event Action<Exception> OnError;          // Error occurred

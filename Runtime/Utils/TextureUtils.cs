@@ -92,7 +92,7 @@ namespace LiveTalk.Utils
                 Graphics.Blit(source, renderTexture);
                 
                 // Create new texture from scaled RenderTexture
-                Texture2D resizedTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.RGB24, false);
+                Texture2D resizedTexture = new(targetWidth, targetHeight, TextureFormat.RGB24, false);
                 resizedTexture.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
                 resizedTexture.Apply();
                 
@@ -160,7 +160,7 @@ namespace LiveTalk.Utils
             }
 
             // Create a new uncompressed texture
-            Texture2D uncompressed = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false);
+            Texture2D uncompressed = new(source.width, source.height, TextureFormat.RGBA32, false);
             
             // Use Graphics.CopyTexture if possible for better performance
             if (SystemInfo.copyTextureSupport != UnityEngine.Rendering.CopyTextureSupport.None)

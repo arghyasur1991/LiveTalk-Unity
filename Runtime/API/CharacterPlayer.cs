@@ -49,19 +49,33 @@ namespace LiveTalk.API
     public class CharacterPlayer : MonoBehaviour
     {
         // Inspector-assignable
-        [SerializeField] private RawImage displayImage;
+        [SerializeField] private Texture _displayImage = null;
         [SerializeField] private readonly bool autoPlayIdle = true;
         [SerializeField] private readonly float idleFPS = 25f;
         [SerializeField] private bool audioOnly = false; // For characters without avatars
         
         // Runtime state
         private Character _character;
-        public Texture2D DisplayImage => (Texture2D)displayImage.texture;
+        public Texture DisplayImage 
+        { 
+            get 
+            { 
+                return _displayImage;
+            } 
+            private set 
+            { 
+                if (_displayImage != value) 
+                {
+                    _displayImage = value;
+                    OnFrameUpdate?.Invoke(_displayImage);
+                }
+            }
+        }
         private PlaybackState _state = PlaybackState.Uninitialized;
         private readonly Queue<SpeechRequest> _speechQueue = new();
         
         // Idle animation
-        private List<Texture2D> _idleFrames;
+        private List<Texture> _idleFrames;
         private int _idleFrameIndex = 0;
         private bool _idleForward = true;
         private Coroutine _idleCoroutine;
@@ -78,7 +92,7 @@ namespace LiveTalk.API
         
         private class PendingSpeechItem
         {
-            public List<Texture2D> Frames { get; set; }
+            public List<Texture> Frames { get; set; }
             public AudioClip AudioClip { get; set; }
             public bool AudioReady { get; set; }
             public bool AnimationReady { get; set; }
@@ -88,7 +102,7 @@ namespace LiveTalk.API
         }
         
         // Events
-        public event Action<Texture2D> OnFrameUpdate;
+        public event Action<Texture> OnFrameUpdate;
         public event Action OnSpeechStarted;
         public event Action OnSpeechEnded;
         public event Action<Exception> OnError;
@@ -120,12 +134,6 @@ namespace LiveTalk.API
                 _audioSource = gameObject.AddComponent<AudioSource>();
             }
             _audioSource.playOnAwake = false;
-            
-            // Auto-find RawImage if not assigned
-            if (displayImage == null)
-            {
-                displayImage = gameObject.AddComponent<RawImage>();
-            }
         }
 
         /// <summary>
@@ -310,11 +318,10 @@ namespace LiveTalk.API
             // If no idle frames and not audio-only, use static character image as fallback
             if (_idleFrames == null || _idleFrames.Count == 0)
             {
-                if (!audioOnly && _character?.Image != null && displayImage != null)
+                if (!audioOnly && _character?.Image != null)
                 {
                     Debug.Log($"[CharacterPlayer] No idle frames loaded for {_character?.Name}. Using static character image.");
-                    displayImage.texture = _character.Image;
-                    displayImage.enabled = true;
+                    DisplayImage = _character.Image;
                     audioOnly = true; // Switch to audio-only mode for speech
                 }
                 else if (!audioOnly)
@@ -342,7 +349,7 @@ namespace LiveTalk.API
 
         private IEnumerator LoadIdleFramesCoroutine()
         {
-            _idleFrames = new List<Texture2D>();
+            _idleFrames = new List<Texture>();
             
             if (_character == null || string.IsNullOrEmpty(_character.CharacterFolder))
             {
@@ -442,12 +449,8 @@ namespace LiveTalk.API
                 }
                 
                 // Display current frame
-                Texture2D currentFrame = _idleFrames[_idleFrameIndex];
-                if (displayImage != null)
-                {
-                    displayImage.texture = currentFrame;
-                }
-                OnFrameUpdate?.Invoke(currentFrame);
+                Texture currentFrame = _idleFrames[_idleFrameIndex];
+                DisplayImage = currentFrame;
                 
                 // Advance frame index with ping-pong logic (no duplicate frames)
                 if (_idleForward)
@@ -521,7 +524,7 @@ namespace LiveTalk.API
                     // Create pending item for this line
                     var pendingItem = new PendingSpeechItem
                     {
-                        Frames = new List<Texture2D>(),
+                        Frames = new List<Texture>(),
                         AudioClip = null,
                         AudioReady = false,
                         AnimationReady = false,
@@ -729,12 +732,8 @@ namespace LiveTalk.API
                     // Transition idle to its last frame for smooth start
                     if (_idleFrames != null && _idleFrames.Count > 0)
                     {
-                        Texture2D lastIdleFrame = _idleFrames[_idleFrames.Count - 1];
-                        if (displayImage != null)
-                        {
-                            displayImage.texture = lastIdleFrame;
-                        }
-                        OnFrameUpdate?.Invoke(lastIdleFrame);
+                        Texture lastIdleFrame = _idleFrames[^1];
+                        DisplayImage = lastIdleFrame;
                         
                         // Brief pause to show transition
                         yield return new WaitForSeconds(0.04f);
@@ -775,7 +774,7 @@ namespace LiveTalk.API
             }
         }
 
-        private IEnumerator PlayFramesSynchronized(List<Texture2D> frames, AudioClip audioClip)
+        private IEnumerator PlayFramesSynchronized(List<Texture> frames, AudioClip audioClip)
         {
             if (frames.Count == 0 || audioClip == null)
             {
@@ -792,12 +791,7 @@ namespace LiveTalk.API
             // Play frames at calculated rate
             for (int i = 0; i < frames.Count && _state == PlaybackState.Speaking; i++)
             {
-                if (displayImage != null)
-                {
-                    displayImage.texture = frames[i];
-                }
-                OnFrameUpdate?.Invoke(frames[i]);
-                
+                DisplayImage = frames[i];
                 yield return new WaitForSeconds(frameInterval);
             }
             

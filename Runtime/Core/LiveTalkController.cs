@@ -72,7 +72,7 @@ namespace LiveTalk.Core
                 
                 // Read from the VideoPlayer's texture
                 RenderTexture.active = videoTexture;
-                Texture2D frameTexture = new Texture2D(videoTexture.width, videoTexture.height, TextureFormat.RGB24, false);
+                Texture2D frameTexture = new(videoTexture.width, videoTexture.height, TextureFormat.RGB24, false);
                 frameTexture.ReadPixels(new Rect(0, 0, videoTexture.width, videoTexture.height), 0, 0);
                 frameTexture.Apply();
                 RenderTexture.active = null;

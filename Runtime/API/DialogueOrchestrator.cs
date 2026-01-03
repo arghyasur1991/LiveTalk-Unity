@@ -34,7 +34,7 @@ namespace LiveTalk.API
         
         // Events
         public event Action<string> OnSpeakerChanged; // character ID
-        public event Action<Texture2D> OnFrameUpdate;
+        public event Action<Texture> OnFrameUpdate;
         public event Action OnDialogueStarted;
         public event Action OnDialogueEnded;
         public event Action<Exception> OnError;
@@ -266,7 +266,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Forward frame updates from current speaker
         /// </summary>
-        private void OnCharacterFrameUpdate(Texture2D frame)
+        private void OnCharacterFrameUpdate(Texture frame)
         {
             if (displayTarget != null)
             {
