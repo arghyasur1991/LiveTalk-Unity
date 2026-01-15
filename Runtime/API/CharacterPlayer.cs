@@ -89,6 +89,7 @@ namespace LiveTalk.API
         private readonly Queue<PendingSpeechItem> _pendingAnimations = new();
         private bool _isSpeechProcessorRunning = false;
         private bool _isAnimationPlayerRunning = false;
+        private int _generationId = 0; // Incremented on Stop() to invalidate old operations
         
         private class PendingSpeechItem
         {
@@ -244,6 +245,14 @@ namespace LiveTalk.API
             }
             
             _speechQueue.Clear();
+            _pendingAnimations.Clear();
+            
+            // Reset processing flags so new speech can start fresh
+            _isSpeechProcessorRunning = false;
+            _isAnimationPlayerRunning = false;
+            
+            // Increment generation ID to invalidate any in-flight async operations
+            _generationId++;
             
             if (_character != null && _character.IsDataLoaded)
             {
@@ -508,9 +517,16 @@ namespace LiveTalk.API
         private IEnumerator SpeechProcessorLoop()
         {
             _isSpeechProcessorRunning = true;
+            int myGenerationId = _generationId;
             
             while (_speechQueue.Count > 0)
             {
+                // Check if we've been cancelled
+                if (_generationId != myGenerationId)
+                {
+                    Debug.Log("[CharacterPlayer] Speech processor cancelled - generation ID changed");
+                    break;
+                }
                 var request = _speechQueue.Dequeue();
                 Debug.Log($"[CharacterPlayer] Processing speech request: {request.TextLines.Count} lines");
                 
@@ -618,7 +634,7 @@ namespace LiveTalk.API
                     }
                     
                     // Audio is ready! Start a separate coroutine to collect frames in parallel
-                    StartCoroutine(CollectAnimationFrames(pendingItem, frameStream));
+                    StartCoroutine(CollectAnimationFrames(pendingItem, frameStream, myGenerationId));
                     
                     // DON'T wait for animation - immediately continue to next line's audio generation
                     Debug.Log($"[CharacterPlayer] Audio done for line - starting next audio generation immediately!");
@@ -632,13 +648,20 @@ namespace LiveTalk.API
         /// <summary>
         /// Collects animation frames in parallel with audio generation for next segment.
         /// </summary>
-        private IEnumerator CollectAnimationFrames(PendingSpeechItem item, FrameStream frameStream)
+        private IEnumerator CollectAnimationFrames(PendingSpeechItem item, FrameStream frameStream, int generationId)
         {
             Debug.Log($"[CharacterPlayer] Starting animation frame collection in parallel...");
             
             // Collect all frames
             while (frameStream.HasMoreFrames)
             {
+                // Check cancellation
+                if (_generationId != generationId)
+                {
+                    Debug.Log("[CharacterPlayer] Animation frame collection cancelled");
+                    yield break;
+                }
+                
                 var awaiter = frameStream.WaitForNext();
                 yield return awaiter;
                 
@@ -648,10 +671,12 @@ namespace LiveTalk.API
                 }
             }
             
-            Debug.Log($"[CharacterPlayer] Animation frames collected: {item.Frames.Count} frames");
-            
-            // Mark animation as ready
-            item.AnimationReady = true;
+            // Only mark as ready if not cancelled
+            if (_generationId == generationId)
+            {
+                Debug.Log($"[CharacterPlayer] Animation frames collected: {item.Frames.Count} frames");
+                item.AnimationReady = true;
+            }
         }
 
         /// <summary>
@@ -663,9 +688,16 @@ namespace LiveTalk.API
         {
             _isAnimationPlayerRunning = true;
             bool isFirstSegment = true;
+            int myGenerationId = _generationId;
             
             while (_isSpeechProcessorRunning || _pendingAnimations.Count > 0)
             {
+                // Check if we've been cancelled
+                if (_generationId != myGenerationId)
+                {
+                    Debug.Log("[CharacterPlayer] Animation player cancelled - generation ID changed");
+                    break;
+                }
                 // Check if we need to wait for next segment
                 bool needsToWait = _pendingAnimations.Count == 0 || !_pendingAnimations.Peek().IsReady;
                 
@@ -683,11 +715,18 @@ namespace LiveTalk.API
                 {
                     yield return new WaitForSeconds(0.05f);
                     
-                    // Exit if processor finished and no more pending
-                    if (!_isSpeechProcessorRunning && _pendingAnimations.Count == 0)
+                    // Exit if cancelled or processor finished
+                    if (_generationId != myGenerationId || (!_isSpeechProcessorRunning && _pendingAnimations.Count == 0))
                     {
                         break;
                     }
+                }
+                
+                // Check cancellation again after waiting
+                if (_generationId != myGenerationId)
+                {
+                    Debug.Log("[CharacterPlayer] Animation player cancelled during wait");
+                    break;
                 }
                 
                 if (_pendingAnimations.Count == 0)
@@ -711,11 +750,21 @@ namespace LiveTalk.API
                     _audioSource.clip = item.AudioClip;
                     _audioSource.Play();
                     
-                    // Wait for audio to finish
+                    // Wait for audio to finish (with cancellation check)
                     while (_audioSource.isPlaying)
                     {
+                        if (_generationId != myGenerationId)
+                        {
+                            Debug.Log("[CharacterPlayer] Audio playback cancelled");
+                            _audioSource.Stop();
+                            break;
+                        }
                         yield return new WaitForSeconds(0.1f);
                     }
+                    
+                    // Exit if cancelled
+                    if (_generationId != myGenerationId)
+                        break;
                     
                     // After playing, we're no longer in first segment
                     isFirstSegment = false;
@@ -748,7 +797,11 @@ namespace LiveTalk.API
                 Debug.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
                 
                 // Play this segment with its audio
-                yield return PlayFramesSynchronized(item.Frames, item.AudioClip);
+                yield return PlayFramesSynchronized(item.Frames, item.AudioClip, myGenerationId);
+                
+                // Check if cancelled during playback
+                if (_generationId != myGenerationId)
+                    break;
                 
                 // After playing, we're no longer in first segment
                 isFirstSegment = false;
@@ -774,7 +827,7 @@ namespace LiveTalk.API
             }
         }
 
-        private IEnumerator PlayFramesSynchronized(List<Texture> frames, AudioClip audioClip)
+        private IEnumerator PlayFramesSynchronized(List<Texture> frames, AudioClip audioClip, int generationId)
         {
             if (frames.Count == 0 || audioClip == null)
             {
@@ -791,13 +844,25 @@ namespace LiveTalk.API
             // Play frames at calculated rate
             for (int i = 0; i < frames.Count && _state == PlaybackState.Speaking; i++)
             {
+                // Check cancellation
+                if (_generationId != generationId)
+                {
+                    _audioSource.Stop();
+                    yield break;
+                }
+                
                 DisplayImage = frames[i];
                 yield return new WaitForSeconds(frameInterval);
             }
             
-            // Wait for audio to finish
+            // Wait for audio to finish (with cancellation check)
             while (_audioSource.isPlaying && _state == PlaybackState.Speaking)
             {
+                if (_generationId != generationId)
+                {
+                    _audioSource.Stop();
+                    yield break;
+                }
                 yield return null;
             }
         }
