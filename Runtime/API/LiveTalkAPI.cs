@@ -770,7 +770,8 @@ namespace LiveTalk.API
             Action<Character> onComplete,
             Action<Exception> onError,
             CreationMode creationMode,
-            bool useBundle = true)
+            bool useBundle = true,
+            string voiceInstruct = null)
         {
             if (!_initialized)
             {
@@ -779,6 +780,7 @@ namespace LiveTalk.API
             }
 
             var character = new Character(name, gender, image, pitch, speed, intro);
+            character.VoiceInstruct = voiceInstruct;
             useBundle = useBundle && CanUseBundle();
             yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
             onComplete?.Invoke(character);
@@ -963,7 +965,8 @@ namespace LiveTalk.API
             string gender,
             string pitch,
             string speed,
-            string introText = "Hello, I am a detective ready to solve mysteries.")
+            string introText = "Hello, I am a detective ready to solve mysteries.",
+            string instruct = null)
         {
             if (!_initialized)
             {
@@ -989,7 +992,8 @@ namespace LiveTalk.API
                     gender: gender.ToLower(),
                     pitch: pitch?.ToLower() ?? "moderate",
                     speed: speed?.ToLower() ?? "moderate",
-                    referenceText: introText
+                    referenceText: introText,
+                    instruct: instruct
                 );
 
                 if (characterVoice == null)

@@ -111,7 +111,8 @@ namespace LiveTalk.Utils
             string pitch, 
             string speed, 
             string intro = null,
-            Texture2D image = null)
+            Texture2D image = null,
+            string instruct = null)
         {
             ulong hash = FNV_OFFSET_BASIS_64;
             
@@ -125,6 +126,11 @@ namespace LiveTalk.Utils
             if (!string.IsNullOrEmpty(intro))
             {
                 hash = HashString(hash, intro);
+            }
+
+            if (!string.IsNullOrEmpty(instruct))
+            {
+                hash = HashString(hash, instruct);
             }
             
             // Include image hash if provided
@@ -231,7 +237,8 @@ namespace LiveTalk.Utils
             string gender, 
             string pitch, 
             string speed, 
-            string introText = null)
+            string introText = null,
+            string instruct = null)
         {
             ulong hash = FNV_OFFSET_BASIS_64;
             
@@ -240,9 +247,10 @@ namespace LiveTalk.Utils
             hash = HashString(hash, pitch ?? "moderate");
             hash = HashString(hash, speed ?? "moderate");
             hash = HashString(hash, introText ?? "");
+            hash = HashString(hash, instruct ?? "");
             
             // Add salt to differentiate from other cache types
-            hash = HashString(hash, "voice_style_v1");
+            hash = HashString(hash, "voice_style_v2");
             
             return "vs_" + hash.ToString("x16");
         }

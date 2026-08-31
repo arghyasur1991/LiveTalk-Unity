@@ -56,6 +56,7 @@ namespace LiveTalk.API
         public Pitch pitch;
         public Speed speed;
         public string intro;
+        public string voiceInstruct;
     }
 
     /// <summary>
@@ -165,6 +166,7 @@ namespace LiveTalk.API
         public Texture2D Image { get; internal set; }
         public Pitch Pitch { get; internal set; }
         public Speed Speed { get; internal set; }
+        public string VoiceInstruct { get; internal set; }
         public string Intro { get; internal set; } = "Hello, this is a test message";
         public AudioClip VoicePromptClip { 
             get 
@@ -769,7 +771,8 @@ namespace LiveTalk.API
                 Pitch.ToString(),
                 Speed.ToString(),
                 Intro,
-                Image
+                Image,
+                VoiceInstruct
             );
             CharacterFolder = Path.Combine(saveLocation, useBundle ? $"{CharacterId}.bundle" : CharacterId);
             // Create main character directory (clean slate approach)
@@ -786,8 +789,9 @@ namespace LiveTalk.API
                 name = Name,
                 gender = Gender,
                 pitch = Pitch,
-                speed = Speed, 
-                intro = Intro
+                speed = Speed,
+                intro = Intro,
+                voiceInstruct = VoiceInstruct
             };
             string characterConfigJson = JsonConvert.SerializeObject(characterConfig, Formatting.Indented);
             var writeConfigTask = File.WriteAllTextAsync(Path.Combine(CharacterFolder, "character.json"), characterConfigJson);
@@ -1267,7 +1271,8 @@ namespace LiveTalk.API
             string genderParam = ConvertGenderToString(Gender);
             string pitchParam = ConvertPitchToString(Pitch);
             string speedParam = ConvertSpeedToString(Speed);
-            string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(CharacterId, genderParam, pitchParam, speedParam, Intro);
+            string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(
+                CharacterId, genderParam, pitchParam, speedParam, Intro, VoiceInstruct);
 
             // Check cache first
             if (LiveTalkCache.IsEnabled)
@@ -1287,7 +1292,8 @@ namespace LiveTalk.API
                 gender: genderParam,
                 pitch: pitchParam,
                 speed: speedParam,
-                referenceText: Intro
+                referenceText: Intro,
+                instruct: VoiceInstruct
             );
 
             if (characterVoice != null)
@@ -1763,7 +1769,8 @@ namespace LiveTalk.API
                 config.intro
             )
             {
-                CharacterFolder = characterFolder
+                CharacterFolder = characterFolder,
+                VoiceInstruct = config.voiceInstruct
             };
 
             onComplete?.Invoke(character);
