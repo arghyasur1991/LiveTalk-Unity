@@ -1283,15 +1283,12 @@ namespace LiveTalk.API
 
             Logger.LogVerbose($"[Character] Generating voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
 
-            Logger.Log($"[Character] GenerateVoiceSample start {genderParam}/{pitchParam}/{speedParam}");
-            var sw = System.Diagnostics.Stopwatch.StartNew();
             var characterVoice = await CharacterVoiceFactory.Instance.CreateFromStyleAsync(
                 gender: genderParam,
                 pitch: pitchParam,
                 speed: speedParam,
                 referenceText: Intro
             );
-            Logger.Log($"[Character] GenerateVoiceSample CreateFromStyle {sw.ElapsedMilliseconds}ms");
 
             if (characterVoice != null)
             {
