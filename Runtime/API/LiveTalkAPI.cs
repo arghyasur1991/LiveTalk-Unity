@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -432,8 +433,12 @@ namespace LiveTalk.API
             
             _config = new LiveTalkConfig(parentModelPath, logLevel, memoryUsage);
             Logger.LogLevel = _config.LogLevel;
+            var sw = Stopwatch.StartNew();
             _livePortrait = new LivePortraitInference(_config);
+            Logger.Log($"[LiveTalkAPI] LivePortraitInference ctor {sw.ElapsedMilliseconds}ms");
+            sw.Restart();
             _museTalk = new MuseTalkInference(_config);
+            Logger.Log($"[LiveTalkAPI] MuseTalkInference ctor {sw.ElapsedMilliseconds}ms");
 
             var sparkTTSLogLevel = _config.LogLevel switch
             {
@@ -455,8 +460,12 @@ namespace LiveTalk.API
             };
 
             // Spark first so OrtEnv is the default (no custom logger fn ptr).
+            sw.Restart();
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
+            Logger.Log($"[LiveTalkAPI] CharacterVoiceFactory.Initialize {sw.ElapsedMilliseconds}ms");
+            sw.Restart();
             ModelUtils.Initialize(_config.LogLevel);
+            Logger.Log($"[LiveTalkAPI] ModelUtils.Initialize {sw.ElapsedMilliseconds}ms");
 
             Character.saveLocation = characterSaveLocation;
             _liveTalkInstance = new GameObject("LiveTalkAPI");
@@ -780,7 +789,10 @@ namespace LiveTalk.API
 
             var character = new Character(name, gender, image, pitch, speed, intro);
             useBundle = useBundle && CanUseBundle();
+            Logger.Log($"[LiveTalkAPI] CreateCharacter {name} mode={creationMode} start");
+            var sw = Stopwatch.StartNew();
             yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
+            Logger.Log($"[LiveTalkAPI] CreateCharacter {name} done in {sw.ElapsedMilliseconds}ms");
             onComplete?.Invoke(character);
         }
 
