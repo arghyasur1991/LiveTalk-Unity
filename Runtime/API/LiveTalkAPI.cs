@@ -408,6 +408,7 @@ namespace LiveTalk.API
         {
             if (_initialized)
             {
+                EnsureRuntimeHost();
                 Logger.LogWarning("[LiveTalkAPI] Already initialized");
                 return;
             }
@@ -461,6 +462,31 @@ namespace LiveTalk.API
             
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
             _initialized = true;
+        }
+
+        /// <summary>
+        /// Recreates the coroutine host GameObject after Play mode tears it down
+        /// while the API singleton is still initialized (editor, no domain reload).
+        /// </summary>
+        public void EnsureRuntimeHost()
+        {
+            if (!_initialized)
+                return;
+            if (_liveTalkInstance != null)
+                return;
+
+            _liveTalkInstance = new GameObject("LiveTalkAPI");
+            _controller = _liveTalkInstance.AddComponent<LiveTalkController>();
+            _liveTalkInstance.AddComponent<VideoPlayer>();
+        }
+
+        /// <summary>
+        /// Drops Spark-TTS ONNX sessions and embeddings. LiveTalk stays initialized.
+        /// </summary>
+        public void UnloadSpark()
+        {
+            CharacterVoiceFactory.UnloadModels();
+            Logger.Log("[LiveTalkAPI] Unloaded Spark-TTS models");
         }
 
         #endregion
@@ -533,6 +559,9 @@ namespace LiveTalk.API
                 return CharacterVoiceFactory.IsReady;
             }
         }
+
+        /// <summary>True when Spark has constructed the Qwen engine (sessions may still be deferred).</summary>
+        public static bool SparkEngineLoaded => CharacterVoiceFactory.HasEngine;
 
         #endregion
 
