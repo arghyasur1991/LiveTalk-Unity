@@ -489,6 +489,17 @@ namespace LiveTalk.API
             Logger.Log("[LiveTalkAPI] Unloaded Spark-TTS models");
         }
 
+        /// <summary>
+        /// When true, Spark detaches native ONNX sessions on editor domain reload
+        /// so a script compile does not rebuild multi-GB graphs. Host sets this
+        /// from its own hold preference. C# still reloads.
+        /// </summary>
+        public static bool KeepSparkAcrossReload
+        {
+            get => CharacterVoiceFactory.KeepNativeSessionsAcrossReload;
+            set => CharacterVoiceFactory.KeepNativeSessionsAcrossReload = value;
+        }
+
         #endregion
 
         #region Public Methods - Model Loading

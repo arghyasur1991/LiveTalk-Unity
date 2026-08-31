@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `EnsureRuntimeHost()` recreates the coroutine GameObject after Play teardown while the API singleton is still initialized.
 - `UnloadSpark()` drops Spark-TTS sessions without disposing LivePortrait / MuseTalk.
 - `SparkEngineLoaded` reports whether Spark currently holds a TTS engine.
+- `KeepSparkAcrossReload` asks Spark to keep native ONNX sessions across an editor domain reload (script compile still applies C#).
 
 ## [1.0.0] - 2025-07-04
 
