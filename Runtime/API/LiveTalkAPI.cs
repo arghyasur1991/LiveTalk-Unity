@@ -434,12 +434,6 @@ namespace LiveTalk.API
             Logger.LogLevel = _config.LogLevel;
             _livePortrait = new LivePortraitInference(_config);
             _museTalk = new MuseTalkInference(_config);
-            ModelUtils.Initialize(_config.LogLevel);
-
-            Character.saveLocation = characterSaveLocation;
-            _liveTalkInstance = new GameObject("LiveTalkAPI");
-            _controller = _liveTalkInstance.AddComponent<LiveTalkController>();
-            _liveTalkInstance.AddComponent<VideoPlayer>();
 
             var sparkTTSLogLevel = _config.LogLevel switch
             {
@@ -449,7 +443,7 @@ namespace LiveTalk.API
                 LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
                 _ => SparkTTS.Utils.LogLevel.WARNING,
             };
-            
+
             // Map LiveTalk MemoryUsage to SparkTTS MemoryUsage
             var sparkTTSMemoryUsage = memoryUsage switch
             {
@@ -459,8 +453,15 @@ namespace LiveTalk.API
                 MemoryUsage.Quality => SparkTTS.Models.MemoryUsage.Performance, // Quality maps to Performance for SparkTTS
                 _ => SparkTTS.Models.MemoryUsage.Balanced,
             };
-            
+
+            // Spark first so OrtEnv is the default (no custom logger fn ptr).
             CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
+            ModelUtils.Initialize(_config.LogLevel);
+
+            Character.saveLocation = characterSaveLocation;
+            _liveTalkInstance = new GameObject("LiveTalkAPI");
+            _controller = _liveTalkInstance.AddComponent<LiveTalkController>();
+            _liveTalkInstance.AddComponent<VideoPlayer>();
             _initialized = true;
         }
 

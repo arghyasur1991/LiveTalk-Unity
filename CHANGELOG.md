@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SparkEngineLoaded` reports whether Spark currently holds a TTS engine.
 - `KeepSparkAcrossReload` asks Spark to keep native ONNX sessions across an editor domain reload (script compile still applies C#).
 
+### Changed
+- Default `OrtEnv` only (no Unity logging callback). A custom logger fn ptr SIGSEGVs after domain reload. Spark `Initialize` runs before `ModelUtils.Initialize` so the env is created without that callback.
+
 ## [1.0.0] - 2025-07-04
 
 ### Added

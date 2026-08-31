@@ -210,11 +210,10 @@ namespace LiveTalk.Utils
         #region Private Methods - Logging Configuration
 
         /// <summary>
-        /// Initializes ONNX Runtime with Unity logging integration and custom environment options.
-        /// This method sets up the global ONNX environment with Unity-compatible logging callbacks
-        /// and ensures proper integration with Unity's console system.
+        /// Initializes ONNX Runtime. Default OrtEnv only — a custom logger
+        /// delegate becomes a dangling native fn ptr after an editor domain reload
+        /// (SIGSEGV in UserLoggingSink::SendImpl on the next Session.Run).
         /// </summary>
-        /// <exception cref="InvalidOperationException">Thrown when ONNX Runtime environment creation fails</exception>
         private static void InitializeOnnxLogging()
         {
             if (_loggingInitialized) return;
@@ -228,33 +227,20 @@ namespace LiveTalk.Utils
 
             if (OrtEnv.IsCreated)
             {
-                Logger.LogWarning("[ModelUtils] OrtEnv already created. Custom logging may not take effect.");
+                Logger.Log("[ModelUtils] ONNX Runtime environment already created");
+                _loggingInitialized = true;
                 return;
             }
 
             try
             {
-                // Create loggingParam handle from LoadingInfo structure
-                _loggingParam = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LoadingInfo)));
-                
-                // Create environment options with Unity logging callback
-                var options = new EnvironmentCreationOptions
-                {
-                    logLevel = _ortLogLevel,
-                    logId = "LiveTalk",
-                    loggingFunction = UnityOnnxLoggingCallback,
-                    loggingParam = _loggingParam
-                };
-
-                // Initialize OrtEnv with custom options for Unity integration
-                OrtEnv.CreateInstanceWithOptions(ref options);
-                
+                _ = OrtEnv.Instance();
                 _loggingInitialized = true;
-                Logger.Log($"[ModelUtils] ONNX Runtime logging initialized with Unity integration (LogLevel: {_ortLogLevel})");
+                Logger.Log($"[ModelUtils] ONNX Runtime environment ready (LogLevel: {_ortLogLevel})");
             }
             catch (Exception e)
             {
-                Logger.LogError($"[ModelUtils] Failed to initialize ONNX Runtime logging: {e.Message}");
+                Logger.LogError($"[ModelUtils] Failed to initialize ONNX Runtime: {e.Message}");
                 _loggingInitialized = true; // Prevent retry loops
             }
         }
