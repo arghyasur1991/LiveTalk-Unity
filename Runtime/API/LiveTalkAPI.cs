@@ -759,6 +759,8 @@ namespace LiveTalk.API
         /// <param name="onError">Callback when an error occurs</param>
         /// <param name="creationMode">The creation mode to use</param>
         /// <param name="useBundle">Whether to use a bundle if possible</param>
+        /// <param name="voiceInstruct">Optional VoiceDesign instruct notes</param>
+        /// <param name="voiceCloneRefText">Transcript of the clone reference wav (ICL). Required for Base ICL clone.</param>
         public IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
@@ -771,7 +773,8 @@ namespace LiveTalk.API
             Action<Exception> onError,
             CreationMode creationMode,
             bool useBundle = true,
-            string voiceInstruct = null)
+            string voiceInstruct = null,
+            string voiceCloneRefText = null)
         {
             if (!_initialized)
             {
@@ -781,6 +784,7 @@ namespace LiveTalk.API
 
             var character = new Character(name, gender, image, pitch, speed, intro);
             character.VoiceInstruct = voiceInstruct;
+            character.VoiceCloneRefText = voiceCloneRefText;
             useBundle = useBundle && CanUseBundle();
             yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
             onComplete?.Invoke(character);

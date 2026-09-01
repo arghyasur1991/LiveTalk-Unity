@@ -167,6 +167,11 @@ namespace LiveTalk.API
         public Pitch Pitch { get; internal set; }
         public Speed Speed { get; internal set; }
         public string VoiceInstruct { get; internal set; }
+        /// <summary>
+        /// Transcript of the clone reference wav (official ICL <c>ref_text</c>).
+        /// Empty means x-vector-only clone.
+        /// </summary>
+        public string VoiceCloneRefText { get; internal set; }
         public string Intro { get; internal set; } = "Hello, this is a test message";
         public AudioClip VoicePromptClip { 
             get 
@@ -1248,7 +1253,8 @@ namespace LiveTalk.API
         private async Task LoadVoiceFromReference(string voicePromptPath, string voiceFolder)
         {
             var voicePromptClip = await AudioLoaderService.LoadAudioClipAsync(voicePromptPath);
-            var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(voicePromptClip);
+            var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(
+                voicePromptClip, VoiceCloneRefText);
             if (characterVoice != null)
             {
                 // The reference wav is the voice sample. Do not synthesize a
