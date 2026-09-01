@@ -1251,7 +1251,9 @@ namespace LiveTalk.API
             var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(voicePromptClip);
             if (characterVoice != null)
             {
-                await characterVoice.GenerateSpeechAsync("Hello, this is a test message");
+                // The reference wav is the voice sample. Do not synthesize a
+                // throwaway line here — that used to discard the clone embedding
+                // on reload because SaveVoiceAsync only stores the wav + knobs.
                 await characterVoice.SaveVoiceAsync(voiceFolder);
                 characterVoice.Dispose();
             }
