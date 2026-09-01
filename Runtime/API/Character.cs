@@ -172,6 +172,15 @@ namespace LiveTalk.API
         /// Empty means x-vector-only clone.
         /// </summary>
         public string VoiceCloneRefText { get; internal set; }
+        /// <summary>
+        /// Sample rate for generated speech, or 0 for the TTS model's native rate.
+        /// Defaults to 16 kHz because that is what the lip-sync stack consumes.
+        /// Voice-only characters have no lip-sync consumer and are set to native,
+        /// which matters when the clip is going to be a clone reference: the
+        /// speaker encoder reads mel up to 12 kHz, so a 16 kHz round trip throws
+        /// away the top of the band the speaker is identified by.
+        /// </summary>
+        public int SpeechSampleRate { get; set; } = 16000;
         public string Intro { get; internal set; } = "Hello, this is a test message";
         public AudioClip VoicePromptClip { 
             get 
@@ -462,7 +471,7 @@ namespace LiveTalk.API
 
                 try
                 {
-                    var audioTask = LoadedVoice.GenerateSpeechAsync(text);
+                    var audioTask = LoadedVoice.GenerateSpeechAsync(text, SpeechSampleRate);
                     yield return new WaitUntil(() => audioTask.IsCompleted);
 
                     if (audioTask.IsFaulted)
@@ -1253,7 +1262,9 @@ namespace LiveTalk.API
         private async Task LoadVoiceFromReference(string voicePromptPath, string voiceFolder)
         {
             var voicePromptClip = await AudioLoaderService.LoadAudioClipAsync(voicePromptPath);
-            var characterVoice = CharacterVoiceFactory.Instance.CreateFromReference(
+            // Async: a cold clone loads the Base tables and two reference
+            // encoders, which is tens of seconds of main-thread stall otherwise.
+            var characterVoice = await CharacterVoiceFactory.Instance.CreateFromReferenceAsync(
                 voicePromptClip, VoiceCloneRefText);
             if (characterVoice != null)
             {

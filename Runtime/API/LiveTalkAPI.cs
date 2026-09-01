@@ -785,6 +785,12 @@ namespace LiveTalk.API
             var character = new Character(name, gender, image, pitch, speed, intro);
             character.VoiceInstruct = voiceInstruct;
             character.VoiceCloneRefText = voiceCloneRefText;
+            if (creationMode == CreationMode.VoiceOnly)
+            {
+                // Nothing downstream is lip-syncing this one, so hand back the
+                // TTS model's own rate instead of the 16 kHz lip-sync rate.
+                character.SpeechSampleRate = 0;
+            }
             useBundle = useBundle && CanUseBundle();
             yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
             onComplete?.Invoke(character);
