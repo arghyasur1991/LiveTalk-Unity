@@ -1,5 +1,4 @@
-using SparkTTS;
-using SparkTTS.Utils;
+using QwenTTS;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -19,7 +18,7 @@ namespace LiveTalk.API
 
     /// <summary>
     /// Queue for serializing inference requests to prevent parallel model usage.
-    /// Models like MuseTalk and SparkTTS cannot handle concurrent requests.
+    /// Models like MuseTalk and the TTS talker cannot handle concurrent requests.
     /// </summary>
     internal class InferenceQueue
     {
@@ -404,7 +403,8 @@ namespace LiveTalk.API
             string parentModelPath = "",
             MemoryUsage memoryUsage = MemoryUsage.Balanced,
             string cacheLocation = null,
-            bool enableCache = true)
+            bool enableCache = true,
+            string ttsModelRoot = null)
         {
             if (_initialized)
             {
@@ -435,27 +435,34 @@ namespace LiveTalk.API
             _livePortrait = new LivePortraitInference(_config);
             _museTalk = new MuseTalkInference(_config);
 
-            var sparkTTSLogLevel = _config.LogLevel switch
+            var ttsLogLevel = _config.LogLevel switch
             {
-                LogLevel.VERBOSE => SparkTTS.Utils.LogLevel.VERBOSE,
-                LogLevel.INFO => SparkTTS.Utils.LogLevel.INFO,
-                LogLevel.WARNING => SparkTTS.Utils.LogLevel.WARNING,
-                LogLevel.ERROR => SparkTTS.Utils.LogLevel.ERROR,
-                _ => SparkTTS.Utils.LogLevel.WARNING,
+                LogLevel.VERBOSE => QwenTTS.LogLevel.VERBOSE,
+                LogLevel.INFO => QwenTTS.LogLevel.INFO,
+                LogLevel.WARNING => QwenTTS.LogLevel.WARNING,
+                LogLevel.ERROR => QwenTTS.LogLevel.ERROR,
+                _ => QwenTTS.LogLevel.WARNING,
             };
 
-            // Map LiveTalk MemoryUsage to SparkTTS MemoryUsage
-            var sparkTTSMemoryUsage = memoryUsage switch
+            // Map LiveTalk MemoryUsage onto the TTS package's load policy
+            var ttsMemoryUsage = memoryUsage switch
             {
-                MemoryUsage.Performance => SparkTTS.Models.MemoryUsage.Performance,
-                MemoryUsage.Balanced => SparkTTS.Models.MemoryUsage.Balanced,
-                MemoryUsage.Optimal => SparkTTS.Models.MemoryUsage.Optimal,
-                MemoryUsage.Quality => SparkTTS.Models.MemoryUsage.Performance, // Quality maps to Performance for SparkTTS
-                _ => SparkTTS.Models.MemoryUsage.Balanced,
+                MemoryUsage.Performance => QwenTTS.MemoryUsage.Performance,
+                MemoryUsage.Balanced => QwenTTS.MemoryUsage.Balanced,
+                MemoryUsage.Optimal => QwenTTS.MemoryUsage.Optimal,
+                MemoryUsage.Quality => QwenTTS.MemoryUsage.Performance,
+                _ => QwenTTS.MemoryUsage.Balanced,
             };
 
-            // Spark first so OrtEnv is the default (no custom logger fn ptr).
-            CharacterVoiceFactory.Initialize(sparkTTSLogLevel, sparkTTSMemoryUsage);
+            // TTS first so it owns OrtEnv: whichever side creates the
+            // environment owns ONNX Runtime's logging sink, and this ordering
+            // is deliberate rather than incidental.
+            QwenTts.Initialize(new QwenTtsSettings
+            {
+                ModelRoot = ttsModelRoot,
+                MemoryUsage = ttsMemoryUsage,
+                LogLevel = ttsLogLevel,
+            });
             ModelUtils.Initialize(_config.LogLevel);
 
             Character.saveLocation = characterSaveLocation;
@@ -484,22 +491,26 @@ namespace LiveTalk.API
         /// <summary>
         /// Drops Spark-TTS ONNX sessions and embeddings. LiveTalk stays initialized.
         /// </summary>
-        public void UnloadSpark()
+        public void UnloadTts()
         {
-            CharacterVoiceFactory.UnloadModels();
-            Logger.Log("[LiveTalkAPI] Unloaded Spark-TTS models");
+            QwenTts.Unload();
+            Logger.Log("[LiveTalkAPI] Unloaded TTS models");
         }
 
         /// <summary>
-        /// When true, Spark detaches native ONNX sessions on editor domain reload
-        /// so a script compile does not rebuild multi-GB graphs. Host sets this
-        /// from its own hold preference. C# still reloads.
+        /// Loads a TTS checkpoint now, off the main thread. Worth calling from
+        /// a loading screen: the talker graphs are ~10 s each to open, and
+        /// without this the first line pays all of it.
         /// </summary>
-        public static bool KeepSparkAcrossReload
-        {
-            get => CharacterVoiceFactory.KeepNativeSessionsAcrossReload;
-            set => CharacterVoiceFactory.KeepNativeSessionsAcrossReload = value;
-        }
+        public static Task WarmUpVoiceAsync(QwenCheckpoint checkpoint) =>
+            QwenTts.WarmUpAsync(checkpoint);
+
+        /// <summary>
+        /// Releases one checkpoint (~13 GB) while keeping the other. Designing
+        /// a voice and then speaking with a clone of it are different phases,
+        /// so hosts should drop VoiceDesign once a take is locked.
+        /// </summary>
+        public static void EvictVoice(QwenCheckpoint checkpoint) => QwenTts.Evict(checkpoint);
 
         #endregion
 
@@ -521,7 +532,7 @@ namespace LiveTalk.API
 
             Logger.Log("[LiveTalkAPI] Waiting for all models to load...");
             
-            // Total: 3 model groups (LivePortrait, MuseTalk, SparkTTS)
+            // Total: 3 model groups (LivePortrait, MuseTalk, voice)
             int totalGroups = 3;
             int currentGroup = 0;
             
@@ -551,9 +562,10 @@ namespace LiveTalk.API
                 currentGroup++;
             }
             
-            // Wait for SparkTTS models (CharacterVoiceFactory)
+            // TTS checkpoints are deliberately not warmed here: each is
+            // ~13 GB resident and a caller waiting on the video models has not
+            // asked for that. Use WarmUpVoiceAsync explicitly.
             onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
-            await CharacterVoiceFactory.WaitForModelsLoadedAsync();
             currentGroup++;
             onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
             
@@ -568,12 +580,13 @@ namespace LiveTalk.API
             get
             {
                 if (!_initialized) return false;
-                return CharacterVoiceFactory.IsReady;
+                return QwenTts.IsInitialized;
             }
         }
 
-        /// <summary>True when Spark has constructed the Qwen engine (sessions may still be deferred).</summary>
-        public static bool SparkEngineLoaded => CharacterVoiceFactory.HasEngine;
+        /// <summary>True when a TTS checkpoint is resident in this process.</summary>
+        public static bool VoiceModelsLoaded =>
+            QwenTts.IsLoaded(QwenCheckpoint.VoiceDesign) || QwenTts.IsLoaded(QwenCheckpoint.Base);
 
         #endregion
 
@@ -997,37 +1010,28 @@ namespace LiveTalk.API
 
             try
             {
-                // Create voice using CharacterVoiceFactory (no caching)
-                var characterVoice = await CharacterVoiceFactory.Instance.CreateFromStyleAsync(
-                    gender: gender.ToLower(),
-                    pitch: pitch?.ToLower() ?? "moderate",
-                    speed: speed?.ToLower() ?? "moderate",
-                    referenceText: introText,
-                    instruct: instruct
-                );
+                var voice = await QwenTts.CreateDesignedVoiceAsync(new VoiceDesignSpec(
+                    VoiceInstruct.Compose(ParseGender(gender), ParsePitch(pitch), ParseSpeed(speed), instruct)));
 
-                if (characterVoice == null)
+                if (voice == null)
                 {
                     Logger.LogError("[LiveTalkAPI] Failed to create voice preview");
                     return new VoicePreviewResult { Success = false, ErrorMessage = "Failed to create voice" };
                 }
 
-                // Get the generated audio clip
-                var audioClip = characterVoice.ReferenceClip;
+                // A designed voice carries no audio of its own, so the preview
+                // has to be rendered. This is also what makes the take usable
+                // as a clone reference afterwards.
+                var take = await voice.SpeakAsync(introText);
+                var audioClip = take.ToAudioClip("VoicePreview");
 
-                // Create a unique temp folder for this voice preview
                 string previewId = Guid.NewGuid().ToString("N").Substring(0, 8);
                 string tempVoiceFolder = Path.Combine(Application.temporaryCachePath, "VoicePreviews", previewId);
-                
-                if (!Directory.Exists(tempVoiceFolder))
-                {
-                    Directory.CreateDirectory(tempVoiceFolder);
-                }
+                Directory.CreateDirectory(tempVoiceFolder);
 
-                // Save voice to temp folder so it can be used later if selected
-                await characterVoice.SaveVoiceAsync(tempVoiceFolder);
-                
-                characterVoice.Dispose();
+                // Saved with the rendered take, so sample.wav genuinely exists
+                // if the player picks this preview.
+                await voice.SaveAsync(tempVoiceFolder, take);
 
                 Logger.Log($"[LiveTalkAPI] Voice preview generated: {tempVoiceFolder}");
 
@@ -1047,6 +1051,27 @@ namespace LiveTalk.API
                 return new VoicePreviewResult { Success = false, ErrorMessage = ex.Message };
             }
         }
+
+        static Gender ParseGender(string value) =>
+            string.Equals(value, "male", StringComparison.OrdinalIgnoreCase) ? Gender.Male : Gender.Female;
+
+        static Pitch ParsePitch(string value) => (value ?? "").ToLowerInvariant() switch
+        {
+            "very_low" or "verylow" => Pitch.VeryLow,
+            "low" => Pitch.Low,
+            "high" => Pitch.High,
+            "very_high" or "veryhigh" => Pitch.VeryHigh,
+            _ => Pitch.Moderate,
+        };
+
+        static Speed ParseSpeed(string value) => (value ?? "").ToLowerInvariant() switch
+        {
+            "very_low" or "verylow" => Speed.VeryLow,
+            "low" => Speed.Low,
+            "high" => Speed.High,
+            "very_high" or "veryhigh" => Speed.VeryHigh,
+            _ => Speed.Moderate,
+        };
 
         /// <summary>
         /// Clean up all voice preview temp folders

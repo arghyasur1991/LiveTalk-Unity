@@ -6,8 +6,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
-using SparkTTS;
-using SparkTTS.Utils;
+using QwenTTS;
+using QwenTTS.Audio;
 using Newtonsoft.Json;
 
 namespace LiveTalk.API
@@ -182,23 +182,22 @@ namespace LiveTalk.API
         /// </summary>
         public int SpeechSampleRate { get; set; } = 16000;
         public string Intro { get; internal set; } = "Hello, this is a test message";
-        public AudioClip VoicePromptClip { 
-            get 
-            {
-                if (LoadedVoice != null)
-                {
-                    return LoadedVoice.ReferenceClip;
-                }
-                return null;
-            }
-        }
+        /// <summary>
+        /// The rendered take that represents this voice, if one was saved.
+        /// A designed voice has no inherent audio, so this is whatever sample
+        /// was generated when the character was created.
+        /// </summary>
+        public AudioClip VoicePromptClip => VoiceSampleClip;
         internal static string saveLocation;
         
         // Loaded character data for inference
         public bool IsDataLoaded { get; internal set; } = false;
         internal string CharacterFolder { get; set; }
         internal Dictionary<int, ExpressionData> LoadedExpressions { get; set; } = new Dictionary<int, ExpressionData>();
-        internal CharacterVoice LoadedVoice { get; set; }
+        internal QwenVoice LoadedVoice { get; set; }
+
+        /// <summary>Rendered take for this voice, when one was saved with it.</summary>
+        internal AudioClip VoiceSampleClip { get; set; }
         internal string DrivingFramesFolder { get; set; }
         internal string VoiceFolder { get; set; }
         
@@ -451,7 +450,7 @@ namespace LiveTalk.API
                 if (exists)
                 {
                     Logger.LogVerbose($"[Character] Loading cached audio for: {text[..Math.Min(30, text.Length)]}...");
-                    var loadTask = AudioLoaderService.LoadAudioClipAsync(cachedPath);
+                    var loadTask = AudioFileIO.LoadClipAsync(cachedPath);
                     yield return new WaitUntil(() => loadTask.IsCompleted);
                     
                     if (!loadTask.IsFaulted && loadTask.Result != null)
@@ -471,7 +470,8 @@ namespace LiveTalk.API
 
                 try
                 {
-                    var audioTask = LoadedVoice.GenerateSpeechAsync(text, SpeechSampleRate);
+                    var audioTask = LoadedVoice.SpeakAsync(
+                        text, new SpeechOptions { SampleRate = SpeechSampleRate });
                     yield return new WaitUntil(() => audioTask.IsCompleted);
 
                     if (audioTask.IsFaulted)
@@ -480,7 +480,8 @@ namespace LiveTalk.API
                         yield break;
                     }
 
-                    audioClip = audioTask.Result;
+                    // ToAudioClip has to happen here: it is a main-thread API.
+                    audioClip = audioTask.Result.ToAudioClip($"{Name}_speech");
                 }
                 finally
                 {
@@ -494,7 +495,7 @@ namespace LiveTalk.API
                     string cachePath = LiveTalkCache.GetFilePath(cacheKey);
                     if (!string.IsNullOrEmpty(cachePath))
                     {
-                        var saveTask = AudioLoaderService.SaveAudioClipToFile(audioClip, cachePath);
+                        var saveTask = AudioFileIO.SaveClipAsync(audioClip, cachePath);
                         _ = saveTask.ContinueWith(t => 
                         {
                             if (t.IsFaulted)
@@ -1259,39 +1260,61 @@ namespace LiveTalk.API
             return texturePaths;
         }
 
+        /// <summary>PCM view of a clip, so it can be saved as a voice sample.</summary>
+        private static SpeechResult ClipToSpeechResult(AudioClip clip)
+        {
+            var interleaved = new float[clip.samples * clip.channels];
+            clip.GetData(interleaved, 0);
+            if (clip.channels <= 1)
+                return new SpeechResult(interleaved, clip.frequency);
+
+            var mono = new float[clip.samples];
+            for (int i = 0; i < clip.samples; i++)
+            {
+                float sum = 0f;
+                for (int c = 0; c < clip.channels; c++)
+                    sum += interleaved[i * clip.channels + c];
+                mono[i] = sum / clip.channels;
+            }
+            return new SpeechResult(mono, clip.frequency);
+        }
+
         private async Task LoadVoiceFromReference(string voicePromptPath, string voiceFolder)
         {
-            var voicePromptClip = await AudioLoaderService.LoadAudioClipAsync(voicePromptPath);
-            // Async: a cold clone loads the Base tables and two reference
-            // encoders, which is tens of seconds of main-thread stall otherwise.
-            var characterVoice = await CharacterVoiceFactory.Instance.CreateFromReferenceAsync(
-                voicePromptClip, VoiceCloneRefText);
-            if (characterVoice != null)
+            var voicePromptClip = await AudioFileIO.LoadClipAsync(voicePromptPath);
+            if (voicePromptClip == null)
             {
-                // The reference wav is the voice sample. Do not synthesize a
-                // throwaway line here — that used to discard the clone embedding
-                // on reload because SaveVoiceAsync only stores the wav + knobs.
-                await characterVoice.SaveVoiceAsync(voiceFolder);
-                characterVoice.Dispose();
+                Logger.LogError($"[Character] Could not read the voice prompt at {voicePromptPath}");
+                return;
             }
-            else
+
+            // Async because a cold clone loads the Base tables plus two
+            // reference encoders - tens of seconds of main-thread stall
+            // otherwise.
+            var voice = await QwenTts.CreateClonedVoiceAsync(voicePromptClip, VoiceCloneRefText);
+            if (voice == null)
             {
-                Logger.LogError("[Character] Failed to load character voice from reference");
+                Logger.LogError("[Character] Failed to clone the character voice from the reference");
+                return;
             }
+
+            // The reference recording *is* this voice's sample, so it is saved
+            // as one. SaveAsync also stores the derived clone prompt, which is
+            // what stops the next load re-running both encoders.
+            var referenceSample = ClipToSpeechResult(voicePromptClip);
+            await voice.SaveAsync(voiceFolder, referenceSample);
+            LoadedVoice = voice;
+            VoiceSampleClip = voicePromptClip;
         }
 
         /// <summary>
-        /// Generate voice sample using SparkTTS with character parameters.
+        /// Generate a designed voice and a rendered sample for it.
         /// Voice samples are cached based on style parameters and characterId (characterId, gender, pitch, speed, intro).
         /// </summary>
         private async Task GenerateVoiceSample(string voiceFolder)
         {
-            // Convert enums to string parameters for SparkTTS
-            string genderParam = ConvertGenderToString(Gender);
-            string pitchParam = ConvertPitchToString(Pitch);
-            string speedParam = ConvertSpeedToString(Speed);
             string cacheKey = HashUtils.GenerateVoiceStyleCacheKey(
-                CharacterId, genderParam, pitchParam, speedParam, Intro, VoiceInstruct);
+                CharacterId, Gender.ToString(), Pitch.ToString(), Speed.ToString(), Intro, VoiceInstruct);
 
             // Check cache first
             if (LiveTalkCache.IsEnabled)
@@ -1299,26 +1322,27 @@ namespace LiveTalk.API
                 var (exists, cachedFolder) = LiveTalkCache.CheckFolderExists(cacheKey);                
                 if (exists)
                 {
-                    Logger.Log($"[Character] Using cached voice sample for style: {genderParam}/{pitchParam}/{speedParam}");
+                    Logger.Log($"[Character] Using cached voice sample for style: {Gender}/{Pitch}/{Speed}");
                     LiveTalkCache.CopyFolder(cachedFolder, voiceFolder);
                     return;
                 }
             }
 
-            Logger.LogVerbose($"[Character] Generating voice sample with parameters: Gender={genderParam}, Pitch={pitchParam}, Speed={speedParam}");
+            Logger.LogVerbose($"[Character] Generating voice sample: Gender={Gender}, Pitch={Pitch}, Speed={Speed}");
 
-            var characterVoice = await CharacterVoiceFactory.Instance.CreateFromStyleAsync(
-                gender: genderParam,
-                pitch: pitchParam,
-                speed: speedParam,
-                referenceText: Intro,
-                instruct: VoiceInstruct
-            );
+            var voice = await QwenTts.CreateDesignedVoiceAsync(
+                new VoiceDesignSpec(LiveTalk.Utils.VoiceInstruct.Compose(Gender, Pitch, Speed, VoiceInstruct)));
 
-            if (characterVoice != null)
+            if (voice != null)
             {
-                await characterVoice.SaveVoiceAsync(voiceFolder);
-                characterVoice.Dispose();
+                // Render the intro so the voice has a sample. A designed voice
+                // has no inherent audio, and callers downstream (voice preview,
+                // and cloning a chosen take) need a wav on disk. Without this
+                // the folder claims a sample it does not have.
+                var sample = await voice.SpeakAsync(Intro);
+                await voice.SaveAsync(voiceFolder, sample);
+                LoadedVoice = voice;
+                VoiceSampleClip = sample.ToAudioClip($"{Name}_sample");
                 
                 // Save to cache
                 if (LiveTalkCache.IsEnabled)
@@ -1335,51 +1359,6 @@ namespace LiveTalk.API
             {
                 Logger.LogError("[Character] Failed to create character voice");
             }
-        }
-
-        /// <summary>
-        /// Convert Gender enum to SparkTTS string parameter
-        /// </summary>
-        private string ConvertGenderToString(Gender gender)
-        {
-            return gender switch
-            {
-                Gender.Male => "male",
-                Gender.Female => "female",
-                _ => "female"
-            };
-        }
-
-        /// <summary>
-        /// Convert Pitch enum to SparkTTS string parameter
-        /// </summary>
-        private string ConvertPitchToString(Pitch pitch)
-        {
-            return pitch switch
-            {
-                Pitch.VeryLow => "very_low",
-                Pitch.Low => "low",
-                Pitch.Moderate => "moderate",
-                Pitch.High => "high",
-                Pitch.VeryHigh => "very_high",
-                _ => "moderate"
-            };
-        }
-
-        /// <summary>
-        /// Convert Speed enum to SparkTTS string parameter
-        /// </summary>
-        private string ConvertSpeedToString(Speed speed)
-        {
-            return speed switch
-            {
-                Speed.VeryLow => "very_low",
-                Speed.Low => "low",
-                Speed.Moderate => "moderate",
-                Speed.High => "high",
-                Speed.VeryHigh => "very_high",
-                _ => "moderate"
-            };
         }
 
         /// <summary>
@@ -1546,18 +1525,27 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            // Create character voice from the loaded reference sample
-            var characterVoiceTask = CharacterVoiceFactory.Instance.CreateFromFolderAsync(voiceFolder);            
-            yield return new WaitUntil(() => characterVoiceTask.IsCompleted);
-            
-            if (!characterVoiceTask.IsFaulted)
+            // Restores the stored clone prompt when there is one, so this does
+            // not re-run the speaker and tokenizer encoders.
+            var voiceTask = QwenTts.LoadVoiceAsync(voiceFolder);
+            yield return new WaitUntil(() => voiceTask.IsCompleted);
+
+            if (voiceTask.IsFaulted)
             {
-                LoadedVoice = characterVoiceTask.Result;
-                Logger.LogVerbose($"[CharacterFactory] Voice loaded from folder for {Name}");
+                Logger.LogError($"[CharacterFactory] Failed to load voice from folder: {voiceTask.Exception?.InnerException?.Message}");
+                yield break;
             }
-            else
+
+            LoadedVoice = voiceTask.Result;
+            Logger.LogVerbose($"[CharacterFactory] Voice loaded from folder for {Name}");
+
+            string samplePath = Path.Combine(voiceFolder, "sample.wav");
+            if (File.Exists(samplePath))
             {
-                Logger.LogError($"[CharacterFactory] Failed to create voice from folder: {characterVoiceTask.Exception?.Message}");
+                var sampleTask = AudioFileIO.LoadClipAsync(samplePath);
+                yield return new WaitUntil(() => sampleTask.IsCompleted);
+                if (!sampleTask.IsFaulted)
+                    VoiceSampleClip = sampleTask.Result;
             }
         }
 

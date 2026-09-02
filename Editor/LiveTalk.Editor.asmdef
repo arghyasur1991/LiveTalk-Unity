@@ -3,8 +3,7 @@
     "rootNamespace": "LiveTalk",
     "references": [
         "LiveTalk.Runtime",
-        "SparkTTS.Editor",
-        "SparkTTS.Runtime"
+        "QwenTTS.Runtime"
     ],
     "includePlatforms": [
         "Editor"
@@ -17,4 +16,4 @@
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": false
-} 
+}

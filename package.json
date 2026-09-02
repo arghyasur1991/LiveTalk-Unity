@@ -6,7 +6,7 @@
   "unity": "6000.0",
   "unityRelease": "46f1",
   "dependencies": {
-    "com.genesis.sparktts.unity": "0.1.0"
+    "com.genesis.qwentts.unity": "0.1.0"
   },
   "keywords": [
     "livetalk",
@@ -19,4 +19,4 @@
   "author": {
     "name": "Genesis"
   }
-} 
+}
