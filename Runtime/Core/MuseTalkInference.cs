@@ -517,6 +517,16 @@ namespace LiveTalk.Core
             var startSessionTask = StartGeneratorSession();
             yield return new WaitUntil(() => startSessionTask.IsCompleted);
 
+            // IsCompleted is also true for a faulted task. Without this the
+            // load failure is never observed, and the first model touched
+            // below reports "not initialized" instead of the real cause.
+            if (startSessionTask.IsFaulted)
+            {
+                Logger.LogError("[MuseTalkInference] Generator models failed to load: " +
+                    startSessionTask.Exception?.GetBaseException().Message);
+                yield break;
+            }
+
             // Create cycled latent list for smooth ping-pong animation
             // Pattern: [0,1,2,3,2,1] instead of [0,1,2,3,3,2,1,0] to avoid duplicate frames
             var cycleDLatents = new List<float[]>(avatarData.Latents);

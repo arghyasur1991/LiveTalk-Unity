@@ -463,7 +463,13 @@ namespace LiveTalk.API
                 MemoryUsage = ttsMemoryUsage,
                 LogLevel = ttsLogLevel,
             });
-            ModelUtils.Initialize(_config.LogLevel);
+            // ORT at INFO emits an arena line per allocation — thousands per
+            // session, which buries everything else. Keep it at WARNING even
+            // when LiveTalk itself is logging at INFO or VERBOSE.
+            var ortLogLevel = _config.LogLevel == LogLevel.ERROR
+                ? LogLevel.ERROR
+                : LogLevel.WARNING;
+            ModelUtils.Initialize(ortLogLevel);
 
             Character.saveLocation = characterSaveLocation;
             _liveTalkInstance = new GameObject("LiveTalkAPI");

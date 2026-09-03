@@ -160,6 +160,15 @@ namespace LiveTalk.Core
             var startSessionTask = StartSession();
             Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
             yield return new WaitUntil(() => startSessionTask.IsCompleted);
+
+            // IsCompleted is also true for a faulted task; see MuseTalkInference.
+            if (startSessionTask.IsFaulted)
+            {
+                Logger.LogError("[LivePortraitInference] Models failed to load: " +
+                    startSessionTask.Exception?.GetBaseException().Message);
+                outputStream.Finished = true;
+                yield break;
+            }
             
             // Process source image
             var processSrcTask = ProcessSourceImageAsync(srcImg);            
