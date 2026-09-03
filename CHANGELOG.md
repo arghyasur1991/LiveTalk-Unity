@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `EnsureRuntimeHost()` recreates the coroutine GameObject after Play teardown while the API singleton is still initialized.
-- `UnloadSpark()` drops Spark-TTS sessions without disposing LivePortrait / MuseTalk.
-- `SparkEngineLoaded` reports whether Spark currently holds a TTS engine.
-- `KeepSparkAcrossReload` asks Spark to keep native ONNX sessions across an editor domain reload (script compile still applies C#).
+- `UnloadTts()` drops the TTS engine's ONNX sessions without disposing LivePortrait / MuseTalk.
+- `VoiceModelsLoaded` reports whether the TTS engine currently holds models.
+- `voiceInstruct` on character creation, passed through to voice design. `Gender`/`Pitch`/`Speed` are composed into a natural-language description in `Utils/VoiceInstruct`, which is host policy rather than engine behaviour.
 
 ### Changed
-- Default `OrtEnv` only (no Unity logging callback). A custom logger fn ptr SIGSEGVs after domain reload. Spark `Initialize` runs before `ModelUtils.Initialize` so the env is created without that callback.
+- **TTS backend is now Qwen3-TTS** (`com.genesis.qwentts.unity`) instead of Spark-TTS. Voice design takes a description; cloning takes a reference recording plus its transcript.
+- `ModelUtils` uses the default `OrtEnv` and forwards log attribution to whichever library created the environment. ONNX Runtime allows one environment per process, so creating a second one with its own sink meant LiveTalk's model names never reached the sink that was actually installed.
+- Audio helpers no longer delegate to the previous TTS package: silence, concatenation and WAV load/save are local. `ConcatenateAudioClips` now honours its `silenceDuration` argument, which the delegating version ignored.
 
 ## [1.0.0] - 2025-07-04
 
