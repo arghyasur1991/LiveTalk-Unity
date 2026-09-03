@@ -395,13 +395,24 @@ namespace LiveTalk.API
         /// <param name="onAnimationComplete">Callback when animation generation is complete. Called with the final FrameStream.
         /// For voice-only mode (expressionIndex=-1), this is called immediately after onAudioReady.</param>
         /// <param name="onError">Callback when an error occurs</param>
+        /// <param name="onSpeechChunk">
+        /// Optional. Receives speech as it is generated, rather than only when
+        /// the line is finished: generation runs slightly faster than playback,
+        /// so the first chunk arrives in about a second. Each call carries only
+        /// samples not reported before, so appending them in order reproduces
+        /// the utterance. Delivered on the main thread.
+        ///
+        /// Ignored for a cache hit, since there is nothing to stream — the
+        /// whole clip is already on disk and arrives via onAudioReady.
+        /// </param>
         /// <returns>Coroutine for audio generation</returns>
         public IEnumerator SpeakAsync(
             string text, 
             int expressionIndex = 0,
             Action<FrameStream, AudioClip> onAudioReady = null,
             Action<FrameStream> onAnimationComplete = null,
-            Action<Exception> onError = null)
+            Action<Exception> onError = null,
+            Action<float[], int> onSpeechChunk = null)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
@@ -470,8 +481,20 @@ namespace LiveTalk.API
 
                 try
                 {
-                    var audioTask = LoadedVoice.SpeakAsync(
-                        text, new SpeechOptions { SampleRate = SpeechSampleRate });
+                    var options = new SpeechOptions { SampleRate = SpeechSampleRate };
+
+                    // Progress<T> captures the SynchronizationContext it is
+                    // built on. This coroutine runs on the main thread, so the
+                    // engine's worker-thread reports arrive back here rather
+                    // than on the thread that generated them — which matters,
+                    // because a host will want to hand these to an AudioSource.
+                    var chunkRelay = onSpeechChunk == null
+                        ? null
+                        : new Progress<SpeechChunk>(c => onSpeechChunk(c.Pcm, c.SampleRate));
+
+                    var audioTask = chunkRelay == null
+                        ? LoadedVoice.SpeakAsync(text, options)
+                        : LoadedVoice.SpeakStreamAsync(text, chunkRelay, options);
                     yield return new WaitUntil(() => audioTask.IsCompleted);
 
                     if (audioTask.IsFaulted)

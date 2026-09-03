@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **TTS backend is now Qwen3-TTS** (`com.genesis.qwentts.unity`) instead of Spark-TTS. Voice design takes a description; cloning takes a reference recording plus its transcript.
 - `ModelUtils` uses the default `OrtEnv` and forwards log attribution to whichever library created the environment. ONNX Runtime allows one environment per process, so creating a second one with its own sink meant LiveTalk's model names never reached the sink that was actually installed.
-- Audio helpers no longer delegate to the previous TTS package: silence, concatenation and WAV load/save are local. `ConcatenateAudioClips` now honours its `silenceDuration` argument, which the delegating version ignored.
+- `SpeakAsync` takes an optional `onSpeechChunk` callback and streams speech as it is generated instead of only when the line finishes: the first chunk arrives in about a second. Delivered on the main thread. Ignored on a cache hit, where the whole clip is already on disk.
+- Audio helpers delegate to the TTS package's `QwenAudio` rather than carrying their own copies. `ConcatenateAudioClips` now honours its `silenceDuration` argument, which the previous delegating version ignored, and WAV load/save is local in `AudioFileIO`.
 
 ## [1.0.0] - 2025-07-04
 

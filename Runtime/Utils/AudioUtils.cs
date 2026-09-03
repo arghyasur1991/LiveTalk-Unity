@@ -134,12 +134,7 @@ namespace LiveTalk.Utils
         /// <param name="duration">The duration in seconds</param>
         /// <returns>An AudioClip containing silence</returns>
         public static AudioClip CreateSilence(int sampleRate = 16000, float duration = 0.25f)
-        {
-            int samples = Mathf.Max(1, (int)(duration * sampleRate));
-            var clip = AudioClip.Create("Silence", samples, 1, sampleRate, false);
-            clip.SetData(new float[samples], 0);
-            return clip;
-        }
+            => QwenAudio.SilenceClip(sampleRate, duration, "Silence");
 
         /// <summary>
         /// Concatenates multiple audio clips into a single clip with silence padding between them.
@@ -149,49 +144,7 @@ namespace LiveTalk.Utils
         /// <param name="silenceDuration">Duration of silence between clips in seconds</param>
         /// <returns>A single AudioClip containing all input clips concatenated together</returns>
         public static AudioClip ConcatenateAudioClips(List<AudioClip> clips, int sampleRate = 16000, float silenceDuration = 0.25f)
-        {
-            if (clips == null || clips.Count == 0)
-                return null;
-
-            int gap = Mathf.Max(0, (int)(silenceDuration * sampleRate));
-            var joined = new List<float>();
-            for (int i = 0; i < clips.Count; i++)
-            {
-                var clip = clips[i];
-                if (clip == null)
-                    continue;
-                var samples = new float[clip.samples * clip.channels];
-                clip.GetData(samples, 0);
-                if (clip.channels > 1)
-                    samples = ToMono(samples, clip.channels);
-                if (clip.frequency != sampleRate)
-                    samples = ResampleAudio(samples, clip.frequency, sampleRate);
-                if (joined.Count > 0 && gap > 0)
-                    joined.AddRange(new float[gap]);
-                joined.AddRange(samples);
-            }
-
-            if (joined.Count == 0)
-                return null;
-
-            var output = AudioClip.Create("Concatenated Audio", joined.Count, 1, sampleRate, false);
-            output.SetData(joined.ToArray(), 0);
-            return output;
-        }
-
-        static float[] ToMono(float[] interleaved, int channels)
-        {
-            int frames = interleaved.Length / channels;
-            var mono = new float[frames];
-            for (int i = 0; i < frames; i++)
-            {
-                float sum = 0f;
-                for (int c = 0; c < channels; c++)
-                    sum += interleaved[i * channels + c];
-                mono[i] = sum / channels;
-            }
-            return mono;
-        }
+            => QwenAudio.Concatenate(clips, sampleRate, silenceDuration, "Concatenated Audio");
 
         #endregion
 
