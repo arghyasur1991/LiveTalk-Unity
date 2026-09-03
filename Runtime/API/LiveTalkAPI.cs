@@ -489,7 +489,8 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Drops Spark-TTS ONNX sessions and embeddings. LiveTalk stays initialized.
+        /// Drops the TTS engine's ONNX sessions and embedding tables. LiveTalk
+        /// itself stays initialized.
         /// </summary>
         public void UnloadTts()
         {
