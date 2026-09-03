@@ -51,28 +51,12 @@ namespace LiveTalk.Utils
 
             var samples = new float[clip.samples * clip.channels];
             clip.GetData(samples, 0);
-            byte[] bytes = WavCodec.Encode(ToMono(samples, clip.channels), clip.frequency);
+            byte[] bytes = WavCodec.Encode(QwenAudio.ToMono(samples, clip.channels), clip.frequency);
 
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
             await Task.Run(() => File.WriteAllBytes(path, bytes));
-        }
-
-        static float[] ToMono(float[] interleaved, int channels)
-        {
-            if (channels <= 1)
-                return interleaved;
-            int frames = interleaved.Length / channels;
-            var mono = new float[frames];
-            for (int i = 0; i < frames; i++)
-            {
-                float sum = 0f;
-                for (int c = 0; c < channels; c++)
-                    sum += interleaved[i * channels + c];
-                mono[i] = sum / channels;
-            }
-            return mono;
         }
     }
 }
