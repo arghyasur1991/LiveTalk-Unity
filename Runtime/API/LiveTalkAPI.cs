@@ -464,11 +464,14 @@ namespace LiveTalk.API
                 LogLevel = ttsLogLevel,
             });
             // ORT at INFO emits an arena line per allocation — thousands per
-            // session, which buries everything else. Keep it at WARNING even
-            // when LiveTalk itself is logging at INFO or VERBOSE.
-            var ortLogLevel = _config.LogLevel == LogLevel.ERROR
-                ? LogLevel.ERROR
-                : LogLevel.WARNING;
+            // session, which buries LiveTalk's own INFO lines. Only VERBOSE
+            // opts into that; INFO drops ORT to WARNING.
+            var ortLogLevel = _config.LogLevel switch
+            {
+                LogLevel.VERBOSE => LogLevel.VERBOSE,
+                LogLevel.ERROR => LogLevel.ERROR,
+                _ => LogLevel.WARNING,
+            };
             ModelUtils.Initialize(ortLogLevel);
 
             Character.saveLocation = characterSaveLocation;
