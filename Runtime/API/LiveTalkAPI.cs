@@ -1447,6 +1447,9 @@ namespace LiveTalk.API
 
         #region Public Methods - Voice Preview
 
+        /// <summary>Sample text a voice preview renders when the caller gives none.</summary>
+        private const string DefaultPreviewText = "Hello, this is a short voice sample.";
+
         /// <summary>
         /// Generate a preview voice sample with the specified parameters.
         /// This is used for "rolling the dice" to preview different voices before committing.
@@ -1466,7 +1469,7 @@ namespace LiveTalk.API
             string gender,
             string pitch,
             string speed,
-            string introText = "Hello, I am a detective ready to solve mysteries.",
+            string introText = DefaultPreviewText,
             string instruct = null)
         {
             RequireInitialized();
@@ -1478,7 +1481,7 @@ namespace LiveTalk.API
 
             if (string.IsNullOrEmpty(introText))
             {
-                introText = "Hello, I am a detective ready to solve mysteries.";
+                introText = DefaultPreviewText;
             }
 
             Logger.Log($"[LiveTalkAPI] Generating voice preview: {gender}/{pitch}/{speed}");
@@ -1724,13 +1727,16 @@ namespace LiveTalk.API
         public void Dispose()
         {
             Dispose(true);
-            GC.SuppressFinalize(this);
         }
 
         /// <summary>
-        /// Releases the unmanaged resources used by the LiveTalkAPI and optionally releases the managed resources.
+        /// Releases the resources used by the LiveTalkAPI. There is no
+        /// finalizer: everything this class owns (inference sessions, the
+        /// coroutine host GameObject) must be released on the main thread,
+        /// which a finalizer never runs on, and the singleton lives for the
+        /// process anyway.
         /// </summary>
-        /// <param name="disposing">True to release both managed and unmanaged resources; false to release only unmanaged resources</param>
+        /// <param name="disposing">True to release managed resources</param>
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposed)
@@ -1745,14 +1751,6 @@ namespace LiveTalk.API
                 
                 _disposed = true;
             }
-        }
-
-        /// <summary>
-        /// Finalizer for the LiveTalkAPI class.
-        /// </summary>
-        ~LiveTalkAPI()
-        {
-            Dispose(false);
         }
 
         #endregion

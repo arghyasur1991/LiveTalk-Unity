@@ -11,7 +11,7 @@ namespace LiveTalk.Utils
     /// and advanced mel spectrogram extraction with librosa compatibility for cross-platform consistency.
     /// All methods are optimized for real-time audio processing in Unity environments.
     /// </summary>
-    public static class AudioUtils
+    internal static class AudioUtils
     {
         #region Audio Processing Constants
 

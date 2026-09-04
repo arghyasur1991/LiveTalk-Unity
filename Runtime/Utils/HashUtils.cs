@@ -12,7 +12,7 @@ namespace LiveTalk.Utils
     /// - Texture content for avatar identification
     /// - Combined voice hashes for global caching
     /// </summary>
-    public static class HashUtils
+    internal static class HashUtils
     {
         // FNV-1a constants for 64-bit hashing
         private const ulong FNV_OFFSET_BASIS_64 = 14695981039346656037UL;

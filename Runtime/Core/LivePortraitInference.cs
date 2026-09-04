@@ -854,12 +854,12 @@ namespace LiveTalk.Core
             
             if (feature3d.Length != expectedFeature3DSize)
             {
-                Logger.LogError($"[DEBUG_WARPING_SPADE] Feature3D size mismatch! Expected: {expectedFeature3DSize}, Got: {feature3d.Length}");
+                Logger.LogError($"[LivePortrait] warping_spade feature3d size mismatch: expected {expectedFeature3DSize}, got {feature3d.Length}");
             }
             
             if (kpSource.Length != expectedKpSize || kpDriving.Length != expectedKpSize)
             {
-                Logger.LogError($"[DEBUG_WARPING_SPADE] Keypoint size mismatch! Expected: {expectedKpSize}, Got kpSource: {kpSource.Length}, kpDriving: {kpDriving.Length}");
+                Logger.LogError($"[LivePortrait] warping_spade keypoint size mismatch: expected {expectedKpSize}, got kpSource {kpSource.Length}, kpDriving {kpDriving.Length}");
             }
             
             // Create tensors with proper shapes
