@@ -2,6 +2,11 @@
 # needs them for everything outside Samples~), and only tool and OS
 # by-products are ignored.
 
+# UPM sample folders end in "~". A common global ignore ("*~" for editor
+# backup files) would silently drop them; re-include explicitly.
+!Samples~/
+!Samples~/**
+
 # OS
 .DS_Store
 Thumbs.db
