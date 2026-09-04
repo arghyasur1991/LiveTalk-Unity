@@ -28,6 +28,19 @@ namespace LiveTalk.Core
         /// Initial motion information from the first driving frame for reference
         /// </summary>
         public MotionInfo InitialMotionInfo { get; set; }  // x_d_0_info
+
+        /// <summary>
+        /// Face crop computed from the first driving frame and held for the
+        /// whole clip. Driving frames used to go into the motion extractor
+        /// whole, resized to 256; the model was trained on tight face crops,
+        /// so with the face at ~60 % of the frame its <c>scale</c> output
+        /// tracked the apparent face box instead of head distance — an open
+        /// mouth or a pitch back made the box grow and the rendered head
+        /// jump larger — and expressions arrived at ~150 px and transferred
+        /// weakly. A fixed crop keeps <c>scale</c> meaning one thing across
+        /// the clip; per-frame re-cropping would add crop jitter on top.
+        /// </summary>
+        public CropInfo DrivingCrop { get; set; }
     }
 
     /// <summary>
@@ -46,6 +59,12 @@ namespace LiveTalk.Core
         private Model _stitching;                   // keypoint stitching refinement
         private Model _warpingSpade;               // neural warping and rendering
         private FaceAnalysis _faceAnalysis;        // face detection and analysis
+
+        /// <summary>
+        /// Bound on the driving clip's relative scale (driving / first frame)
+        /// applied to the source. See the clamp in <see cref="RenderMotion"/>.
+        /// </summary>
+        internal const float MaxRelativeScaleChange = 0.08f;
         
         // Configuration and State
         private readonly LiveTalkConfig _config;
@@ -866,7 +885,28 @@ namespace LiveTalk.Core
             }
             
             predInfo.Landmarks = lmk;
-            var img256 = FrameUtils.ResizeFrame(img, 256, 256, SamplingMode.Bilinear);
+
+            // Crop the driving frame around the face exactly as the source is
+            // cropped (same 2.3 / -0.125 framing), so the extractor sees the
+            // distribution it was trained on. The crop is fixed from frame 0.
+            Frame faceCrop;
+            if (frame0 || predInfo.DrivingCrop == null)
+            {
+                predInfo.DrivingCrop = _faceAnalysis.GetCropInfo(img, lmk, 512, 2.3f, -0.125f);
+                faceCrop = predInfo.DrivingCrop.ImageCrop;
+            }
+            else
+            {
+                var o2c = predInfo.DrivingCrop.InverseTransform;
+                var M = new float[,]
+                {
+                    { o2c.m00, o2c.m01, o2c.m03 },
+                    { o2c.m10, o2c.m11, o2c.m13 },
+                };
+                faceCrop = FrameUtils.AffineTransformFrame(img, M, 512, 512);
+            }
+
+            var img256 = FrameUtils.ResizeFrame(faceCrop, 256, 256, SamplingMode.Bilinear);
             var Id = NormalizeFrame(img256);
             var xDInfo = await GetKpInfo(Id);
             var Rd = MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
@@ -901,6 +941,12 @@ namespace LiveTalk.Core
             var deltaNew = MathUtils.AddArrays(xSInfo.Expression, expDiff);
             
             var scaleDiff = MathUtils.DivideArrays(xDInfo.Scale, xD0Info.Scale);
+            // A talking head does not change distance by more than a few
+            // percent within a clip; anything larger is the extractor reading
+            // an open mouth or a pitched-back head as a bigger face. The crop
+            // above removes most of that; this bounds what remains.
+            for (int i = 0; i < scaleDiff.Length; i++)
+                scaleDiff[i] = Mathf.Clamp(scaleDiff[i], 1f - MaxRelativeScaleChange, 1f + MaxRelativeScaleChange);
             var scaleNew = MathUtils.MultiplyArrays(xSInfo.Scale, scaleDiff);
             
             var tDiff = MathUtils.SubtractArrays(xDInfo.Translation, xD0Info.Translation);

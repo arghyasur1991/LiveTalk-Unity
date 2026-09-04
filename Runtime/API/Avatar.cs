@@ -223,9 +223,10 @@ namespace LiveTalk.API
         /// <list type="bullet">
         /// <item>1 (implicit, pre-2.1): one frame per driving frame at the clip's native rate, not loopable.</item>
         /// <item>2: motion resampled to 25 fps and crossfaded into a seamless forward loop before rendering.</item>
+        /// <item>3: driving frames are face-cropped (fixed from frame 0) before motion extraction and relative scale is bounded, so the head no longer jumps in size and expressions transfer at full strength.</item>
         /// </list>
         /// </summary>
-        internal const int MotionPipelineVersion = 2;
+        internal const int MotionPipelineVersion = 3;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };

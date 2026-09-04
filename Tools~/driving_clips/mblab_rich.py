@@ -36,7 +36,7 @@ args = ap.parse_args(argv)
 
 # ---------------------------------------------------------------- look knobs
 HAIR_COLOR = (0.052, 0.030, 0.017, 1.0)      # dark brown
-HAIR_STRANDS = 11000
+HAIR_STRANDS = 16000   # short cut needs density for coverage
 HAIR_POINTS = 8
 HAIR_ROOT_RADIUS = 0.00048                  # fat enough to cover a pixel: thinner strands shimmer frame to frame
 HAIR_TIP_RADIUS = 0.00018
@@ -100,8 +100,45 @@ def tune_skin():
     bsdf.inputs["Subsurface Weight"].default_value = SKIN_SSS_WEIGHT
     bsdf.inputs["Subsurface Scale"].default_value = SKIN_SSS_SCALE
     bsdf.inputs["Subsurface Radius"].default_value = (1.0, 0.35, 0.18)
-    bsdf.inputs["Roughness"].default_value = SKIN_ROUGHNESS
     bsdf.subsurface_method = 'RANDOM_WALK'
+    # Skin is not one roughness. A uniform value renders as plastic; real
+    # skin has oily T-zone / matte cheek variation and pore-scale breakup
+    # of the specular. Two noise octaves drive roughness around the base
+    # value and a faint bump gives the highlight something to break on.
+    # Everything here is driven by generated coordinates, so it is stable
+    # frame to frame and does not depend on the low-res MB-Lab maps.
+    if bsdf.inputs["Roughness"].links:
+        for l in list(bsdf.inputs["Roughness"].links):
+            g.links.remove(l)
+    coord = g.nodes.new("ShaderNodeTexCoord")
+    macro = g.nodes.new("ShaderNodeTexNoise"); macro.inputs["Scale"].default_value = 18.0
+    macro.inputs["Detail"].default_value = 3.0; macro.inputs["Roughness"].default_value = 0.5
+    pores = g.nodes.new("ShaderNodeTexNoise"); pores.inputs["Scale"].default_value = 900.0
+    pores.inputs["Detail"].default_value = 2.0
+    g.links.new(coord.outputs["Object"], macro.inputs["Vector"])
+    g.links.new(coord.outputs["Object"], pores.inputs["Vector"])
+    mix = g.nodes.new("ShaderNodeMix"); mix.data_type = 'FLOAT'; mix.inputs["Factor"].default_value = 0.35
+    g.links.new(macro.outputs["Fac"], mix.inputs[2]); g.links.new(pores.outputs["Fac"], mix.inputs[3])
+    ramp = g.nodes.new("ShaderNodeMapRange")
+    ramp.inputs["From Min"].default_value = 0.0; ramp.inputs["From Max"].default_value = 1.0
+    ramp.inputs["To Min"].default_value = SKIN_ROUGHNESS - 0.14
+    ramp.inputs["To Max"].default_value = SKIN_ROUGHNESS + 0.16
+    g.links.new(mix.outputs[0], ramp.inputs["Value"])
+    g.links.new(ramp.outputs["Result"], bsdf.inputs["Roughness"])
+    bump = g.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.08
+    bump.inputs["Distance"].default_value = 0.0004
+    g.links.new(pores.outputs["Fac"], bump.inputs["Height"])
+    if not bsdf.inputs["Normal"].links:
+        g.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    # take a little saturation out of the albedo: the MB-Lab map is pink
+    if bsdf.inputs["Base Color"].links:
+        src = bsdf.inputs["Base Color"].links[0].from_socket
+        g.links.remove(bsdf.inputs["Base Color"].links[0])
+        hsv = g.nodes.new("ShaderNodeHueSaturation")
+        hsv.inputs["Saturation"].default_value = 0.82
+        hsv.inputs["Value"].default_value = 0.96
+        g.links.new(src, hsv.inputs["Color"])
+        g.links.new(hsv.outputs["Color"], bsdf.inputs["Base Color"])
     # The material's Displacement output (fed by the 2048 displacement map)
     # is rendered as bump by EEVEE and produces blocky red patches at the
     # nostrils and eye corners; the Displace *modifier* already applies
@@ -291,33 +328,39 @@ def head_hair_strands():
             dz = r.z - hm.eye_z
             phi = math.atan2(abs(rel.x), -rel.y)
             radial_xy = Vector((rel.x, rel.y, 0)).length
-            jit = coherent(r, 40.0, 3.0) * 0.045 + Vector((rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-1, 1))) * 0.012
+            # Short, combed-back cut. Long procedural hair reads as straw and
+            # swings past the face edges — the extractor then sees hair, not
+            # face, changing frame to frame. Short strands hug the scalp:
+            # lift off the surface a little at the root, then follow a comb
+            # direction projected onto the scalp tangent plane, clamped to a
+            # few millimetres above the skull all the way to the tip.
+            jit = coherent(r, 60.0, 3.0) * 0.018 + Vector((rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-1, 1))) * 0.005
             front = phi < math.radians(58)
             crown = dz > 0.085
             if front:
-                length = 0.06 + 0.02 * rng.random()
-                target = Vector((0.35 * math.copysign(1, rel.x) + 0.2 * (abs(rel.x) / 0.06), 1.0, -0.2)).normalized()
-                pad_end = 0.004
+                length = 0.030 + 0.010 * rng.random()
+                comb = Vector((0.15 * math.copysign(1, rel.x), 1.0, -0.15))      # back, slightly out
             elif crown:
-                length = 0.09 + 0.025 * rng.random()
-                target = (Vector((rel.x, rel.y, 0)).normalized() * 0.45 + DOWN * 0.9).normalized()
-                pad_end = 0.005
+                length = 0.036 + 0.010 * rng.random()
+                comb = Vector((0.35 * math.copysign(1, rel.x), 0.75, -0.55))     # back and down over the crown
             else:
-                length = 0.11 + 0.03 * rng.random()
-                target = (DOWN + Vector((rel.x, rel.y, 0)).normalized() * 0.08).normalized()
-                pad_end = 0.004
+                length = 0.026 + 0.009 * rng.random()
+                comb = (DOWN * 0.8 + Vector((rel.x, rel.y, 0)).normalized() * 0.12 + Vector((0, 0.35, 0)))
+            # project the comb direction onto the tangent plane at the root
+            comb = (comb - n * comb.dot(n)).normalized()
+            pad_end = 0.003
             k = HAIR_POINTS
             seg = length / (k - 1)
             pos = r.copy(); pts = [pos.copy()]
             wave_phase = rng.random() * 6.283
-            wave_amp = 0.0005 + 0.0008 * rng.random()
+            wave_amp = 0.0002 + 0.0003 * rng.random()
             side = Vector((-rel.y, rel.x, 0)).normalized() if radial_xy > 1e-4 else Vector((1, 0, 0))
             for i in range(1, k):
                 t = i / (k - 1)
-                w = t ** 0.75
-                d = ((1 - w) * n + w * (target + jit)).normalized()
+                w = min(1.0, t * 2.5)                 # off the scalp quickly, then lie down
+                d = ((1 - w) * (n * 0.6 + comb * 0.4) + w * (comb + jit)).normalized()
                 pos = pos + d * seg
-                pad = 0.002 + pad_end * w
+                pad = 0.0015 + pad_end * w
                 if front or pos.z > C.z + 0.015:
                     # spherical clamp around the skull centre over the top
                     rr = pos - C
@@ -370,10 +413,39 @@ def brow_strands(sign):
 
 
 def lash_strands():
-    """Roots at the eyelash-card vertices that sit on the lid margin (about
-    one eye radius from the eye centre); upper lashes sweep forward and
-    up, lower ones forward and down."""
+    """Lid-margin positions come from the eyelash-card vertices (about one
+    eye radius from the eye centre), but each strand is ROOTED on the nearest
+    skin vertex, not on the card. Deform Curves on Surface finds a root by
+    sampling the surface at the strand's UV; MB-Lab's lash cards are stacks
+    of overlapping planes sharing UV space, so that lookup landed on the
+    wrong card or nowhere and the lashes stayed still while the lids closed
+    (the cards themselves move 13 mm under eyeClosed — the skin 4 mm away
+    moves 12.7 mm and has an unambiguous UV island). Upper lashes sweep
+    forward and up, lower ones forward and down."""
+    from mathutils.bvhtree import BVHTree
+    from mathutils.geometry import barycentric_transform
     lash_vs = verts_of_slot(slot_index("eyelash"))
+    skin_i = slot_index("skin3")
+    skin_polys = [p for p in me.polygons if p.material_index == skin_i]
+    bvh = BVHTree.FromPolygons(
+        [v.co for v in me.vertices],
+        [tuple(p.vertices) for p in skin_polys], all_triangles=False)
+
+    def skin_uv_at(co):
+        """UV on the skin island under `co`, interpolated inside the nearest
+        skin face — one distinct UV per lash, all on unambiguous skin."""
+        loc, _, pi, _ = bvh.find_nearest(co)
+        p = skin_polys[pi]
+        vs = [me.vertices[v].co for v in p.vertices]
+        uvs = [uv_layer[li].uv for li in p.loop_indices]
+        # fan-triangulate and take the triangle whose barycentric weights are valid
+        for a in range(1, len(vs) - 1):
+            tri = (vs[0], vs[a], vs[a + 1]); tuv = (uvs[0], uvs[a], uvs[a + 1])
+            uv3 = barycentric_transform(loc, tri[0], tri[1], tri[2],
+                                        Vector((tuv[0].x, tuv[0].y, 0)), Vector((tuv[1].x, tuv[1].y, 0)), Vector((tuv[2].x, tuv[2].y, 0)))
+            if -0.05 <= uv3.x <= 1.05 and -0.05 <= uv3.y <= 1.05:
+                return uv3.xy
+        return uvs[0].copy()
     # uv per vertex (first loop)
     vuv = {}
     for p in me.polygons:
@@ -381,12 +453,20 @@ def lash_strands():
             vuv.setdefault(me.loops[li].vertex_index, uv_layer[li].uv)
     strands = []
     n_pts = 5
-    for i in lash_vs:
-        r = me.vertices[i].co.copy()
-        eye = hm.eye_l if r.x > 0 else hm.eye_r
-        dist = (r - eye).length
-        if abs(dist - hm.eye_r_radius) > 0.0022:
+    seen = set()                                    # many card verts snap to one skin vert
+    for card_i in lash_vs:
+        card_r = me.vertices[card_i].co
+        # the lid-margin test runs on the CARD vertex (that is what sits one
+        # eye radius out); the snapped skin vertex is only where we root
+        eye = hm.eye_l if card_r.x > 0 else hm.eye_r
+        if abs((card_r - eye).length - hm.eye_r_radius) > 0.0022:
             continue                              # card outer edge, not the lid margin
+        key = (round(card_r.x, 4), round(card_r.y, 4), round(card_r.z, 4))
+        if key in seen:                             # stacked cards share positions
+            continue
+        seen.add(key)
+        r = card_r.copy()                           # margin position from the card…
+        root_uv = skin_uv_at(card_r)                # …deformation from the skin under it
         upper = r.z > eye.z + 0.001
         radial = (r - eye).normalized()
         count = LASH_UPPER_PER_ROOT if upper else LASH_LOWER_PER_ROOT
@@ -407,7 +487,7 @@ def lash_strands():
                 d = ((1 - t) * d0 + t * d1 + jitter).normalized()
                 pos = pos + d * (length / (n_pts - 1))
                 pts.append(pos.copy())
-            strands.append((pts, vuv[i], radii(n_pts, LASH_RADIUS, LASH_RADIUS * 0.3)))
+            strands.append((pts, root_uv, radii(n_pts, LASH_RADIUS, LASH_RADIUS * 0.3)))
     return strands
 
 
@@ -473,7 +553,7 @@ ensure_rest_position()
 
 brow_mat = hair_material("LP_hair_brow", (0.055, 0.033, 0.019, 1.0), roughness=0.45, tip_lighten=0.2)
 lash_mat = hair_material("LP_hair_lash", (0.016, 0.010, 0.008, 1.0), roughness=0.45, tip_lighten=0.0, random_dark=0.8)
-head_mat = hair_material("LP_hair_head", HAIR_COLOR, roughness=0.42, tip_lighten=0.15)
+head_mat = hair_material("LP_hair_head", HAIR_COLOR, roughness=0.58, tip_lighten=0.04)  # matte: bright strand sparkle flickers frame to frame
 
 make_curves("LP_browL", brow_strands(+1), brow_mat)
 make_curves("LP_browR", brow_strands(-1), brow_mat)

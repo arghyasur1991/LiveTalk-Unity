@@ -24,7 +24,10 @@ FOCAL_MM = 85.0
 SENSOR_MM = 36.0
 HEAD_FRACTION = 0.85
 BG_WORLD = (0.32, 0.32, 0.33, 1.0)
-BG_WORLD_STRENGTH = 0.6
+BG_WORLD_STRENGTH = 0.35
+WORLD_HDR = "interior.exr"      # ships with Blender; soft indoor skylight
+WORLD_HDR_YAW_DEG = 35.0        # turn the HDR so its brighter side is the key side
+DOF_FSTOP = 4.0
 BG_PLANE = (0.36, 0.36, 0.37, 1.0)
 
 
@@ -105,6 +108,13 @@ def setup_camera(scn, hm):
     fc = hm.face_center
     cam.location = Vector((fc.x, hm.face_front_y - dist, fc.z))
     cam.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')  # look along +Y
+    # A real lens: focus on the eye plane, f/4 at 85 mm ≈ 4 cm of depth of
+    # field, so the ears and backdrop soften the way a phone/webcam frame
+    # does. Shallow enough to read as a photograph, deep enough that every
+    # facial landmark the extractor tracks stays in focus.
+    cam_data.dof.use_dof = True
+    cam_data.dof.focus_distance = dist
+    cam_data.dof.aperture_fstop = DOF_FSTOP
     scn.camera = cam
     return cam, frame_h
 
@@ -132,9 +142,26 @@ def setup_backdrop(scn, hm):
     fc = hm.face_center
     world = bpy.data.worlds.new("LPWorld"); scn.world = world
     world.use_nodes = True
-    bg = world.node_tree.nodes["Background"]
-    bg.inputs[0].default_value = BG_WORLD
+    nt = world.node_tree
+    bg = nt.nodes["Background"]
     bg.inputs[1].default_value = BG_WORLD_STRENGTH
+    # Real-world ambient and reflections from one of the HDRs Blender ships
+    # for look-dev (see studiolights/world/license.txt): soft directional
+    # skylight on the skin and a believable catch light in the cornea. The
+    # backdrop plane still sits behind the head, so the *visible* background
+    # stays the plain grey the driver needs — the HDR only lights.
+    hdr = os.path.join(bpy.utils.resource_path('LOCAL'), "datafiles", "studiolights", "world", WORLD_HDR)
+    if os.path.exists(hdr):
+        env = nt.nodes.new("ShaderNodeTexEnvironment")
+        env.image = bpy.data.images.load(hdr)
+        mapping = nt.nodes.new("ShaderNodeMapping")
+        mapping.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(WORLD_HDR_YAW_DEG))
+        coord = nt.nodes.new("ShaderNodeTexCoord")
+        nt.links.new(coord.outputs["Generated"], mapping.inputs["Vector"])
+        nt.links.new(mapping.outputs["Vector"], env.inputs["Vector"])
+        nt.links.new(env.outputs["Color"], bg.inputs[0])
+    else:
+        bg.inputs[0].default_value = BG_WORLD
     me = bpy.data.meshes.new("Backdrop")
     s = 3.0
     me.from_pydata([(-s, 0, -s), (s, 0, -s), (s, 0, s), (-s, 0, s)], [], [(0, 1, 2, 3)])
@@ -149,8 +176,40 @@ def setup_backdrop(scn, hm):
     return plane
 
 
-def setup_render(scn, frame_start=0, frame_end=0, samples=48):
-    scn.render.engine = 'BLENDER_EEVEE_NEXT'
+def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="CYCLES"):
+    """`engine` is CYCLES (default — random-walk subsurface skin, physically
+    shaded hair, real reflections in the eyes; GPU Metal, adaptive sampling,
+    OpenImageDenoise) or BLENDER_EEVEE_NEXT (~4x faster, flatter skin)."""
+    if engine == "CYCLES":
+        scn.render.engine = 'CYCLES'
+        prefs = bpy.context.preferences.addons.get("cycles")
+        if prefs is not None:
+            cp = prefs.preferences
+            for dev_type in ("METAL", "CUDA", "OPTIX", "HIP", "ONEAPI"):
+                try:
+                    cp.compute_device_type = dev_type
+                    cp.get_devices()
+                    if any(d.type == dev_type for d in cp.devices):
+                        for d in cp.devices:
+                            d.use = d.type == dev_type
+                        scn.cycles.device = 'GPU'
+                        break
+                except TypeError:
+                    continue
+        scn.cycles.samples = samples
+        scn.cycles.use_adaptive_sampling = True
+        scn.cycles.adaptive_threshold = 0.02
+        scn.cycles.use_denoising = True
+        scn.cycles.denoiser = 'OPENIMAGEDENOISE'
+        scn.cycles.denoising_input_passes = 'RGB_ALBEDO_NORMAL'
+        scn.cycles.use_persistent_data = True       # keep BVH/textures between frames
+        scn.cycles.max_bounces = 6
+        scn.cycles.transparent_max_bounces = 16     # many thin strands
+        scn.cycles.caustics_reflective = False
+        scn.cycles.caustics_refractive = False
+        scn.cycles.blur_glossy = 1.0
+    else:
+        scn.render.engine = 'BLENDER_EEVEE_NEXT'
     scn.render.resolution_x = RES
     scn.render.resolution_y = RES
     scn.render.resolution_percentage = 100
@@ -168,7 +227,7 @@ def setup_render(scn, frame_start=0, frame_end=0, samples=48):
     scn.render.hair_type = 'STRAND'
     scn.render.hair_subdiv = 1
     scn.view_settings.view_transform = 'AgX'
-    scn.view_settings.look = 'None'
+    scn.view_settings.look = 'AgX - Medium High Contrast'
 
 
 def render_frames(scn, out_dir, frames):
