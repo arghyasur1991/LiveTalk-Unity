@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Video;
+using Newtonsoft.Json;
 
 namespace LiveTalk.API
 {
@@ -108,10 +109,14 @@ namespace LiveTalk.API
     }
 
     /// <summary>
-    /// Result of a voice preview generation
+    /// Result of a voice preview generation.
     /// </summary>
+    [Obsolete("Use LiveTalkAPI.DesignVoiceAsync, which returns a Voice whose Sample / SampleText are the preview take and is directly usable in CreateCharacter.")]
     public class VoicePreviewResult
     {
+        /// <summary>The designed voice, when <see cref="Success"/>. Hand it to <see cref="LiveTalkAPI.CreateCharacter"/>.</summary>
+        public Voice Voice { get; set; }
+
         /// <summary>
         /// Whether the generation was successful
         /// </summary>
@@ -296,18 +301,21 @@ namespace LiveTalk.API
     /// Integrated API that combines LivePortrait and MuseTalk for comprehensive talking head generation.
     /// Provides a unified interface for avatar animation with motion transfer and audio synchronization.
     /// 
-    /// Character Format:
-    /// - Bundle Format (.bundle) - macOS only:
-    ///   - Character data is stored in a .bundle directory that appears as a single file in macOS Finder
-    ///   - Contains Info.plist for proper macOS package metadata
-    ///   - Automatically used on macOS platforms
-    /// - Folder Format - Universal:
-    ///   - Character data is stored in a regular directory
+    /// Model (2.0): three entities with independent lifetimes, all under
+    /// <see cref="CharacterSaveLocation"/>.
+    /// - <see cref="Avatar"/> (<c>avatars/&lt;id&gt;</c>): a portrait's driving frames and latents.
+    ///   Id = content hash of the image and expression set; built once per portrait.
+    /// - <see cref="Voice"/> (<c>voices/&lt;id&gt;</c>): a designed (GUID id) or cloned
+    ///   (content-hash id) speaker with its sample take.
+    /// - <see cref="Character"/> (<c>characters/&lt;id&gt;/character.json</c>): a name plus
+    ///   references to one avatar and one voice. GUID id; instant to create;
+    ///   <see cref="Character.ReplaceVoice"/> swaps the voice without touching the face.
+    /// Pre-2.0 inline character folders at the root still load.
     ///   
     /// Workflow:
-    /// 1. LivePortrait: Generate animated textures from source image and driving frames
-    /// 2. MuseTalk: Apply lip synchronization to animated textures using audio
-    /// 3. Character: Create a character with the specified parameters.
+    /// 1. <see cref="CreateAvatarAsync"/>: LivePortrait animates the portrait, MuseTalk precomputes latents.
+    /// 2. <see cref="DesignVoiceAsync"/> / <see cref="CloneVoiceAsync"/>: make a speaker.
+    /// 3. <see cref="CreateCharacter"/>: compose the two; then <see cref="Character.SpeakAsync"/>.
     /// 
     /// This class orchestrates the complete pipeline for realistic talking head video generation.
     /// </summary>
@@ -366,7 +374,10 @@ namespace LiveTalk.API
         internal InferenceQueue MuseTalkQueue => _museTalkQueue;
 
         /// <summary>
-        /// Gets or sets the location to save the generated characters.
+        /// Root of everything LiveTalk saves. Layout:
+        /// <c>avatars/&lt;avatarId&gt;/</c>, <c>voices/&lt;voiceId&gt;/</c>,
+        /// <c>characters/&lt;characterId&gt;/character.json</c>, plus any
+        /// pre-2.0 inline character folders at the root.
         /// </summary>
         public static string CharacterSaveLocation 
         { 
@@ -397,9 +408,31 @@ namespace LiveTalk.API
         public static void SetCacheEnabled(bool enabled) => LiveTalkCache.SetEnabled(enabled);
 
         /// <summary>
-        /// Clear all cached files.
+        /// Clear all cached speech and frames. With no argument, clears the
+        /// cache <see cref="Initialize"/> configured (no-op before that). With
+        /// an explicit <paramref name="cacheLocation"/> it works before
+        /// <see cref="Initialize"/>, so a host can offer "clear cache" without
+        /// first paying for model setup. Avatars, voices and characters are not
+        /// cache and are untouched; see <see cref="DeleteAvatar"/> and friends.
         /// </summary>
-        public static void ClearCache() => LiveTalkCache.Clear();
+        /// <param name="cacheLocation">The cache folder to empty, or null for the initialized one.</param>
+        public static void ClearCache(string cacheLocation = null)
+        {
+            if (string.IsNullOrEmpty(cacheLocation))
+                LiveTalkCache.Clear();
+            else
+                LiveTalkCache.Clear(cacheLocation);
+        }
+
+        /// <summary>
+        /// Total bytes of cached speech and frames. With no argument, measures
+        /// the cache <see cref="Initialize"/> configured (0 before that). With
+        /// an explicit <paramref name="cacheLocation"/> it works before
+        /// <see cref="Initialize"/>. Walks the folder; do not call every frame.
+        /// </summary>
+        /// <param name="cacheLocation">The cache folder to measure, or null for the initialized one.</param>
+        public static long GetCacheSizeBytes(string cacheLocation = null) =>
+            string.IsNullOrEmpty(cacheLocation) ? LiveTalkCache.GetSize() : LiveTalkCache.GetSize(cacheLocation);
 
         #endregion
 
@@ -493,6 +526,7 @@ namespace LiveTalk.API
             ModelUtils.Initialize(ortLogLevel);
 
             Character.saveLocation = characterSaveLocation;
+            LiveTalkStorage.SweepStaging();
             _liveTalkInstance = new GameObject("LiveTalkAPI");
             _controller = _liveTalkInstance.AddComponent<LiveTalkController>();
             _liveTalkInstance.AddComponent<VideoPlayer>();
@@ -768,7 +802,332 @@ namespace LiveTalk.API
 
         #endregion
 
-        #region Public Methods - Character Creation
+        #region Public Methods - Avatars
+
+        /// <summary>
+        /// Gets or creates the <see cref="Avatar"/> for a portrait: the driving
+        /// frames, latents and face crops LivePortrait and MuseTalk need to
+        /// animate it. The id is a content hash of the image and
+        /// <paramref name="mode"/> (<see cref="HashUtils.GenerateAvatarId"/>), so
+        /// if <c>&lt;saveLocation&gt;/avatars/&lt;id&gt;/</c> already exists
+        /// and is complete it is loaded in seconds; otherwise the pipeline runs
+        /// (minutes, hundreds of MB) and writes it. A run that fails removes
+        /// its partial folder.
+        /// </summary>
+        /// <param name="image">Readable source portrait.</param>
+        /// <param name="mode">
+        /// Which expressions to generate. <see cref="CreationMode.VoiceOnly"/>
+        /// stores the image only (usable as a thumbnail, not animatable).
+        /// </param>
+        /// <param name="onComplete">Receives the loaded avatar. Never called on failure.</param>
+        /// <param name="onError">Receives the failure. Exactly one of the two callbacks fires.</param>
+        public IEnumerator CreateAvatarAsync(
+            Texture2D image,
+            CreationMode mode,
+            Action<Avatar> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(CreateAvatarCore(image, mode, onComplete), onError, "LiveTalkAPI.CreateAvatarAsync");
+        }
+
+        private IEnumerator CreateAvatarCore(Texture2D image, CreationMode mode, Action<Avatar> onComplete)
+        {
+            RequireInitialized();
+            Avatar avatar = null;
+            yield return Avatar.CreateOrLoadCore(image, mode, a => avatar = a);
+            onComplete?.Invoke(avatar);
+        }
+
+        /// <summary>
+        /// Loads an existing avatar from <c>&lt;saveLocation&gt;/avatars/&lt;avatarId&gt;/</c>.
+        /// Fails through <paramref name="onError"/> if the folder is missing or
+        /// incomplete.
+        /// </summary>
+        public IEnumerator LoadAvatarAsync(
+            string avatarId,
+            Action<Avatar> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(LoadAvatarCore(avatarId, onComplete), onError, "LiveTalkAPI.LoadAvatarAsync");
+        }
+
+        private IEnumerator LoadAvatarCore(string avatarId, Action<Avatar> onComplete)
+        {
+            RequireInitialized();
+            if (string.IsNullOrEmpty(avatarId))
+                throw new ArgumentException("Avatar ID cannot be null or empty.", nameof(avatarId));
+
+            string folder = LiveTalkStorage.AvatarFolder(avatarId);
+            if (!Directory.Exists(folder))
+                throw new DirectoryNotFoundException($"Avatar not found: {avatarId} (expected at {folder})");
+            if (!Avatar.IsComplete(folder, out string reason))
+                throw new InvalidDataException($"Avatar {avatarId} at {folder} is incomplete ({reason}); recreate it with CreateAvatarAsync.");
+
+            Avatar avatar = null;
+            yield return Avatar.LoadCore(folder, avatarId, modeHint: null, isLegacy: false, a => avatar = a);
+            onComplete?.Invoke(avatar);
+        }
+
+        /// <summary>
+        /// Ids of every complete avatar under <c>&lt;saveLocation&gt;/avatars/</c>.
+        /// </summary>
+        public string[] GetAvailableAvatarIds()
+        {
+            if (!_initialized || !LiveTalkStorage.HasRoot)
+                return Array.Empty<string>();
+            return ListFolders(LiveTalkStorage.AvatarsRoot, dir => Avatar.IsComplete(dir, out _));
+        }
+
+        /// <summary>
+        /// Deletes <c>avatars/&lt;avatarId&gt;/</c>. Refuses — throwing
+        /// <see cref="InvalidOperationException"/> that names them — if any
+        /// <c>characters/*/character.json</c> still references the avatar.
+        /// Delete or re-point those characters first. Missing avatar: no-op.
+        /// </summary>
+        public void DeleteAvatar(string avatarId)
+        {
+            RequireInitialized();
+            if (string.IsNullOrEmpty(avatarId))
+                throw new ArgumentException("Avatar ID cannot be null or empty.", nameof(avatarId));
+
+            var users = CharactersReferencing(f => f.avatarId == avatarId);
+            if (users.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Avatar {avatarId} is still referenced by character(s) {string.Join(", ", users)}; delete or re-point them first.");
+            }
+            LiveTalkStorage.DeleteFolder(LiveTalkStorage.AvatarFolder(avatarId));
+            Logger.Log($"[LiveTalkAPI] Deleted avatar {avatarId}");
+        }
+
+        #endregion
+
+        #region Public Methods - Voices
+
+        /// <summary>
+        /// Designs a new speaker from a description and renders
+        /// <paramref name="sampleText"/> as its <see cref="Voice.Sample"/>. Every
+        /// call samples a new speaker and gets a new GUID id — this is the
+        /// "roll the dice" operation; keep the <see cref="Voice"/> you like and
+        /// <see cref="DeleteVoice"/> the rest. Saved to
+        /// <c>&lt;saveLocation&gt;/voices/&lt;id&gt;/</c>. The rendered sample
+        /// is at the engine's native rate so it can be handed straight to
+        /// <see cref="CloneVoiceAsync"/> to lock the take.
+        /// </summary>
+        /// <param name="instruct">Optional free-text VoiceDesign notes, composed with the three enums.</param>
+        /// <param name="sampleText">Text the voice speaks as its sample. Required.</param>
+        public IEnumerator DesignVoiceAsync(
+            Gender gender,
+            Pitch pitch,
+            Speed speed,
+            string instruct,
+            string sampleText,
+            Action<Voice> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(DesignVoiceCore(gender, pitch, speed, instruct, sampleText, onComplete), onError,
+                "LiveTalkAPI.DesignVoiceAsync");
+        }
+
+        private IEnumerator DesignVoiceCore(
+            Gender gender, Pitch pitch, Speed speed, string instruct, string sampleText, Action<Voice> onComplete)
+        {
+            RequireInitialized();
+            Voice voice = null;
+            yield return TaskYield.Wait(Voice.DesignAsync(this, gender, pitch, speed, instruct, sampleText),
+                v => voice = v, "LiveTalkAPI.DesignVoiceAsync");
+            onComplete?.Invoke(voice);
+        }
+
+        /// <summary>
+        /// Clones a speaker from <paramref name="reference"/> (in-context when
+        /// <paramref name="transcript"/> is given, which is what reproduces the
+        /// speaker; x-vector only without it). The id is a content hash of the
+        /// reference PCM and transcript (<see cref="HashUtils.GenerateClonedVoiceId"/>),
+        /// so cloning the same take twice loads the existing
+        /// <c>&lt;saveLocation&gt;/voices/&lt;id&gt;/</c> instead of re-running
+        /// the encoders. The reference itself becomes <see cref="Voice.Sample"/>.
+        /// Best at 24 kHz and at least a few seconds long.
+        /// </summary>
+        public IEnumerator CloneVoiceAsync(
+            AudioClip reference,
+            string transcript,
+            Action<Voice> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(CloneVoiceCore(reference, transcript, onComplete), onError,
+                "LiveTalkAPI.CloneVoiceAsync");
+        }
+
+        private IEnumerator CloneVoiceCore(AudioClip reference, string transcript, Action<Voice> onComplete)
+        {
+            RequireInitialized();
+            Voice voice = null;
+            yield return TaskYield.Wait(Voice.CloneAsync(this, reference, transcript),
+                v => voice = v, "LiveTalkAPI.CloneVoiceAsync");
+            onComplete?.Invoke(voice);
+        }
+
+        /// <summary>
+        /// Loads an existing voice from <c>&lt;saveLocation&gt;/voices/&lt;voiceId&gt;/</c>.
+        /// Fails through <paramref name="onError"/> if the folder or its
+        /// <c>voice.json</c> is missing, or the engine cannot restore it.
+        /// </summary>
+        public IEnumerator LoadVoiceAsync(
+            string voiceId,
+            Action<Voice> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(LoadVoiceCore(voiceId, onComplete), onError, "LiveTalkAPI.LoadVoiceAsync");
+        }
+
+        private IEnumerator LoadVoiceCore(string voiceId, Action<Voice> onComplete)
+        {
+            RequireInitialized();
+            if (string.IsNullOrEmpty(voiceId))
+                throw new ArgumentException("Voice ID cannot be null or empty.", nameof(voiceId));
+
+            string folder = LiveTalkStorage.VoiceFolder(voiceId);
+            if (!Directory.Exists(folder))
+                throw new DirectoryNotFoundException($"Voice not found: {voiceId} (expected at {folder})");
+
+            Voice voice = null;
+            yield return TaskYield.Wait(Voice.LoadAsync(folder, voiceId, isLegacy: false, fallbackMeta: null),
+                v => voice = v, "LiveTalkAPI.LoadVoiceAsync");
+            onComplete?.Invoke(voice);
+        }
+
+        /// <summary>
+        /// Ids of every complete voice under <c>&lt;saveLocation&gt;/voices/</c>.
+        /// </summary>
+        public string[] GetAvailableVoiceIds()
+        {
+            if (!_initialized || !LiveTalkStorage.HasRoot)
+                return Array.Empty<string>();
+            return ListFolders(LiveTalkStorage.VoicesRoot, Voice.IsComplete);
+        }
+
+        /// <summary>
+        /// Deletes <c>voices/&lt;voiceId&gt;/</c>. Refuses — throwing
+        /// <see cref="InvalidOperationException"/> that names them — if any
+        /// <c>characters/*/character.json</c> still references the voice.
+        /// <see cref="Character.ReplaceVoice"/> or delete those characters
+        /// first. Missing voice: no-op.
+        /// </summary>
+        public void DeleteVoice(string voiceId)
+        {
+            RequireInitialized();
+            if (string.IsNullOrEmpty(voiceId))
+                throw new ArgumentException("Voice ID cannot be null or empty.", nameof(voiceId));
+
+            var users = CharactersReferencing(f => f.voiceId == voiceId);
+            if (users.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Voice {voiceId} is still referenced by character(s) {string.Join(", ", users)}; replace or delete them first.");
+            }
+            LiveTalkStorage.DeleteFolder(LiveTalkStorage.VoiceFolder(voiceId));
+            Logger.Log($"[LiveTalkAPI] Deleted voice {voiceId}");
+        }
+
+        #endregion
+
+        #region Public Methods - Characters
+
+        /// <summary>
+        /// Composes a loaded <see cref="Avatar"/> (or null for voice-only) and a
+        /// loaded <see cref="Voice"/> into a new <see cref="Character"/>.
+        /// Synchronous and instant: both halves already exist, so this only
+        /// writes <c>&lt;saveLocation&gt;/characters/&lt;id&gt;/character.json</c>
+        /// (<c>{ id, name, avatarId, voiceId, speechSampleRate, createdUtc }</c>)
+        /// and returns a character that is loaded and ready to speak. The id is
+        /// a fresh GUID. The avatar and voice folders are referenced, not
+        /// copied, so any number of characters can share them.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">No voice.</exception>
+        /// <exception cref="ArgumentException">Empty name, or an avatar/voice that lives inline in a pre-2.0 folder.</exception>
+        public Character CreateCharacter(string name, Avatar avatar, Voice voice)
+        {
+            RequireInitialized();
+            return Character.CreateNew(name, avatar, voice);
+        }
+
+        /// <summary>
+        /// Deletes <c>characters/&lt;characterId&gt;/</c>. The avatar and
+        /// voice it referenced are left in place for other characters; use
+        /// <see cref="DeleteAvatar"/> / <see cref="DeleteVoice"/> for those.
+        /// Also deletes a pre-2.0 inline character folder (which takes its
+        /// inline avatar and voice with it). Missing character: no-op.
+        /// </summary>
+        public void DeleteCharacter(string characterId)
+        {
+            RequireInitialized();
+            if (string.IsNullOrEmpty(characterId))
+                throw new ArgumentException("Character ID cannot be null or empty.", nameof(characterId));
+
+            string path = Character.GetCharacterPath(characterId);
+            if (path == null)
+                return;
+            LiveTalkStorage.DeleteFolder(path);
+            Logger.Log($"[LiveTalkAPI] Deleted character {characterId} ({path})");
+        }
+
+        /// <summary>Character ids whose <c>character.json</c> satisfies <paramref name="predicate"/>.</summary>
+        private List<string> CharactersReferencing(Func<CharacterFile, bool> predicate)
+        {
+            var users = new List<string>();
+            string root = LiveTalkStorage.CharactersRoot;
+            if (!Directory.Exists(root))
+                return users;
+            foreach (var dir in Directory.GetDirectories(root))
+            {
+                string json = Path.Combine(dir, CharacterFile.FileName);
+                if (!File.Exists(json))
+                    continue;
+                try
+                {
+                    var file = JsonConvert.DeserializeObject<CharacterFile>(File.ReadAllText(json));
+                    if (file != null && predicate(file))
+                        users.Add(string.IsNullOrEmpty(file.id) ? Path.GetFileName(dir) : file.id);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning($"[LiveTalkAPI] Unreadable {json}: {ex.Message}");
+                }
+            }
+            return users;
+        }
+
+        private static string[] ListFolders(string root, Func<string, bool> accept)
+        {
+            if (!Directory.Exists(root))
+                return Array.Empty<string>();
+            try
+            {
+                var ids = new List<string>();
+                foreach (var dir in Directory.GetDirectories(root))
+                {
+                    if (accept(dir))
+                        ids.Add(Path.GetFileName(dir));
+                }
+                return ids.ToArray();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"[LiveTalkAPI] Error listing {root}: {ex.Message}");
+                return Array.Empty<string>();
+            }
+        }
+
+        private void RequireInitialized()
+        {
+            if (!_initialized)
+                throw new InvalidOperationException("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first.");
+        }
+
+        #endregion
+
+        #region Public Methods - Character Creation (legacy)
 
         /// <summary>
         /// Creates a new character with the specified parameters
@@ -782,6 +1141,7 @@ namespace LiveTalk.API
         /// <param name="voicePromptPath">The path to the voice prompt</param>
         /// <param name="onComplete">Callback when character is successfully created</param>
         /// <param name="onError">Callback when an error occurs</param>
+        [Obsolete("Use CreateAvatarAsync + DesignVoiceAsync/CloneVoiceAsync + CreateCharacter")]
         public IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
@@ -793,11 +1153,21 @@ namespace LiveTalk.API
             Action<Character> onComplete,
             Action<Exception> onError)
         {
+#pragma warning disable CS0618 // forwards to the other obsolete overload
             return CreateCharacterAsync(name, gender, image, pitch, speed, intro, voicePromptPath, onComplete, onError, CreationMode.AllExpressions);
+#pragma warning restore CS0618
         }
 
         /// <summary>
-        /// Creates a new character with the specified parameters
+        /// Creates a new character with the specified parameters. Forwards to
+        /// the 2.0 API: <see cref="CreateAvatarAsync"/> for
+        /// <paramref name="image"/> (skipped when null), then
+        /// <see cref="CloneVoiceAsync"/> when <paramref name="voicePromptPath"/>
+        /// is given or <see cref="DesignVoiceAsync"/> otherwise (with
+        /// <paramref name="intro"/> as the sample text), then
+        /// <see cref="CreateCharacter"/>. The result is a 2.0 character under
+        /// <c>characters/</c> referencing its avatar and voice; the id is a
+        /// GUID, not a hash of the parameters.
         /// </summary>
         /// <param name="name">The name of the character</param>
         /// <param name="gender">The gender of the character</param>
@@ -809,7 +1179,7 @@ namespace LiveTalk.API
         /// <param name="onComplete">Callback when character is successfully created</param>
         /// <param name="onError">Callback when an error occurs</param>
         /// <param name="creationMode">The creation mode to use</param>
-        /// <param name="useBundle">Whether to use a bundle if possible</param>
+        /// <param name="useBundle">Ignored. The 2.0 layout does not use macOS bundles; legacy bundles still load.</param>
         /// <param name="voiceInstruct">Optional VoiceDesign instruct notes</param>
         /// <param name="voiceCloneRefText">Transcript of the clone reference wav (ICL). Required for Base ICL clone.</param>
         /// <remarks>
@@ -820,6 +1190,7 @@ namespace LiveTalk.API
         /// <paramref name="onComplete"/> is never called with a half-built
         /// character.
         /// </remarks>
+        [Obsolete("Use CreateAvatarAsync + DesignVoiceAsync/CloneVoiceAsync + CreateCharacter")]
         public IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
@@ -857,27 +1228,40 @@ namespace LiveTalk.API
             string voiceInstruct,
             string voiceCloneRefText)
         {
-            if (!_initialized)
+            RequireInitialized();
+
+            // Unguarded core: a fault in any step propagates out of this
+            // iterator to the Guard above, which routes it to onError.
+            // onComplete is only reached when every step succeeded.
+            Avatar avatar = null;
+            if (image != null)
             {
-                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first."));
-                yield break;
+                yield return Avatar.CreateOrLoadCore(image, creationMode, a => avatar = a);
             }
 
-            var character = new Character(name, gender, image, pitch, speed, intro);
-            character.VoiceInstruct = voiceInstruct;
-            character.VoiceCloneRefText = voiceCloneRefText;
-            if (creationMode == CreationMode.VoiceOnly)
+            Voice voice = null;
+            if (!string.IsNullOrEmpty(voicePromptPath))
             {
-                // Nothing downstream is lip-syncing this one, so hand back the
-                // TTS model's own rate instead of the 16 kHz lip-sync rate.
-                character.SpeechSampleRate = 0;
-            }
-            useBundle = useBundle && CanUseBundle();
+                // Thrown, not logged-and-returned: a silent return here left
+                // the character reported as created with no voice.
+                AudioClip reference = null;
+                yield return TaskYield.Wait(AudioFileIO.LoadClipAsync(voicePromptPath), c => reference = c,
+                    $"LiveTalkAPI.CreateCharacterAsync load {voicePromptPath}");
+                if (reference == null)
+                    throw new FileNotFoundException(
+                        $"Could not read the voice prompt (clone reference) at {voicePromptPath}", voicePromptPath);
 
-            // Unguarded core: a fault propagates out of this iterator to the
-            // Guard above, which routes it to onError. onComplete is only
-            // reached when every step succeeded.
-            yield return character.CreateAvatarCore(voicePromptPath, useBundle, creationMode);
+                yield return TaskYield.Wait(Voice.CloneAsync(this, reference, voiceCloneRefText),
+                    v => voice = v, "LiveTalkAPI.CreateCharacterAsync clone");
+            }
+            else
+            {
+                string sampleText = string.IsNullOrWhiteSpace(intro) ? "Hello, this is a test message" : intro;
+                yield return TaskYield.Wait(Voice.DesignAsync(this, gender, pitch, speed, voiceInstruct, sampleText),
+                    v => voice = v, "LiveTalkAPI.CreateCharacterAsync design");
+            }
+
+            var character = Character.CreateNew(name, avatar, voice);
             onComplete?.Invoke(character);
         }
 
@@ -983,45 +1367,59 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Get all available character IDs from the saveLocation
+        /// Get all available character IDs: every <c>characters/&lt;id&gt;/</c>
+        /// with a <c>character.json</c>, plus any pre-2.0 inline character
+        /// folder (<c>&lt;id&gt;</c> or <c>&lt;id&gt;.bundle</c>) at the root of
+        /// the save location.
         /// </summary>
-        /// <returns>Array of character GUIDs/hashes</returns>
+        /// <returns>Array of character ids</returns>
         public string[] GetAvailableCharacterIds()
         {
-            if (!_initialized || string.IsNullOrEmpty(Character.saveLocation))
+            if (!_initialized || !LiveTalkStorage.HasRoot)
             {
-                return new string[0];
+                return Array.Empty<string>();
             }
 
             try
             {
-                if (!Directory.Exists(Character.saveLocation))
+                string root = LiveTalkStorage.Root;
+                if (!Directory.Exists(root))
                 {
-                    return new string[0];
+                    return Array.Empty<string>();
                 }
 
-                var directories = Directory.GetDirectories(Character.saveLocation);
                 var characterIds = new List<string>();
 
-                foreach (var dir in directories)
+                // 2.0 layout.
+                string charactersRoot = LiveTalkStorage.CharactersRoot;
+                if (Directory.Exists(charactersRoot))
+                {
+                    foreach (var dir in Directory.GetDirectories(charactersRoot))
+                    {
+                        if (File.Exists(Path.Combine(dir, CharacterFile.FileName)))
+                            characterIds.Add(Path.GetFileName(dir));
+                    }
+                }
+
+                // Legacy inline folders at the root. avatars/, voices/ and
+                // characters/ hold no character.json of their own, so they fall
+                // out naturally.
+                foreach (var dir in Directory.GetDirectories(root))
                 {
                     string dirName = Path.GetFileName(dir);
-                    string characterConfigPath = Path.Combine(dir, "character.json");
-                    
-                    // Only include directories that have a character.json file
-                    if (File.Exists(characterConfigPath))
+                    if (!File.Exists(Path.Combine(dir, CharacterFile.FileName)))
+                        continue;
+
+                    // Remove .bundle extension if present to get the actual character ID
+                    if (dirName.EndsWith(".bundle"))
                     {
-                        // Remove .bundle extension if present to get the actual character ID
-                        if (dirName.EndsWith(".bundle"))
-                        {
-                            dirName = dirName.Substring(0, dirName.Length - 7); // Remove ".bundle"
-                        }
-                        
-                        // Avoid duplicates (in case both folder and bundle exist for same character)
-                        if (!characterIds.Contains(dirName))
-                        {
-                            characterIds.Add(dirName);
-                        }
+                        dirName = dirName.Substring(0, dirName.Length - 7); // Remove ".bundle"
+                    }
+
+                    // Avoid duplicates (in case both folder and bundle exist for same character)
+                    if (!characterIds.Contains(dirName))
+                    {
+                        characterIds.Add(dirName);
                     }
                 }
 
@@ -1030,14 +1428,16 @@ namespace LiveTalk.API
             catch (Exception ex)
             {
                 Logger.LogError($"[LiveTalkAPI] Error getting available character IDs: {ex.Message}");
-                return new string[0];
+                return Array.Empty<string>();
             }
         }
 
         /// <summary>
-        /// Get the recommended character format for the current platform
+        /// Whether this platform can read macOS <c>.bundle</c> character
+        /// folders. Only pre-2.0 characters use them; the 2.0 layout writes
+        /// plain folders everywhere.
         /// </summary>
-        /// <returns>True if bundle format is recommended, false for folder format</returns>
+        /// <returns>True on macOS</returns>
         public static bool CanUseBundle()
         {
             return Application.platform == RuntimePlatform.OSXEditor || Application.platform == RuntimePlatform.OSXPlayer;
@@ -1048,14 +1448,20 @@ namespace LiveTalk.API
         #region Public Methods - Voice Preview
 
         /// <summary>
-        /// Generate a preview voice sample with the specified parameters. No caching.
+        /// Generate a preview voice sample with the specified parameters.
         /// This is used for "rolling the dice" to preview different voices before committing.
+        /// Implemented on <see cref="DesignVoiceAsync"/>: the preview is a real,
+        /// saved <see cref="Voice"/> under <c>voices/</c> (returned as
+        /// <c>VoicePreviewResult.Voice</c>; <c>VoiceFolderPath</c> is its folder),
+        /// so a chosen preview can go straight into <see cref="CreateCharacter"/>
+        /// and a rejected one is removed with <see cref="DeleteVoice"/>.
         /// </summary>
         /// <param name="gender">Voice gender ("male" or "female")</param>
         /// <param name="pitch">Voice pitch ("verylow", "low", "moderate", "high", "veryhigh")</param>
         /// <param name="speed">Voice speed ("verylow", "low", "moderate", "high", "veryhigh")</param>
         /// <param name="introText">Text to speak for the voice sample</param>
-        /// <returns>VoicePreviewResult containing the AudioClip and voice folder path</returns>
+        /// <returns>VoicePreviewResult containing the AudioClip, the Voice and its folder path</returns>
+        [Obsolete("Use DesignVoiceAsync, which returns a Voice directly.")]
         public async Task<VoicePreviewResult> GenerateVoicePreviewAsync(
             string gender,
             string pitch,
@@ -1063,10 +1469,7 @@ namespace LiveTalk.API
             string introText = "Hello, I am a detective ready to solve mysteries.",
             string instruct = null)
         {
-            if (!_initialized)
-            {
-                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
-            }
+            RequireInitialized();
 
             if (string.IsNullOrEmpty(gender))
             {
@@ -1082,36 +1485,15 @@ namespace LiveTalk.API
 
             try
             {
-                var voice = await QwenTts.CreateDesignedVoiceAsync(new VoiceDesignSpec(
-                    VoiceInstruct.Compose(ParseGender(gender), ParsePitch(pitch), ParseSpeed(speed), instruct)));
-
-                if (voice == null)
-                {
-                    Logger.LogError("[LiveTalkAPI] Failed to create voice preview");
-                    return new VoicePreviewResult { Success = false, ErrorMessage = "Failed to create voice" };
-                }
-
-                // A designed voice carries no audio of its own, so the preview
-                // has to be rendered. This is also what makes the take usable
-                // as a clone reference afterwards.
-                var take = await voice.SpeakAsync(introText);
-                var audioClip = take.ToAudioClip("VoicePreview");
-
-                string previewId = Guid.NewGuid().ToString("N").Substring(0, 8);
-                string tempVoiceFolder = Path.Combine(Application.temporaryCachePath, "VoicePreviews", previewId);
-                Directory.CreateDirectory(tempVoiceFolder);
-
-                // Saved with the rendered take, so sample.wav genuinely exists
-                // if the player picks this preview.
-                await voice.SaveAsync(tempVoiceFolder, take);
-
-                Logger.Log($"[LiveTalkAPI] Voice preview generated: {tempVoiceFolder}");
+                var voice = await Voice.DesignAsync(
+                    this, ParseGender(gender), ParsePitch(pitch), ParseSpeed(speed), instruct, introText);
 
                 return new VoicePreviewResult
                 {
                     Success = true,
-                    AudioClip = audioClip,
-                    VoiceFolderPath = tempVoiceFolder,
+                    Voice = voice,
+                    AudioClip = voice.Sample,
+                    VoiceFolderPath = voice.Folder,
                     Gender = gender.ToLower(),
                     Pitch = pitch?.ToLower() ?? "moderate",
                     Speed = speed?.ToLower() ?? "moderate"
@@ -1146,8 +1528,11 @@ namespace LiveTalk.API
         };
 
         /// <summary>
-        /// Clean up all voice preview temp folders
+        /// Clean up the pre-2.0 voice preview temp folder. Previews made by
+        /// the current <see cref="GenerateVoicePreviewAsync"/> are saved voices;
+        /// remove those with <see cref="DeleteVoice"/>.
         /// </summary>
+        [Obsolete("Previews are saved voices now; remove unwanted ones with DeleteVoice.")]
         public void CleanupVoicePreviews()
         {
             string previewsFolder = Path.Combine(Application.temporaryCachePath, "VoicePreviews");
@@ -1166,9 +1551,13 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Delete a specific voice preview folder
+        /// Delete a specific voice preview folder by path. For a preview from
+        /// the current <see cref="GenerateVoicePreviewAsync"/>, prefer
+        /// <see cref="DeleteVoice"/> with <c>Voice.Id</c>, which refuses if a
+        /// character still uses it.
         /// </summary>
         /// <param name="voiceFolderPath">Path to the voice folder to delete</param>
+        [Obsolete("Use DeleteVoice(voiceId).")]
         public void DeleteVoicePreview(string voiceFolderPath)
         {
             if (string.IsNullOrEmpty(voiceFolderPath) || !Directory.Exists(voiceFolderPath))

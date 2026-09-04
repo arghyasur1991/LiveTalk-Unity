@@ -439,6 +439,28 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// Called by <see cref="Character.ReplaceVoice"/>. Speech generated or
+        /// queued in the old voice must not play as the new one, so if anything
+        /// is speaking, queued or pending the pipeline is stopped (which puts
+        /// idle back on screen, as any Stop does). A player that is simply
+        /// Ready is left alone; its next <see cref="QueueSpeech"/> reads the
+        /// character's current voice.
+        /// </summary>
+        internal void OnVoiceReplaced()
+        {
+            bool anythingInFlight = _state == PlaybackState.Speaking
+                                    || _speechQueue.Count > 0
+                                    || _pendingAnimations.Count > 0
+                                    || _isSpeechProcessorRunning
+                                    || _isAnimationPlayerRunning;
+            if (!anythingInFlight)
+                return;
+
+            Logger.Log("[CharacterPlayer] Voice replaced while speech was in flight — dropping it");
+            Stop();
+        }
+
+        /// <summary>
         /// Pause playback: idle animation stops, and if a line was playing its
         /// audio is paused and frame playback holds. No-op unless the player is
         /// Ready or Speaking. Speech queued while paused starts on <see cref="Resume"/>.
@@ -591,14 +613,20 @@ namespace LiveTalk.API
         {
             _idleFrames = new List<Texture>();
             
-            if (_character == null || string.IsNullOrEmpty(_character.CharacterFolder))
+            if (_character == null)
             {
-                Logger.LogWarning($"[CharacterPlayer] Cannot load idle frames: character or folder is null");
+                Logger.LogWarning($"[CharacterPlayer] Cannot load idle frames: no character");
                 yield break;
             }
-            
-            // Expression 0 folder path
-            string expression0Folder = Path.Combine(_character.CharacterFolder, "drivingFrames", "expression-0");
+
+            // Expression 0 of the character's avatar. Null for a voice-only
+            // character, which is not a problem — it plays audio only.
+            string expression0Folder = _character.IdleFramesFolder;
+            if (string.IsNullOrEmpty(expression0Folder))
+            {
+                Logger.Log($"[CharacterPlayer] {_character.Name} has no animatable avatar; no idle frames");
+                yield break;
+            }
             
             if (!Directory.Exists(expression0Folder))
             {
