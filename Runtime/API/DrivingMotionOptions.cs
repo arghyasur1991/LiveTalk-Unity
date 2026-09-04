@@ -33,6 +33,19 @@ namespace LiveTalk.API
         /// <summary>True when <see cref="LoopBlendSeconds"/> asks for a loopable result.</summary>
         public bool Loopable => LoopBlendSeconds > 0f;
 
+        /// <summary>
+        /// Multiplier on the driving clip's expression change relative to its
+        /// first frame, applied before rendering (the analogue of upstream
+        /// LivePortrait's <c>driving_multiplier</c>). 1 reproduces the driver
+        /// as extracted. LivePortrait transfers expression conservatively, and
+        /// a source whose resting face is already expressive — a smiling
+        /// portrait, say — absorbs part of any opposite-signed delta, so a
+        /// clearly sad driver can arrive as a faint frown. Values of 1.3–1.7
+        /// restore legibility; above ~2 the mouth and brows start to tear.
+        /// Head pose, translation and scale are not affected.
+        /// </summary>
+        public float ExpressionGain { get; set; } = 1f;
+
         /// <summary>Frames in the loop blend window at the effective output rate.</summary>
         internal int LoopBlendFrames(float outputFps) =>
             LoopBlendSeconds > 0f && outputFps > 0f ? UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(LoopBlendSeconds * outputFps)) : 0;

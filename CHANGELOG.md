@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Fixed
+- **Per-expression expression gain** (`DrivingMotionOptions.ExpressionGain`, the analogue of upstream `driving_multiplier`). LivePortrait transfers expression conservatively, and a source whose resting face is already expressive absorbs part of any opposite-signed delta — a clearly sad driver (knitted inner brows, downturned pouting mouth, head dropped) arrived on a smiling portrait as a faint frown. Avatars apply `sad` 1.7, `confused` / `disapprove` 1.35, everything else 1; the table is part of the avatar signature. Pose, translation and scale are untouched.
 - **Driving frames are face-cropped before motion extraction, and relative scale is bounded.** Every driving frame used to go into the motion extractor whole, resized to 256. The model was trained on tight face crops (the same 2.3 / -0.125 framing the source already gets), so with the face at ~60 % of the frame its `scale` output tracked the apparent face box rather than head distance: an open mouth or a pitched-back head grew the rendered head mid-clip, and expressions arrived at ~150 px and transferred weakly. The crop is computed on the first driving frame and held for the clip (a fixed camera does not need per-frame re-cropping, which would add jitter), and the driving/reference scale ratio is clamped to ±8 %. `MotionPipelineVersion` 3; existing avatars rebuild once. Measured on the previous `surprised` clip: head extent constant within 3 px across the hold that used to jump.
 
 ### Changed

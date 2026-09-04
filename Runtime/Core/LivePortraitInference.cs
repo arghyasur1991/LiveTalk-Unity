@@ -841,6 +841,24 @@ namespace LiveTalk.Core
                 edited = MotionSequence.Resample(edited, options.SourceFps, options.TargetFps);
             outputFps = options.OutputFps;
 
+            // Expression gain: scale each frame's expression delta from the
+            // clip's reference (first) frame. Done here, on the motion, so the
+            // rendered frames, the loop blend and the cache all see one thing.
+            if (edited.Count > 0 && Mathf.Abs(options.ExpressionGain - 1f) > 1e-4f)
+            {
+                var exp0 = edited[0].Expression;
+                float g = options.ExpressionGain;
+                for (int i = 0; i < edited.Count; i++)
+                {
+                    var e = edited[i].Expression;
+                    if (e == null || exp0 == null || e.Length != exp0.Length) continue;
+                    var scaled = new float[e.Length];
+                    for (int k = 0; k < e.Length; k++)
+                        scaled[k] = exp0[k] + g * (e[k] - exp0[k]);
+                    edited[i].Expression = scaled;
+                }
+            }
+
             blendFrames = options.LoopBlendFrames(outputFps);
             if (blendFrames > 0)
             {

@@ -238,8 +238,33 @@ namespace LiveTalk.API
         /// per call because the API fills <see cref="DrivingMotionOptions.SourceFps"/>
         /// in from each expression's clip.
         /// </summary>
-        private static DrivingMotionOptions DrivingMotion =>
-            new() { TargetFps = DefaultFrameRate, LoopBlendSeconds = 0.4f };
+        private static DrivingMotionOptions DrivingMotion(string expression) =>
+            new()
+            {
+                TargetFps = DefaultFrameRate,
+                LoopBlendSeconds = 0.4f,
+                ExpressionGain = ExpressionGainFor(expression),
+            };
+
+        /// <summary>
+        /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/>.
+        /// LivePortrait transfers expression conservatively, and the negative
+        /// emotions suffer most: a sad driver with knitted inner brows and a
+        /// downturned mouth arrived on a smiling portrait as a faint frown,
+        /// because the delta only partly cancels the smile it starts from.
+        /// Positive and pose-led expressions (smile, approve, surprised) read
+        /// at 1. Part of <see cref="Signature"/>: changing a value rebuilds.
+        /// </summary>
+        internal static float ExpressionGainFor(string expression) => expression switch
+        {
+            "sad" => 1.7f,
+            "confused" => 1.35f,
+            "disapprove" => 1.35f,
+            _ => 1f,
+        };
+
+        private static string ExpressionGainSignature(CreationMode mode) =>
+            string.Join(",", ExpressionsFor(mode).Select(e => e + "=" + ExpressionGainFor(e).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
 
         private Avatar(string id, CreationMode mode, string folder, Texture2D image, bool isLegacy)
         {
@@ -267,6 +292,7 @@ namespace LiveTalk.API
         /// </summary>
         internal static string Signature(CreationMode mode) =>
             mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion
+            + ";gain=" + ExpressionGainSignature(mode)
             + ";clips=" + DrivingClipsHash;
 
         private static string _drivingClipsHash;
@@ -453,7 +479,7 @@ namespace LiveTalk.API
                 }
 
                 // Manifest last: its presence is what marks the folder complete.
-                var motion = DrivingMotion;
+                var motion = DrivingMotion("talk-neutral");   // fps / loopable are the same for every expression; only gain differs
                 var manifest = new AvatarManifest
                 {
                     id = id,
@@ -505,7 +531,7 @@ namespace LiveTalk.API
 
             // Generate animated textures using LivePortrait, with the driving
             // motion retimed to the canonical rate and made loopable first.
-            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, DrivingMotion);
+            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, DrivingMotion(expression));
 
             // Process frames
             var processResult = new ProcessFramesResult();
