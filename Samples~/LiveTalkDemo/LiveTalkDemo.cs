@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 
 namespace LiveTalk.Samples
 {
@@ -11,15 +10,18 @@ namespace LiveTalk.Samples
     using UnityEngine.Video;
 
     /// <summary>
-    /// Demo showcasing the integrated LivePortrait + MuseTalk workflow
+    /// Demo showcasing the integrated LivePortrait + MuseTalk + TTS workflow.
+    /// Uses only uGUI (<see cref="Text"/>, <see cref="Button"/>, <see cref="RawImage"/>,
+    /// <see cref="Slider"/>), so it compiles with no packages beyond LiveTalk's own.
     /// 
-    /// Workflow:
-    /// 1. User provides a single source image (portrait)
-    /// 2. User provides driving frames (expressions/head movements) 
-    /// 3. User provides audio for lip sync
-    /// 4. LivePortrait generates animated textures from source + driving frames
-    /// 5. MuseTalk applies lip sync to the animated textures
-    /// 6. Result: Complete talking head animation with expressions and lip sync
+    /// Buttons:
+    /// 1. Generate Animated: LivePortrait animates the source portrait with driving frames
+    ///    (a folder under StreamingAssets, or a VideoPlayer).
+    /// 2. Generate Talking Head: MuseTalk lip-syncs the portrait to an AudioClip.
+    /// 3. Create Character (2.0 API): CreateAvatarAsync + DesignVoiceAsync + CreateCharacter.
+    ///    The avatar is built once per portrait; the voice is a fresh VoiceDesign speaker.
+    /// 4. Load Character: LoadCharacterAsyncFromId with the id printed by step 3.
+    /// 5. Speak: Character.SpeakAsync, with lip-sync frames or voice only.
     /// </summary>
     public class LiveTalkDemo : MonoBehaviour
     {
@@ -33,9 +35,13 @@ namespace LiveTalk.Samples
         [SerializeField] private Gender characterGender = Gender.Female;
         [SerializeField] private Pitch characterPitch = Pitch.Moderate;
         [SerializeField] private Speed characterSpeed = Speed.Moderate;
-        [SerializeField] private string characterIntro = "Hello, I am a character.";
+        [Tooltip("Rendered by the designed voice as its sample; also what you would clone to lock the voice.")]
+        [SerializeField] private string characterIntro = "Hello, this is a short voice sample.";
+        [Tooltip("Optional free-text VoiceDesign notes, e.g. 'warm, unhurried, close-mic'.")]
+        [SerializeField] private string voiceInstruct = "";
         
         [Header("Character Loading Settings")]
+        [Tooltip("Character id printed to the console after Create Character, or any id from LiveTalkAPI.GetAvailableCharacterIds().")]
         [SerializeField] private string characterIdToLoad = "";
         [SerializeField] private string textToSpeak = "Hello, this is a test message.";
         
@@ -63,8 +69,8 @@ namespace LiveTalk.Samples
         [SerializeField] private Button createCharacterButton;
         [SerializeField] private Button loadCharacterButton;
         [SerializeField] private Button speakButton;
-        [SerializeField] private TMP_Text statusText;
-        [SerializeField] private TMP_Text fpsText;
+        [SerializeField] private Text statusText;
+        [SerializeField] private Text fpsText;
         [SerializeField] private RawImage previewImage;
         [SerializeField] private Slider progressSlider;
         [SerializeField] private bool generateVoiceOnly = false;
@@ -142,7 +148,7 @@ namespace LiveTalk.Samples
                 MemoryUsage memoryUsage = IsMobile() ? MemoryUsage.Optimal : MemoryUsage.Balanced;
                 _api.Initialize(logLevel, memoryUsage: memoryUsage);
                 
-                UpdateStatus("LiveTalk and CharacterFactory initialized successfully!");
+                UpdateStatus("LiveTalk initialized successfully!");
                 SetButtonsEnabled(true);
             }
             catch (System.Exception e)
@@ -428,58 +434,80 @@ namespace LiveTalk.Samples
         }
         
         /// <summary>
-        /// Create a character using the Character Creator API
+        /// Create a character with the 2.0 API: an Avatar (built once per portrait,
+        /// minutes the first time, seconds after), a designed Voice (a new speaker
+        /// every call), and a Character that references both.
         /// </summary>
         IEnumerator CreateCharacter()
         {
             if (!ValidateInputsForCharacterCreation()) yield break;
             
-            UpdateStatus("Creating character...");
             SetButtonsEnabled(false);
             
-            UpdateStatus($"Creating character '{characterName}' with {characterGender} voice...");
-            
-            // Track completion state
-            bool completed = false;
-            Character createdCharacter = null;
+            // 1. Avatar: get-or-create on the portrait. SingleExpression keeps the
+            //    demo short; AllExpressions gives all seven expression indices.
+            UpdateStatus("Creating avatar (LivePortrait + MuseTalk preprocessing)...");
+            Avatar avatar = null;
             System.Exception error = null;
-            
-            // Create character asynchronously with callbacks
-            yield return _api.CreateCharacterAsync(
-                characterName,
-                characterGender,
+            yield return _api.CreateAvatarAsync(
                 sourceImage,
+                CreationMode.SingleExpression,
+                onComplete: a => avatar = a,
+                onError: ex => error = ex
+            );
+            if (error != null)
+            {
+                UpdateStatus($"Avatar creation failed: {error.Message}");
+                Debug.LogError($"[LiveTalkDemo] Avatar creation error: {error}");
+                SetButtonsEnabled(true);
+                yield break;
+            }
+            
+            // 2. Voice: roll a VoiceDesign speaker and render the intro as its sample.
+            UpdateStatus($"Designing a {characterGender} voice...");
+            Voice voice = null;
+            yield return _api.DesignVoiceAsync(
+                characterGender,
                 characterPitch,
                 characterSpeed,
-                characterIntro,
-                null,
-                onComplete: (character) => {
-                    createdCharacter = character;
-                    completed = true;
-                },
-                onError: (ex) => {
-                    error = ex;
-                },
-                creationMode: CreationMode.SingleExpression
+                instruct: string.IsNullOrWhiteSpace(voiceInstruct) ? null : voiceInstruct,
+                sampleText: characterIntro,
+                onComplete: v => voice = v,
+                onError: ex => error = ex
             );
+            if (error != null)
+            {
+                UpdateStatus($"Voice design failed: {error.Message}");
+                Debug.LogError($"[LiveTalkDemo] Voice design error: {error}");
+                SetButtonsEnabled(true);
+                yield break;
+            }
             
-            // Handle the result
-            if (error != null && !completed)
+            // 3. Character: instant; writes character.json referencing the two ids.
+            Character created;
+            try
             {
-                UpdateStatus($"Character creation failed: {error.Message}");
-                Debug.LogError($"[LiveTalkDemo] Character creation error: {error}");
+                created = _api.CreateCharacter(characterName, avatar, voice);
             }
-            else if (createdCharacter != null)
+            catch (System.Exception ex)
             {
-                UpdateStatus($"Character '{createdCharacter.Name}' created successfully!");
-                Debug.Log($"[LiveTalkDemo] Character saved to: {LiveTalkAPI.CharacterSaveLocation}");
-                Debug.Log($"[LiveTalkDemo] Character details: {createdCharacter.Name}, {createdCharacter.Gender}, Pitch: {createdCharacter.Pitch}, Speed: {createdCharacter.Speed}");
-                
-                // Character created - you can now use its ID to load it
+                UpdateStatus($"Character creation failed: {ex.Message}");
+                Debug.LogError($"[LiveTalkDemo] Character creation error: {ex}");
+                SetButtonsEnabled(true);
+                yield break;
             }
-            else
+            
+            _loadedCharacter = created;
+            characterIdToLoad = created.Id;
+            UpdateStatus($"Character '{created.Name}' created ({created.Id}). Ready to speak.");
+            Debug.Log($"[LiveTalkDemo] Saved under: {LiveTalkAPI.CharacterSaveLocation}");
+            Debug.Log($"[LiveTalkDemo] avatar={avatar.Id} ({avatar.Mode}), voice={voice.Id} ({voice.Kind}, {voice.Gender}/{voice.Pitch}/{voice.Speed})");
+            
+            // The designed voice's Sample is the intro it just rendered; audition it.
+            if (audioSource != null && voice.Sample != null)
             {
-                UpdateStatus("Character creation completed but no character was returned");
+                audioSource.clip = voice.Sample;
+                audioSource.Play();
             }
             
             SetButtonsEnabled(true);
@@ -526,7 +554,8 @@ namespace LiveTalk.Samples
             {
                 _loadedCharacter = loadedCharacter;
                 UpdateStatus($"Character '{loadedCharacter.Name}' loaded successfully! Ready to speak.");
-                Debug.Log($"[LiveTalkDemo] Character loaded: {loadedCharacter.Name}, Data loaded: {loadedCharacter.IsDataLoaded}");
+                Debug.Log($"[LiveTalkDemo] Character loaded: {loadedCharacter.Name}, voice {loadedCharacter.Voice.Id} ({loadedCharacter.Voice.Kind}), " +
+                          $"avatar {(loadedCharacter.Avatar != null ? loadedCharacter.Avatar.Id : "none")}, legacy layout: {loadedCharacter.IsLegacy}");
             }
             else
             {

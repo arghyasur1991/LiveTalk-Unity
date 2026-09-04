@@ -6,6 +6,7 @@ using UnityEngine.UI;
 
 namespace LiveTalk.API
 {
+    using Utils;
     /// <summary>
     /// Orchestrates multi-character turn-based dialogue using CharacterPlayer instances.
     /// Handles speaker switching, audio coordination, and visual display management.
@@ -64,7 +65,7 @@ namespace LiveTalk.API
         {
             if (_characterPlayers.ContainsKey(characterId))
             {
-                Debug.LogWarning($"[DialogueOrchestrator] Character {characterId} already registered, replacing");
+                Logger.LogWarning($"[DialogueOrchestrator] Character {characterId} already registered, replacing");
                 _characterPlayers[characterId] = player;
             }
             else
@@ -78,7 +79,7 @@ namespace LiveTalk.API
             player.OnSpeechEnded += () => OnCharacterSpeechEnded(characterId);
             player.OnError += OnError;
             
-            Debug.Log($"[DialogueOrchestrator] Registered character: {characterId}");
+            Logger.Log($"[DialogueOrchestrator] Registered character: {characterId}");
         }
         
         /// <summary>
@@ -91,7 +92,7 @@ namespace LiveTalk.API
                 player.OnFrameUpdate -= OnCharacterFrameUpdate;
                 player.OnError -= OnError;
                 _characterPlayers.Remove(characterId);
-                Debug.Log($"[DialogueOrchestrator] Unregistered character: {characterId}");
+                Logger.Log($"[DialogueOrchestrator] Unregistered character: {characterId}");
             }
         }
         
@@ -103,7 +104,7 @@ namespace LiveTalk.API
         {
             if (!_characterPlayers.ContainsKey(characterId))
             {
-                Debug.LogError($"[DialogueOrchestrator] Character {characterId} not registered!");
+                Logger.LogError($"[DialogueOrchestrator] Character {characterId} not registered!");
                 return;
             }
             
@@ -115,7 +116,7 @@ namespace LiveTalk.API
                 WithAnimation = withAnimation
             });
             
-            Debug.Log($"[DialogueOrchestrator] Queued dialogue for {characterId}: {text.Substring(0, Math.Min(50, text.Length))}... (Queue size: {_dialogueQueue.Count}, Animation: {withAnimation})");
+            Logger.Log($"[DialogueOrchestrator] Queued dialogue for {characterId}: {text.Substring(0, Math.Min(50, text.Length))}... (Queue size: {_dialogueQueue.Count}, Animation: {withAnimation})");
             
             // Start processing if not already running
             if (!_isProcessing)
@@ -133,14 +134,14 @@ namespace LiveTalk.API
             {
                 if (!_characterPlayers.ContainsKey(segment.CharacterId))
                 {
-                    Debug.LogError($"[DialogueOrchestrator] Character {segment.CharacterId} not registered, skipping segment!");
+                    Logger.LogError($"[DialogueOrchestrator] Character {segment.CharacterId} not registered, skipping segment!");
                     continue;
                 }
                 
                 _dialogueQueue.Enqueue(segment);
             }
             
-            Debug.Log($"[DialogueOrchestrator] Queued {segments.Count} dialogue segments (Queue size: {_dialogueQueue.Count})");
+            Logger.Log($"[DialogueOrchestrator] Queued {segments.Count} dialogue segments (Queue size: {_dialogueQueue.Count})");
             
             // Start processing if not already running
             if (!_isProcessing)
@@ -186,7 +187,7 @@ namespace LiveTalk.API
             
             OnDialogueEnded?.Invoke();
             
-            Debug.Log("[DialogueOrchestrator] Stopped");
+            Logger.Log("[DialogueOrchestrator] Stopped");
         }
         
         /// <summary>
@@ -195,7 +196,7 @@ namespace LiveTalk.API
         public void ClearQueue()
         {
             _dialogueQueue.Clear();
-            Debug.Log("[DialogueOrchestrator] Queue cleared");
+            Logger.Log("[DialogueOrchestrator] Queue cleared");
         }
         
         /// <summary>
@@ -206,7 +207,7 @@ namespace LiveTalk.API
             _isProcessing = true;
             OnDialogueStarted?.Invoke();
             
-            Debug.Log("[DialogueOrchestrator] Started processing dialogue queue");
+            Logger.Log("[DialogueOrchestrator] Started processing dialogue queue");
             
             while (_dialogueQueue.Count > 0)
             {
@@ -214,7 +215,7 @@ namespace LiveTalk.API
                 
                 if (!_characterPlayers.TryGetValue(segment.CharacterId, out var player))
                 {
-                    Debug.LogWarning($"[DialogueOrchestrator] Character {segment.CharacterId} not found, skipping");
+                    Logger.LogWarning($"[DialogueOrchestrator] Character {segment.CharacterId} not found, skipping");
                     continue;
                 }
                 
@@ -224,15 +225,21 @@ namespace LiveTalk.API
                 // Queue speech to the character's player
                 player.QueueSpeech(segment.Text, segment.ExpressionIndex, segment.WithAnimation);
                 
-                Debug.Log($"[DialogueOrchestrator] {segment.CharacterId} speaking: {segment.Text.Substring(0, Math.Min(50, segment.Text.Length))}... (Animation: {segment.WithAnimation})");
+                Logger.Log($"[DialogueOrchestrator] {segment.CharacterId} speaking: {segment.Text.Substring(0, Math.Min(50, segment.Text.Length))}... (Animation: {segment.WithAnimation})");
                 
-                // Wait for this character to finish speaking
-                while (player.IsPlaying || player.QueuedSpeechCount > 0)
+                // Wait for this character to finish speaking. IsPlaying is true
+                // only while Speaking (not while Ready/idle — the old definition
+                // included Idle, so this loop never exited after the first line).
+                // QueuedSpeechCount covers a line queued while the player was
+                // still Loading; Paused holds the dialogue with the player.
+                while (player.IsPlaying
+                       || player.State == PlaybackState.Paused
+                       || player.QueuedSpeechCount > 0)
                 {
                     yield return new WaitForSeconds(0.1f);
                 }
                 
-                Debug.Log($"[DialogueOrchestrator] {segment.CharacterId} finished");
+                Logger.Log($"[DialogueOrchestrator] {segment.CharacterId} finished");
             }
             
             _isProcessing = false;
@@ -241,7 +248,7 @@ namespace LiveTalk.API
             
             OnDialogueEnded?.Invoke();
             
-            Debug.Log("[DialogueOrchestrator] Dialogue queue processing complete");
+            Logger.Log("[DialogueOrchestrator] Dialogue queue processing complete");
         }
         
         /// <summary>
@@ -260,7 +267,7 @@ namespace LiveTalk.API
             
             OnSpeakerChanged?.Invoke(characterId);
             
-            Debug.Log($"[DialogueOrchestrator] Switched speaker to: {characterId}");
+            Logger.Log($"[DialogueOrchestrator] Switched speaker to: {characterId}");
         }
         
         /// <summary>
@@ -278,12 +285,12 @@ namespace LiveTalk.API
         
         private void OnCharacterSpeechStarted(string characterId)
         {
-            Debug.Log($"[DialogueOrchestrator] {characterId} started speaking");
+            Logger.Log($"[DialogueOrchestrator] {characterId} started speaking");
         }
         
         private void OnCharacterSpeechEnded(string characterId)
         {
-            Debug.Log($"[DialogueOrchestrator] {characterId} ended speaking");
+            Logger.Log($"[DialogueOrchestrator] {characterId} ended speaking");
         }
         
         private void OnDestroy()

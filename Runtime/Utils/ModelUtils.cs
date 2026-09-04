@@ -21,23 +21,8 @@ namespace LiveTalk.Utils
     {
         #region Private Structures and Fields
         
-        /// <summary>
-        /// Loading information structure for ONNX Runtime logging context.
-        /// This structure is marshaled to unmanaged memory for passing to native logging callbacks.
-        /// </summary>
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        private struct LoadingInfo
-        {
-            /// <summary>
-            /// The name of the model currently being processed (maximum 256 characters)
-            /// </summary>
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-            public string ModelName;
-        }
-
         // Static configuration fields for ONNX Runtime management
         private static bool _loggingInitialized = false;
-        private static IntPtr _loggingParam = IntPtr.Zero;
         private static readonly Queue<Tuple<Task, string>> _taskQueue = new();
         private static bool _disposeLoadThread = false;
         private static string _cacheDirectory = "";
@@ -99,12 +84,6 @@ namespace LiveTalk.Utils
                     }
                     if (_disposeLoadThread && !startedTask)
                     {
-                        // Clean up logging parameter memory
-                        if (_loggingParam != IntPtr.Zero)
-                        {
-                            // Marshal.FreeHGlobal(_loggingParam);
-                            _loggingParam = IntPtr.Zero;
-                        }
                         break;
                     }
                 }
@@ -122,13 +101,13 @@ namespace LiveTalk.Utils
         {
             if (modelName == null)
                 throw new ArgumentNullException(nameof(modelName));
-            
-            var loadingInfo = new LoadingInfo { ModelName = modelName };
-            if (_loggingParam == IntPtr.Zero)
-            {
-                _loggingParam = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LoadingInfo)));
-            }
-            Marshal.StructureToPtr(loadingInfo, _loggingParam, false);
+
+            // ONNX Runtime allows one environment per process and the library
+            // that creates it owns the logging sink. The TTS package
+            // initializes first (see LiveTalkAPI.Initialize), so attribution
+            // has to go through the buffer its sink actually reads; writing a
+            // local one would label nothing.
+            QwenTTS.QwenTts.SetOnnxLogContext(modelName);
         }
 
         /// <summary>
@@ -210,11 +189,10 @@ namespace LiveTalk.Utils
         #region Private Methods - Logging Configuration
 
         /// <summary>
-        /// Initializes ONNX Runtime with Unity logging integration and custom environment options.
-        /// This method sets up the global ONNX environment with Unity-compatible logging callbacks
-        /// and ensures proper integration with Unity's console system.
+        /// Initializes ONNX Runtime. Default OrtEnv only — a custom logger
+        /// delegate becomes a dangling native fn ptr after an editor domain reload
+        /// (SIGSEGV in UserLoggingSink::SendImpl on the next Session.Run).
         /// </summary>
-        /// <exception cref="InvalidOperationException">Thrown when ONNX Runtime environment creation fails</exception>
         private static void InitializeOnnxLogging()
         {
             if (_loggingInitialized) return;
@@ -228,119 +206,24 @@ namespace LiveTalk.Utils
 
             if (OrtEnv.IsCreated)
             {
-                Logger.LogWarning("[ModelUtils] OrtEnv already created. Custom logging may not take effect.");
+                Logger.Log("[ModelUtils] ONNX Runtime environment already created");
+                _loggingInitialized = true;
                 return;
             }
 
             try
             {
-                // Create loggingParam handle from LoadingInfo structure
-                _loggingParam = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LoadingInfo)));
-                
-                // Create environment options with Unity logging callback
-                var options = new EnvironmentCreationOptions
-                {
-                    logLevel = _ortLogLevel,
-                    logId = "LiveTalk",
-                    loggingFunction = UnityOnnxLoggingCallback,
-                    loggingParam = _loggingParam
-                };
-
-                // Initialize OrtEnv with custom options for Unity integration
-                OrtEnv.CreateInstanceWithOptions(ref options);
-                
+                _ = OrtEnv.Instance();
                 _loggingInitialized = true;
-                Logger.Log($"[ModelUtils] ONNX Runtime logging initialized with Unity integration (LogLevel: {_ortLogLevel})");
+                Logger.Log($"[ModelUtils] ONNX Runtime environment ready (LogLevel: {_ortLogLevel})");
             }
             catch (Exception e)
             {
-                Logger.LogError($"[ModelUtils] Failed to initialize ONNX Runtime logging: {e.Message}");
+                Logger.LogError($"[ModelUtils] Failed to initialize ONNX Runtime: {e.Message}");
                 _loggingInitialized = true; // Prevent retry loops
             }
         }
 
-        /// <summary>
-        /// Unity logging callback for ONNX Runtime that integrates native logging with Unity's console system.
-        /// This method receives log messages from the ONNX Runtime native library and forwards them
-        /// to Unity's Debug logging system with proper formatting and severity mapping.
-        /// </summary>
-        /// <param name="param">Pointer to the logging parameter structure containing context information</param>
-        /// <param name="severity">The severity level of the log message</param>
-        /// <param name="category">The category or component generating the log message</param>
-        /// <param name="logId">The identifier for the logging session</param>
-        /// <param name="codeLocation">The source code location where the message originated</param>
-        /// <param name="message">The actual log message content</param>
-        private static void UnityOnnxLoggingCallback(IntPtr param, 
-                                                   OrtLoggingLevel severity, 
-                                                   string category, 
-                                                   string logId, 
-                                                   string codeLocation, 
-                                                   string message)
-        {
-            if (param == IntPtr.Zero || _loggingParam == IntPtr.Zero || _disposeLoadThread)
-            {
-                return;
-            }
-            
-            var loadingInfo = (LoadingInfo)Marshal.PtrToStructure(param, typeof(LoadingInfo));
-            string formattedMessage = FormatOnnxLogMessage(severity, category, logId, codeLocation, message, loadingInfo.ModelName);
-
-            switch (severity)
-            {
-                case OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE:
-                case OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO:
-                    Logger.LogVerbose(formattedMessage);
-                    break;
-                    
-                case OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING:
-                    Logger.LogWarning(formattedMessage);
-                    break;
-                    
-                case OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR:
-                case OrtLoggingLevel.ORT_LOGGING_LEVEL_FATAL:
-                    Logger.LogError(formattedMessage);
-                    break;
-                    
-                default:
-                    Logger.LogVerbose(formattedMessage);
-                    break;
-            }
-        }
-
-        /// <summary>
-        /// Formats ONNX Runtime log messages for Unity console with model context and structured information.
-        /// This method creates consistently formatted log messages that include severity, model name,
-        /// category, and source location information for enhanced debugging capabilities.
-        /// </summary>
-        /// <param name="severity">The severity level of the message</param>
-        /// <param name="category">The category or component generating the message</param>
-        /// <param name="logId">The logging session identifier</param>
-        /// <param name="codeLocation">The source code location information</param>
-        /// <param name="message">The actual message content</param>
-        /// <param name="modelName">The name of the model being processed</param>
-        /// <returns>A formatted log message string ready for Unity console display</returns>
-        private static string FormatOnnxLogMessage(OrtLoggingLevel severity, 
-                                                 string category, 
-                                                 string logId, 
-                                                 string codeLocation, 
-                                                 string message,
-                                                 string modelName)
-        {
-            string severityStr = severity switch
-            {
-                OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE => "VERBOSE",
-                OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO => "INFO", 
-                OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING => "WARN",
-                OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR => "ERROR",
-                OrtLoggingLevel.ORT_LOGGING_LEVEL_FATAL => "FATAL",
-                _ => "UNKNOWN"
-            };
-
-            string cleanCategory = !string.IsNullOrEmpty(category) ? $"[{category}]" : "";
-            string cleanCodeLocation = !string.IsNullOrEmpty(codeLocation) ? $" ({codeLocation})" : "";
-            
-            return $"[ONNX-{severityStr}][{modelName}]{cleanCategory} {message}{cleanCodeLocation}";
-        }
 
         /// <summary>
         /// Logs comprehensive ONNX Runtime version information using reflection for deep introspection.

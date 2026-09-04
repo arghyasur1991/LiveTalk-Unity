@@ -8,7 +8,7 @@ namespace LiveTalk.Utils
     /// <summary>
     /// Utility functions for text processing
     /// </summary>
-    public static class TextUtils
+    internal static class TextUtils
     {
         /// <summary>
         /// Generates a consistent ID hash for text to use in audio caching
@@ -41,9 +41,6 @@ namespace LiveTalk.Utils
         {
             if (string.IsNullOrWhiteSpace(text))
                 return text;
-                
-            // Store original text for comparison
-            string originalText = text;
             
             // Remove markdown formatting symbols but only in pairs
             // This ensures we don't remove single asterisks or underscores
@@ -60,10 +57,6 @@ namespace LiveTalk.Utils
 
             // Trim whitespace
             text = text.Trim();
-            
-            // Log before and after for debugging if needed
-            // Debug.Log($"Original text: {originalText}");
-            // Debug.Log($"Cleaned text: {text}");
             
             return text;
         }

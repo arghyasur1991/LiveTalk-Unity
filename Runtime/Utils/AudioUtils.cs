@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using SparkTTS.Utils;
+using QwenTTS.Audio;
 using UnityEngine;
 
 namespace LiveTalk.Utils
@@ -11,7 +11,7 @@ namespace LiveTalk.Utils
     /// and advanced mel spectrogram extraction with librosa compatibility for cross-platform consistency.
     /// All methods are optimized for real-time audio processing in Unity environments.
     /// </summary>
-    public static class AudioUtils
+    internal static class AudioUtils
     {
         #region Audio Processing Constants
 
@@ -42,6 +42,14 @@ namespace LiveTalk.Utils
         /// temporal precision for speech analysis, following librosa conventions.
         /// </summary>
         internal static readonly int WIN_LENGTH = 400;
+
+        /// <summary>
+        /// FFT size for the STFT (512, librosa's default for 16 kHz). The analysis
+        /// window is this long, so the last mel column that depends only on
+        /// audio already heard ends <c>N_FFT / 2</c> samples before the end of
+        /// the buffer; the streaming extractor holds that much back.
+        /// </summary>
+        internal static readonly int N_FFT = 512;
 
         /// <summary>
         /// Target number of time frames for padded mel spectrograms (3000 frames = 30 seconds).
@@ -129,28 +137,22 @@ namespace LiveTalk.Utils
 
         /// <summary>
         /// Creates a silence audio clip of specified duration.
-        /// Delegates to SparkTTS AudioLoaderService for implementation.
         /// </summary>
         /// <param name="sampleRate">The sample rate for the silence clip</param>
         /// <param name="duration">The duration in seconds</param>
         /// <returns>An AudioClip containing silence</returns>
         public static AudioClip CreateSilence(int sampleRate = 16000, float duration = 0.25f)
-        {
-            return AudioLoaderService.CreateSilence(sampleRate, duration);
-        }
+            => QwenAudio.SilenceClip(sampleRate, duration, "Silence");
 
         /// <summary>
-        /// Concatenates multiple audio clips into a single clip with optional silence padding between them.
-        /// Delegates to SparkTTS AudioLoaderService for implementation.
+        /// Concatenates multiple audio clips into a single clip with silence padding between them.
         /// </summary>
         /// <param name="clips">List of audio clips to concatenate</param>
         /// <param name="sampleRate">Target sample rate for the output clip</param>
         /// <param name="silenceDuration">Duration of silence between clips in seconds</param>
         /// <returns>A single AudioClip containing all input clips concatenated together</returns>
         public static AudioClip ConcatenateAudioClips(List<AudioClip> clips, int sampleRate = 16000, float silenceDuration = 0.25f)
-        {
-            return AudioLoaderService.ConcatenateAudioClips(clips, sampleRate);
-        }
+            => QwenAudio.Concatenate(clips, sampleRate, silenceDuration, "Concatenated Audio");
 
         #endregion
 
@@ -216,10 +218,62 @@ namespace LiveTalk.Utils
             if (audioSamples == null)
                 throw new ArgumentNullException(nameof(audioSamples));
 
-            // Use librosa-compatible parameters
-            const int nFft = 512;  // Default librosa n_fft for 16kHz
+            int numFrames = MelFrameCount(audioSamples.Length);
+            float[] paddedAudio = BuildPaddedAudio(audioSamples);
+
+            // Mel power, one column per STFT frame. This is the same column
+            // function the streaming extractor uses, so a prefix and the
+            // finished clip agree bit for bit on every column that does not
+            // touch the end padding.
+            float[,] melSpec = new float[N_MELS, numFrames];
+            var column = new float[N_MELS];
+            var scratch = new float[N_FFT];
+            for (int frame = 0; frame < numFrames; frame++)
+            {
+                ComputeMelPowerColumn(paddedAudio, frame, column, scratch);
+                for (int mel = 0; mel < N_MELS; mel++)
+                    melSpec[mel, frame] = column[mel];
+            }
+
+            // power_to_db with ref = max over the whole clip, then normalise.
+            ConvertToLogScale(melSpec, numFrames, MaxMelPower(melSpec, numFrames));
+
+            // Pad to target frames if needed
+            if (numFrames < TARGET_FRAMES)
+            {
+                return PadMelSpectrogram(melSpec, numFrames);
+            }
             
-            // Add padding for centering (matching librosa center=True)
+            return melSpec;
+        }
+
+        /// <summary>
+        /// Number of STFT columns the mel spectrogram of <paramref name="sampleCount"/>
+        /// samples has (librosa, <c>center=True</c>), capped at <see cref="TARGET_FRAMES"/>.
+        /// </summary>
+        internal static int MelFrameCount(int sampleCount)
+        {
+            int paddedLength = sampleCount + N_FFT - 1;
+            int numFrames = (paddedLength - N_FFT) / HOP_LENGTH + 1;
+            return Mathf.Min(numFrames, TARGET_FRAMES);
+        }
+
+        /// <summary>
+        /// First sample index (exclusive) the STFT column <paramref name="frame"/>
+        /// needs: <c>frame * HOP_LENGTH + N_FFT / 2</c>. A column whose value is
+        /// below the buffer length depends only on audio already present and is
+        /// final; a column past it reads the end reflect padding and changes
+        /// when more audio arrives.
+        /// </summary>
+        internal static int MelColumnEndSample(int frame) => frame * HOP_LENGTH + N_FFT / 2;
+
+        /// <summary>
+        /// Centre-pads <paramref name="audioSamples"/> by reflection on both
+        /// sides (<c>N_FFT / 2</c> each), matching librosa <c>center=True</c>.
+        /// </summary>
+        internal static float[] BuildPaddedAudio(float[] audioSamples)
+        {
+            int nFft = N_FFT;
             int halfWindow = nFft / 2;
             float[] paddedAudio = new float[audioSamples.Length + nFft - 1];
             
@@ -263,123 +317,68 @@ namespace LiveTalk.Utils
                     }
                 }
             }
-            
-            // Calculate number of frames (matching librosa with centering)
-            int numFrames = (paddedAudio.Length - nFft) / HOP_LENGTH + 1;
-            numFrames = Mathf.Min(numFrames, TARGET_FRAMES);
-            
-            // Create mel filterbank (matching librosa)
-            float[,] melFilterBank = CreateLibrosaMelFilterBank(nFft);
-            
-            // Compute power spectrogram using STFT
-            float[,] powerSpec = ComputePowerSpectrogram(paddedAudio, nFft, numFrames);
-            
-            // Apply mel filterbank to get mel spectrogram
-            float[,] melSpec = ApplyMelFilterBank(powerSpec, melFilterBank, numFrames);
-            
-            // Convert to log scale and normalize (matching librosa.power_to_db)
-            melSpec = ConvertToLogScale(melSpec, numFrames);
-            
-            // Pad to target frames if needed
-            if (numFrames < TARGET_FRAMES)
-            {
-                return PadMelSpectrogram(melSpec, numFrames);
-            }
-            
-            return melSpec;
-        }
-
-        #endregion
-
-        #region Private Methods - STFT and Spectrogram Processing
-
-        /// <summary>
-        /// Computes power spectrogram from padded audio using Short-Time Fourier Transform.
-        /// This method applies Hann windowing and computes magnitude squared FFT for each frame,
-        /// following librosa's STFT implementation for consistent frequency analysis.
-        /// </summary>
-        /// <param name="paddedAudio">The zero-padded audio samples ready for STFT processing</param>
-        /// <param name="nFft">The FFT size for frequency analysis</param>
-        /// <param name="numFrames">The number of time frames to process</param>
-        /// <returns>A 2D power spectrogram array [frequency_bins, time_frames]</returns>
-        private static float[,] ComputePowerSpectrogram(float[] paddedAudio, int nFft, int numFrames)
-        {
-            float[,] powerSpec = new float[nFft / 2 + 1, numFrames];
-            
-            for (int frame = 0; frame < numFrames; frame++)
-            {
-                int startSample = frame * HOP_LENGTH;
-                
-                // Apply Hann window (matching librosa)
-                float[] windowedFrame = new float[nFft];
-                for (int i = 0; i < nFft && startSample + i < paddedAudio.Length; i++)
-                {
-                    float hannWindow = 0.5f * (1f - Mathf.Cos(2f * Mathf.PI * i / (nFft - 1)));
-                    windowedFrame[i] = paddedAudio[startSample + i] * hannWindow;
-                }
-                
-                // Compute FFT magnitude squared (power) using direct DFT implementation
-                for (int bin = 0; bin < nFft / 2 + 1; bin++)
-                {
-                    float real = 0f, imag = 0f;
-                    
-                    for (int i = 0; i < nFft; i++)
-                    {
-                        float angle = -2f * Mathf.PI * bin * i / nFft;
-                        real += windowedFrame[i] * Mathf.Cos(angle);
-                        imag += windowedFrame[i] * Mathf.Sin(angle);
-                    }
-                    
-                    powerSpec[bin, frame] = real * real + imag * imag;
-                }
-            }
-            
-            return powerSpec;
+            return paddedAudio;
         }
 
         /// <summary>
-        /// Applies mel filterbank to power spectrogram to create mel-scaled representation.
-        /// This method transforms linear frequency bins to perceptually-meaningful mel scale
-        /// by applying triangular mel filters to the power spectrogram.
+        /// One mel power column: Hann window, power spectrum, mel filterbank.
+        /// Deterministic in its inputs, so a column computed from a prefix is
+        /// identical to the same column computed from the finished clip as
+        /// long as the window did not reach the end padding
+        /// (<see cref="MelColumnEndSample"/>).
         /// </summary>
-        /// <param name="powerSpec">The input power spectrogram [frequency_bins, time_frames]</param>
-        /// <param name="melFilterBank">The mel filterbank coefficients [mel_bands, frequency_bins]</param>
-        /// <param name="numFrames">The number of time frames to process</param>
-        /// <returns>A mel spectrogram array [mel_bands, time_frames]</returns>
-        private static float[,] ApplyMelFilterBank(float[,] powerSpec, float[,] melFilterBank, int numFrames)
+        /// <param name="paddedAudio">Output of <see cref="BuildPaddedAudio"/>.</param>
+        /// <param name="frame">Column index.</param>
+        /// <param name="melOut">Receives <see cref="N_MELS"/> mel power values.</param>
+        /// <param name="windowScratch">Scratch of length <see cref="N_FFT"/>; allocated when null.</param>
+        internal static void ComputeMelPowerColumn(float[] paddedAudio, int frame, float[] melOut, float[] windowScratch = null)
         {
-            int nFreqBins = powerSpec.GetLength(0);
-            float[,] melSpec = new float[N_MELS, numFrames];
-            
+            int nFft = N_FFT;
+            int nBins = nFft / 2 + 1;
+            var tables = StftTables.Instance;
+            var windowedFrame = windowScratch != null && windowScratch.Length >= nFft ? windowScratch : new float[nFft];
+            int startSample = frame * HOP_LENGTH;
+
+            for (int i = 0; i < nFft; i++)
+            {
+                windowedFrame[i] = startSample + i < paddedAudio.Length
+                    ? paddedAudio[startSample + i] * tables.Hann[i]
+                    : 0f;
+            }
+
+            // Direct DFT with a precomputed twiddle table. bin * i wraps modulo
+            // nFft, so one nFft-entry table serves every bin.
+            var cos = tables.Cos;
+            var sin = tables.Sin;
+            int mask = nFft - 1;
+            var power = tables.PowerScratch;
+            for (int bin = 0; bin < nBins; bin++)
+            {
+                float real = 0f, imag = 0f;
+                int k = 0;
+                for (int i = 0; i < nFft; i++)
+                {
+                    float w = windowedFrame[i];
+                    real += w * cos[k];
+                    imag += w * sin[k];
+                    k = (k + bin) & mask;
+                }
+                power[bin] = real * real + imag * imag;
+            }
+
+            var filterBank = tables.MelFilterBank;
             for (int mel = 0; mel < N_MELS; mel++)
             {
-                for (int frame = 0; frame < numFrames; frame++)
-                {
-                    float melValue = 0f;
-                    
-                    for (int bin = 0; bin < nFreqBins; bin++)
-                    {
-                        melValue += melFilterBank[mel, bin] * powerSpec[bin, frame];
-                    }
-                    
-                    melSpec[mel, frame] = melValue;
-                }
+                float melValue = 0f;
+                for (int bin = 0; bin < nBins; bin++)
+                    melValue += filterBank[mel, bin] * power[bin];
+                melOut[mel] = melValue;
             }
-            
-            return melSpec;
         }
 
-        /// <summary>
-        /// Converts mel spectrogram to log scale and applies normalization.
-        /// This method applies librosa's power_to_db conversion with top_db clamping
-        /// and final normalization to the range [-1, 1] for neural network compatibility.
-        /// </summary>
-        /// <param name="melSpec">The input mel spectrogram to convert</param>
-        /// <param name="numFrames">The number of time frames in the spectrogram</param>
-        /// <returns>A log-scaled and normalized mel spectrogram</returns>
-        private static float[,] ConvertToLogScale(float[,] melSpec, int numFrames)
+        /// <summary>Largest mel power value over the first <paramref name="numFrames"/> columns — librosa's <c>ref=np.max</c>.</summary>
+        internal static float MaxMelPower(float[,] melSpec, int numFrames)
         {
-            // Find maximum value for reference-based normalization
             float maxValue = float.MinValue;
             for (int mel = 0; mel < N_MELS; mel++)
             {
@@ -388,32 +387,76 @@ namespace LiveTalk.Utils
                     maxValue = Mathf.Max(maxValue, melSpec[mel, frame]);
                 }
             }
-            
-            // Convert to log scale (matching librosa.power_to_db)
+            return maxValue;
+        }
+
+        /// <summary>
+        /// In place: mel power → <c>librosa.power_to_db(ref=reference, top_db=80)</c>
+        /// → <c>(db + 80) / 80</c> clipped to [-1, 1]. The batch path passes the
+        /// clip's own maximum; the streaming path passes a reference captured
+        /// from the first ~0.5 s and held, which is the one global term in the
+        /// feature pipeline and the only place a prefix can differ from the
+        /// finished clip.
+        /// </summary>
+        internal static void ConvertToLogScale(float[,] melSpec, int numFrames, float reference)
+        {
+            float refDb = 10f * Mathf.Log10(reference);
+            float floor = reference * 1e-10f;
             for (int mel = 0; mel < N_MELS; mel++)
             {
                 for (int frame = 0; frame < numFrames; frame++)
                 {
-                    // power_to_db: 10 * log10(max(S, ref)) where ref = max(S)
-                    float dbValue = 10f * Mathf.Log10(Mathf.Max(melSpec[mel, frame], maxValue * 1e-10f)) 
-                                  - 10f * Mathf.Log10(maxValue);
-                    
+                    // power_to_db: 10 * log10(max(S, ref * 1e-10)) - 10 * log10(ref)
+                    float dbValue = 10f * Mathf.Log10(Mathf.Max(melSpec[mel, frame], floor)) - refDb;
+
                     // Apply top_db=80.0 clamping (matching librosa exactly)
-                    melSpec[mel, frame] = Mathf.Max(dbValue, -80f);
+                    dbValue = Mathf.Max(dbValue, -80f);
+
+                    // Normalize: (mel + 80.0) / 80.0, clipped to [-1, 1]
+                    melSpec[mel, frame] = Mathf.Clamp((dbValue + 80f) / 80f, -1f, 1f);
                 }
             }
-            
-            // Normalize: (mel + 80.0) / 80.0, clipped to [-1, 1]
-            for (int mel = 0; mel < N_MELS; mel++)
+        }
+
+        #endregion
+
+        #region Private Methods - STFT and Spectrogram Processing
+
+        /// <summary>
+        /// Tables the STFT reads every column: Hann window, DFT twiddles and the
+        /// mel filterbank. Built once, read from any thread.
+        /// </summary>
+        private sealed class StftTables
+        {
+            public static readonly StftTables Instance = new();
+
+            public readonly float[] Hann;
+            public readonly float[] Cos;
+            public readonly float[] Sin;
+            public readonly float[,] MelFilterBank;
+
+            // Per-thread scratch for the power spectrum so two extractions on
+            // different threads (a batch clip and a streaming prefix) do not
+            // share a buffer.
+            [ThreadStatic] private static float[] s_powerScratch;
+            public float[] PowerScratch => s_powerScratch ??= new float[N_FFT / 2 + 1];
+
+            private StftTables()
             {
-                for (int frame = 0; frame < numFrames; frame++)
+                int nFft = N_FFT;
+                Hann = new float[nFft];
+                Cos = new float[nFft];
+                Sin = new float[nFft];
+                for (int i = 0; i < nFft; i++)
                 {
-                    melSpec[mel, frame] = (melSpec[mel, frame] + 80f) / 80f;
-                    melSpec[mel, frame] = Mathf.Clamp(melSpec[mel, frame], -1f, 1f);
+                    // Hann window (matching the original implementation)
+                    Hann[i] = 0.5f * (1f - Mathf.Cos(2f * Mathf.PI * i / (nFft - 1)));
+                    float angle = -2f * Mathf.PI * i / nFft;
+                    Cos[i] = Mathf.Cos(angle);
+                    Sin[i] = Mathf.Sin(angle);
                 }
+                MelFilterBank = CreateLibrosaMelFilterBank(nFft);
             }
-            
-            return melSpec;
         }
 
         /// <summary>
