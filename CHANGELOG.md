@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Driving frames are cached on the source image, so a second character built from the same portrait reuses the previous avatar pass instead of spending minutes in LivePortrait again. Frames are a pure function of the image and the requested expression set, and the cache key covers both — a single-expression folder will not satisfy a request for the full set. The entry is only written once every expression has finished, so an aborted run cannot leave a short folder for a later character to adopt. This matters most when only the *voice* changes: re-rolling a designed voice or locking a clone previously paid for the whole avatar bake again. Requires the cache to be enabled.
 - `EnsureRuntimeHost()` recreates the coroutine GameObject after Play teardown while the API singleton is still initialized.
 - `UnloadTts()` drops the TTS engine's ONNX sessions without disposing LivePortrait / MuseTalk.
 - `VoiceModelsLoaded` reports whether the TTS engine currently holds models.

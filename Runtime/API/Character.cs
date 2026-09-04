@@ -900,7 +900,35 @@ namespace LiveTalk.API
                 {
                     expressions = new string[] { };
                 }
-                for (int expressionIndex = 0; expressionIndex < expressions.Length; expressionIndex++)
+
+                // Driving frames depend only on the image and the expression
+                // set, so a second character built from the same portrait —
+                // a re-rolled or re-locked voice, most often — can take the
+                // previous avatar pass instead of spending minutes in
+                // LivePortrait again. Copying a few hundred MB costs seconds;
+                // regenerating costs minutes.
+                string framesCacheKey = expressions.Length == 0
+                    ? null
+                    : HashUtils.GenerateDrivingFramesCacheKey(
+                        imageBytes, creationMode + ":" + string.Join(",", expressions));
+
+                bool framesFromCache = false;
+                if (!string.IsNullOrEmpty(framesCacheKey) && LiveTalkCache.IsEnabled)
+                {
+                    var (cachedExists, cachedFrames) =
+                        LiveTalkCache.CheckFolderExists(framesCacheKey);
+                    if (cachedExists)
+                    {
+                        Logger.Log("[Character] Reusing cached driving frames for this "
+                                   + "portrait — skipping avatar preprocessing.");
+                        LiveTalkCache.CopyFolder(cachedFrames, DrivingFramesFolder);
+                        framesFromCache = true;
+                    }
+                }
+
+                for (int expressionIndex = 0;
+                     !framesFromCache && expressionIndex < expressions.Length;
+                     expressionIndex++)
                 {
                     string expression = expressions[expressionIndex];
                     string expressionFolder = Path.Combine(DrivingFramesFolder, $"expression-{expressionIndex}");
@@ -918,6 +946,21 @@ namespace LiveTalk.API
 
                     // Process this expression with coroutines outside try-catch
                     yield return ProcessExpressionCoroutine(expression, drivingVideo, expressionFolder, liveTalkAPI);
+                }
+
+                // Populate the cache only after every expression finished. A
+                // run that died partway would otherwise leave a short folder
+                // that later characters would happily reuse.
+                if (!framesFromCache && !string.IsNullOrEmpty(framesCacheKey)
+                    && LiveTalkCache.IsEnabled)
+                {
+                    string cacheFolder = LiveTalkCache.GetFolderPath(framesCacheKey);
+                    if (!string.IsNullOrEmpty(cacheFolder))
+                    {
+                        LiveTalkCache.CopyFolder(DrivingFramesFolder, cacheFolder);
+                        Logger.LogVerbose(
+                            $"[Character] Cached driving frames: {framesCacheKey}");
+                    }
                 }
             }
         }

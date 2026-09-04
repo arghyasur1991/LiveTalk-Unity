@@ -49,6 +49,44 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
+        /// Cache key for a character's driving frames.
+        ///
+        /// Driving frames are a pure function of the source image and the set
+        /// of expressions asked for — the voice has no bearing on them — so the
+        /// same portrait can reuse a previous avatar pass instead of spending
+        /// minutes in LivePortrait again. This hashes the encoded image bytes
+        /// rather than going through <see cref="GenerateTextureHash"/>, which
+        /// samples a 32x32 subset: good enough to tell avatars apart, too
+        /// collision-prone to decide whether to skip the whole bake.
+        /// </summary>
+        /// <param name="imageBytes">Encoded (PNG) bytes of the source image</param>
+        /// <param name="expressionsSignature">
+        /// Identifies which expressions were generated. A single-expression
+        /// folder must not satisfy a request for the full set.
+        /// </param>
+        /// <returns>Cache key, or null when there is nothing to key on</returns>
+        public static string GenerateDrivingFramesCacheKey(
+            byte[] imageBytes, string expressionsSignature)
+        {
+            if (imageBytes == null || imageBytes.Length == 0)
+                return null;
+
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                byte[] hashBytes = md5.ComputeHash(imageBytes);
+                var sb = new StringBuilder(48);
+                sb.Append("df_");
+                for (int i = 0; i < hashBytes.Length; i++)
+                {
+                    sb.Append(hashBytes[i].ToString("x2"));
+                }
+                sb.Append('_');
+                sb.Append(GenerateTextHash(expressionsSignature ?? "").Substring(0, 8));
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>
         /// Generates a fast content-based hash for a texture using dimensions, format, and pixel sampling.
         /// This method provides good uniqueness for texture comparison while being much faster than hashing all pixels.
         /// Samples a subset of pixels (32x32 maximum) and uses every 10th pixel for efficient hash generation.
