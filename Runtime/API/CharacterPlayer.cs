@@ -244,7 +244,17 @@ namespace LiveTalk.API
             }
             
             _speechQueue.Clear();
-            
+            _pendingAnimations.Clear();
+
+            // Reset processing flags so new speech can start fresh. Leaving
+            // them set survives the stop: AnimationPlayerLoop is gated on
+            // _isAnimationPlayerRunning, so the next request never starts its
+            // player loop — audio plays and frames are generated, but none of
+            // them are ever displayed, which reads as "the voice works and
+            // lip-sync doesn't".
+            _isSpeechProcessorRunning = false;
+            _isAnimationPlayerRunning = false;
+
             if (_character != null && _character.IsDataLoaded)
             {
                 _state = PlaybackState.Idle;
