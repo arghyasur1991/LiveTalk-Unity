@@ -2,8 +2,7 @@
     "name": "LiveTalk.Editor",
     "rootNamespace": "LiveTalk",
     "references": [
-        "LiveTalk.Runtime",
-        "QwenTTS.Runtime"
+        "LiveTalk.Runtime"
     ],
     "includePlatforms": [
         "Editor"

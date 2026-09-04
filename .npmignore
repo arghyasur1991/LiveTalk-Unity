@@ -2,3 +2,17 @@
 *.tmp
 .DS_Store
 debug_*
+.git/
+.vs/
+.idea/
+.vscode/
+Library/
+Temp/
+Logs/
+obj/
+*.csproj
+*.sln
+__pycache__/
+*.onnx
+*.onnx.data
+*.onnx_data

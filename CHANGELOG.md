@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-09-04
+
+A breaking release. The TTS backend moved from Spark-TTS to Qwen3-TTS, which changes the dependency and invalidates 1.x voice folders; the character folder format changed from copies to references; and the speech/frames cache keys changed. The `IEnumerator` + `onComplete` / `onError` API style is unchanged and is the primary style going forward. See **Migration** at the end of this section.
 
 ### Added
 - **`Avatar`, `Voice` and `Character` are three entities with independent lifetimes.** A character used to be one folder whose identity hashed the portrait and the voice knobs together, so a new voice on the same portrait re-ran the three-minute avatar pass, and nothing could swap a character's voice. Now:
@@ -24,8 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `voiceInstruct` on character creation, passed through to voice design. `Gender`/`Pitch`/`Speed` are composed into a natural-language description in `Utils/VoiceInstruct`, which is host policy rather than engine behaviour.
 - `CharacterPlayer.OnReady` fires once character data *and* idle frames are loaded — the moment the player enters the new `PlaybackState.Ready`. `OnCharacterLoaded` still fires right after it. `CharacterPlayer.IsReady` reports that state.
 - `PlaybackState.Ready` replaces `Idle`, which is kept as an `[Obsolete]` alias with the same value. The state machine is `Uninitialized → Loading → Ready ⇄ Speaking`, plus `Paused`.
+- `LiveTalkAPI.WarmUpVoiceAsync(QwenCheckpoint)` loads a TTS checkpoint off the main thread (the talker graphs take ~10 s to open cold; without it the first line pays all of it), and `LiveTalkAPI.EvictVoice(QwenCheckpoint)` releases one checkpoint while keeping the other. The two checkpoints are wanted in different phases — VoiceDesign while choosing a voice, Base for cloning and speaking — and are ~7 GB resident each, so hosts should drop VoiceDesign once a take is locked. `WaitForAllModelsAsync` deliberately no longer warms the TTS.
+- `Character.SpeakAsync` takes an optional `onSpeechChunk` callback and streams speech as it is generated (first chunk in about a second, main thread, only new samples per call). Ignored on a cache hit.
+- `Character.SpeechSampleRate`. 16 kHz for a character with an animatable avatar (what the lip-sync stack consumes); the TTS model's native rate for a voice-only character, where a 16 kHz round trip would throw away the top of the band a clone reference is identified by. Persisted in `character.json`.
+- `voiceCloneRefText` on `CreateCharacterAsync`: the transcript of the clone reference, which is what makes the clone in-context (reproducing the speaker) rather than a speaker-embedding match.
+- `Initialize(ttsModelRoot:)` points the TTS engine at the folder holding its checkpoints instead of assuming `StreamingAssets/QwenTTS`.
+- `package.json` declares `repository`, `documentationUrl`, `changelogUrl`, `licensesUrl`, `license` (MIT) and a `samples` entry; the demo moved to `Samples~/LiveTalkDemo/` (UPM sample convention, imported through the Package Manager) with a README.
 
 ### Changed
+- **TTS backend is Qwen3-TTS** (`com.genesis.qwentts.unity`, via [Qwen3-TTS-Unity](https://github.com/arghyasur1991/Qwen3-TTS-Unity)) instead of Spark-TTS. Voice design takes a natural-language description (composed from `Gender` / `Pitch` / `Speed` plus optional free text); cloning takes a reference recording plus its transcript. 1.x voice folders were Spark-TTS artefacts and cannot be reused. `package.json` also declares `com.github.asus4.onnxruntime`, `com.unity.nuget.newtonsoft-json` and `com.unity.ugui`, which the runtime assembly always required; the Qwen package must still be added by git URL first (see README → Install).
 - **Character folders hold references, not copies.** A 2.0 character is `characters/<id>/character.json` pointing at an avatar id and a voice id; it no longer contains `image.png`, `drivingFrames/` or `voice/`. Several characters share one avatar folder, and deleting a character leaves both halves for the others. Pre-2.0 inline folders (`<saveLocation>/<id>[.bundle]/` with everything beside `character.json`) still load in place through `LoadCharacterAsyncFromId` / `LoadCharacterMetadataAsync` / `GetAvailableCharacterIds`, logged once as legacy; they cannot have their voice replaced and their halves cannot be shared or deleted on their own. Recreate through the 2.0 API to migrate. The 2.0 layout does not write macOS `.bundle` folders; legacy bundles are still read.
 - **Speech and frames cache keys are voice-based and include the expression.** Audio is cached on `hash(voiceId, text)` (`HashUtils.GenerateSpeechCacheKey(voiceId, text)` — the parameter order changed) and lip-sync frames on `hash(voiceId, text, avatarId, expressionIndex)` (`HashUtils.GenerateFramesCacheKey`). Previously both keyed on `text + characterId` and omitted the expression, so the same line at expression 0 and expression 3 replayed the same face, and a re-rolled voice under a stable character id served the old take. The salts are bumped (`voice_cache_v2`, `frames_cache_v2`), so every entry written by the old layout is simply never matched again; clear the cache to reclaim the space.
 - `Character.CharacterId` is read-only (`Character.Id` is the same value). A character's id is a GUID assigned at creation and never changes.
@@ -40,11 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CharacterPlayer.Stop()` no longer aborts a character load in progress — loading is not playback — and the player returns to `Ready` (with idle) once loaded. `AssignCharacter` still cancels the previous character's load.
 - `CharacterPlayer.ParentTransform` caches the shared parent instead of running `GameObject.Find` on every access.
 - `CharacterPlayer` and `DialogueOrchestrator` log through `Logger`, so they honour `LogLevel` like the rest of the runtime.
-- **TTS backend is now Qwen3-TTS** (`com.genesis.qwentts.unity`) instead of Spark-TTS. Voice design takes a description; cloning takes a reference recording plus its transcript.
-- `ModelUtils` uses the default `OrtEnv` and forwards log attribution to whichever library created the environment. ONNX Runtime allows one environment per process, so creating a second one with its own sink meant LiveTalk's model names never reached the sink that was actually installed.
-- `SpeakAsync` takes an optional `onSpeechChunk` callback and streams speech as it is generated instead of only when the line finishes: the first chunk arrives in about a second. Delivered on the main thread. Ignored on a cache hit, where the whole clip is already on disk.
+- `ModelUtils` uses the default `OrtEnv` and forwards log attribution to whichever library created the environment. ONNX Runtime allows one environment per process, so creating a second one with its own sink meant LiveTalk's model names never reached the sink that was actually installed. The TTS engine is initialized first so it owns the environment.
+- `LogLevel.VERBOSE` opts into ONNX Runtime's own INFO and VERBOSE output; `INFO` maps ORT to WARNING, because ORT at INFO emits an arena line per allocation and buried LiveTalk's own lines. `ERROR` maps to ERROR.
 - Audio helpers delegate to the TTS package's `QwenAudio` rather than carrying their own copies. `ConcatenateAudioClips` now honours its `silenceDuration` argument, which the previous delegating version ignored, and WAV load/save is local in `AudioFileIO`.
 - `FrameStream` exposes `Error`, set when the producer that fills it failed; the stream is still marked finished so consumers drain and exit.
+- `HashUtils`, `AudioUtils`, `TextUtils` and `StringUtils` are `internal`. They were never documented as API and nothing outside the runtime assembly used them.
+- The voice-preview default sample text is a neutral sentence.
+- The editor assembly no longer references the TTS package; it never used it.
+- The demo sample uses `UnityEngine.UI.Text` instead of TextMeshPro, so it compiles with no packages beyond LiveTalk's own, and it creates characters through `CreateAvatarAsync` + `DesignVoiceAsync` + `CreateCharacter`.
+- `.gitignore` is a package one (OS, IDE, Unity project folders, Python by-products, `*.onnx`) rather than the Unity project template.
 
 ### Deprecated
 - Both `LiveTalkAPI.CreateCharacterAsync(name, gender, image, pitch, speed, intro, voicePromptPath, …)` overloads. They now forward to `CreateAvatarAsync` (when `image` is non-null) + `CloneVoiceAsync` (when `voicePromptPath` is given) or `DesignVoiceAsync` (with `intro` as the sample text) + `CreateCharacter`, and produce a 2.0 reference character with a GUID id; `useBundle` is ignored. Use the three calls directly.
@@ -53,11 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - The voice-style cache (`HashUtils.GenerateVoiceStyleCacheKey`, `vs_*` folders). It was keyed on the character id, so a "re-rolled" designed voice hit the cache and came back as the same speaker. A designed voice is an explicit, saved `Voice` now.
-- The driving-frames cache (`HashUtils.GenerateDrivingFramesCacheKey`, `df_*` folders, `LiveTalkCache.CopyFolder` / `CheckFolderExists` / `CheckFolderTreeExists` / `GetFolderPath`). It only mitigated the rebuild by copying hundreds of MB into each new character; the avatar folder replaces it outright. Existing `df_*` / `vs_*` entries in a cache folder are dead weight — `ClearCache` removes them.
+- The driving-frames cache (`HashUtils.GenerateDrivingFramesCacheKey`, `df_*` folders, `LiveTalkCache.CopyFolder` / `CheckFolderExists` / `CheckFolderTreeExists` / `GetFolderPath`). It only mitigated the rebuild by copying hundreds of MB into each new character; the avatar folder replaces it outright. (`CheckFolderTreeExists` was added earlier on this same branch to make nested cache folders match, and is removed again here.) Existing `df_*` / `vs_*` entries in a cache folder are dead weight — `ClearCache` removes them.
 - `Character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode, onError)` — the avatar pipeline lives in `Avatar`, reached through `LiveTalkAPI.CreateAvatarAsync`.
 - The public setter on `Character.CharacterId`.
+- The `LiveTalkAPI` finalizer. `Dispose(false)` released nothing — every resource is managed and only freed on the disposing path — and a finalizer runs on the GC thread, where nothing this class owns (ONNX sessions, the coroutine host GameObject) may be touched. `Dispose()` is unchanged.
+- The Spark-TTS dependency (`com.genesis.sparktts.unity`), and every reference to it in the README.
 
 ### Fixed
+- A model that fails to load is reported as that failure. The coroutines that awaited `StartSession` / `StartGeneratorSession` waited on `task.IsCompleted`, which a faulted task also satisfies, so a missing weights file was never observed and the inference loop walked on until the first model it touched said "Model is not initialized" — several layers from the cause. The load fault is now observed and reported with its original exception (superseded, on this same branch, by the general `TaskYield` bridge below).
 - Faulted tasks inside coroutines are no longer skipped. The pipeline waited on `task.IsCompleted`, which is also true for a faulted task, so a failed model load, synthesis or file read was silently passed over and surfaced later as a misleading error ("Model is not initialized", "Character voice not loaded", "Generated audio clip is null") — or not at all. Every such wait now goes through an internal bridge (`TaskYield.Wait`) that logs the original exception with its stack and rethrows it inside the coroutine.
 - Frame producers (`LivePortraitInference`, `MuseTalkInference`, `LiveTalkController`) mark their `FrameStream` finished in `finally`, on every exit path. Previously a fault mid-generation left the stream open, the consumer waiting forever, and — for lip-sync — the MuseTalk lease never released, so the next animated line blocked on acquire with no error anywhere. A driving-frame or lip-sync producer that fails is now reported as a failure by its consumer rather than as a shorter clip, and a partially written frames-cache entry is deleted instead of being taken as a hit next time.
 - `VoiceQueue` / `MuseTalkQueue` leases are acquired through the bridge and released in `finally`, so a fault or a stopped coroutine cannot leak the lock.
@@ -69,7 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The pipeline's running flags are set before `StartCoroutine`, not inside the coroutines, so two `QueueSpeech` calls in one frame cannot start a second processor or player loop.
 - `DialogueOrchestrator` advances past the first line. It waited on `player.IsPlaying`, which was true while idle, so any multi-turn dialogue hung after the first segment. It now waits on `IsPlaying || Paused || QueuedSpeechCount > 0`.
 
+### Migration
+- **Install.** Add the OpenUPM scoped registry for `com.github.asus4`, then `com.genesis.qwentts.unity` from `https://github.com/arghyasur1991/Qwen3-TTS-Unity.git`, then this package. Remove `com.genesis.sparktts.unity`. Export the two Qwen3-TTS checkpoints (~8 GB each) and pass their folder as `Initialize(ttsModelRoot:)`.
+- **Voices.** 1.x voice folders (Spark-TTS) do not load. Design or clone new voices with `DesignVoiceAsync` / `CloneVoiceAsync`.
+- **Characters.** Existing inline folders (`<saveLocation>/<id>[.bundle]/`) still load through `LoadCharacterAsyncFromId` / `LoadCharacterMetadataAsync` / `GetAvailableCharacterIds` and speak, but are read-only (`Character.IsLegacy`): no `ReplaceVoice`, no sharing or deleting of their halves — and their inline voice is a Spark-TTS folder, so in practice they need recreating. To migrate, `CreateAvatarAsync` on the same portrait, make a voice, `CreateCharacter`, then `DeleteCharacter` the old id. The 2.0 layout never writes `.bundle` folders.
+- **Creation code.** Replace `CreateCharacterAsync(name, gender, image, pitch, speed, intro, voicePromptPath, …)` with `CreateAvatarAsync` + (`CloneVoiceAsync` or `DesignVoiceAsync`) + `CreateCharacter`. The old overloads still compile and work (`[Obsolete]`), forward to those three, and produce a 2.0 character with a GUID id rather than a hash of the parameters.
+- **Previews.** Replace `GenerateVoicePreviewAsync` / `VoicePreviewResult` with `DesignVoiceAsync`; the result is a saved `Voice` whose `Sample` / `SampleText` are the take. Discard rejected rolls with `DeleteVoice`.
+- **Character properties.** `Character.Gender` / `Pitch` / `Speed` / `Intro` / `VoiceInstruct` / `VoiceCloneRefText` / `VoicePromptClip` → `Character.Voice.Gender` / `Pitch` / `Speed` / `SampleText` / `Instruct` / `SampleText` / `Sample`. `CharacterId` is read-only (`Id` is the same value).
+- **Player.** `PlaybackState.Idle` → `PlaybackState.Ready` (same value). `IsPlaying` is true only while `Speaking`; code that used it as "loaded" should use `IsReady` or `OnReady`; code that waited for it to go false to mean "finished" now gets what it expected. `QueueSpeech` may be called before `Ready`. `Character.CharacterPlayer` is created on first access, not on load; call `Character.DestroyPlayer()` when rebuilding.
+- **Cache.** Old entries are ignored (new key salts). Call `LiveTalkAPI.ClearCache()` — or `ClearCache(path)` before `Initialize` — to reclaim the space.
+- **Memory.** `WaitForAllModelsAsync` no longer warms the TTS; call `WarmUpVoiceAsync(QwenCheckpoint.VoiceDesign)` / `(QwenCheckpoint.Base)` yourself and `EvictVoice` the one you are done with.
+
 ## [1.0.0] - 2025-07-04
+
+Voice backend for this release: Spark-TTS (`com.genesis.sparktts.unity`). Replaced by Qwen3-TTS in 2.0.0.
 
 ### Added
 - **LiveTalk-Unity Package**: Complete Unity package for real-time talking head generation

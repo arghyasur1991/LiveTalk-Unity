@@ -568,7 +568,7 @@ namespace LiveTalk.API
             QwenTts.WarmUpAsync(checkpoint);
 
         /// <summary>
-        /// Releases one checkpoint (~13 GB) while keeping the other. Designing
+        /// Releases one checkpoint (~7 GB resident) while keeping the other. Designing
         /// a voice and then speaking with a clone of it are different phases,
         /// so hosts should drop VoiceDesign once a take is locked.
         /// </summary>
@@ -625,7 +625,7 @@ namespace LiveTalk.API
             }
             
             // TTS checkpoints are deliberately not warmed here: each is
-            // ~13 GB resident and a caller waiting on the video models has not
+            // ~7 GB resident and a caller waiting on the video models has not
             // asked for that. Use WarmUpVoiceAsync explicitly.
             onProgress?.Invoke("Voice Synthesis", (float)currentGroup / totalGroups);
             currentGroup++;
