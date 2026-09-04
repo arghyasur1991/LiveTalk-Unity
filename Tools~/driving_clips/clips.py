@@ -7,7 +7,9 @@ Conventions (rich MB-Lab character, see ``sk_atlas.py`` renders):
   ``yaw`` + = turn toward the character's right (camera left),
   ``roll`` + = top of the head toward her left shoulder (camera right).
 * Expression channels are signed in [-1, 1] and map onto MB-Lab
-  ``_max`` / ``_min`` shape-key pairs (``render_clips.CHANNELS``):
+  ``_max`` / ``_min`` shape-key pairs (``render_clips.CHANNELS``). Brow
+  channels may go to 1.5 (the renderer raises those keys' slider range):
+  LivePortrait transfers brows conservatively, so over-drive them.
   ``browL/browR`` + up / - down, ``browMid`` + inner brows up / - furrow,
   ``squeezeL/R`` + brows pulled in, ``eyeL/eyeR`` + closed / - wide,
   ``squintL/R`` lower lid up, ``cheekL/R`` cheek raise, ``smile`` + corners
@@ -98,8 +100,8 @@ CLIPS = {
             "roll":    [(0.5, 0), (1.3, 7.0), (2.4, 7.0), (3.6, 0)],
             "yaw":     [(0.5, 0), (1.3, 3.0), (2.4, 2.8), (3.6, 0)],
             "pitch":   [(0.5, 0), (1.3, 1.5), (2.4, 1.5), (3.6, 0)],
-            "browL":   [(0.55, 0), (1.25, 1.0), (2.4, 1.0), (3.5, 0)],
-            "browMid": [(0.55, 0), (1.25, 0.35), (2.4, 0.35), (3.5, 0)],
+            "browL":   [(0.55, 0), (1.25, 1.4), (2.4, 1.4), (3.5, 0)],
+            "browMid": [(0.55, 0), (1.25, 0.45), (2.4, 0.45), (3.5, 0)],
             "browR":   [(0.55, 0), (1.25, -0.7), (2.4, -0.7), (3.5, 0)],
             "squeezeR": [(0.55, 0), (1.25, 0.65), (2.4, 0.65), (3.5, 0)],
             "squintL": [(0.6, 0), (1.3, 0.22), (2.4, 0.22), (3.5, 0)],
@@ -132,11 +134,14 @@ CLIPS = {
         seconds=5.6, seed=505,
         beats=[1.6],
         breath=dict(bpm=11.0),
+        # a blink while the gaze is lowered made LivePortrait pop the whole face
+        # (consecutive MAD 8.0 vs 0.4 median); blink once the eyes are back up
+        blinks=dict(interval=(9.0, 9.0), forced=[5.0]),
         gestures={
             "gazeV":   [(0.5, 0), (1.5, -0.30), (3.6, -0.30), (4.9, 0)],
             "pitch":   [(0.5, 0), (1.7, 4.5), (3.6, 4.5), (5.0, 0)],
             "roll":    [(0.6, 0), (1.8, 2.5), (3.6, 2.5), (5.0, 0)],
-            "browMid": [(0.5, 0), (1.6, 1.0), (3.7, 1.0), (4.9, 0)],
+            "browMid": [(0.5, 0), (1.6, 1.35), (3.7, 1.35), (4.9, 0)],
             "browL":   [(0.5, 0), (1.6, -0.35), (3.7, -0.35), (4.9, 0)],
             "browR":   [(0.5, 0), (1.6, -0.30), (3.7, -0.30), (4.9, 0)],
             "smile":   [(0.6, 0), (1.7, -0.7), (3.7, -0.7), (4.9, 0)],
@@ -173,10 +178,13 @@ CLIPS = {
     "surprised": dict(
         seconds=3.8, seed=707,
         beats=[0.9],
+        # no blink while the eyes are held wide: wide-open -> shut in three frames
+        # made LivePortrait pop the whole face (MAD 5.5 vs 0.4 median); blink in the settle
+        blinks=dict(interval=(9.0, 9.0), forced=[3.05]),
         gestures={
-            "browL":   [(0.55, 0), (0.85, 1.0), (1.9, 1.0), (2.9, 0)],
-            "browR":   [(0.55, 0), (0.85, 1.0), (1.9, 0.95), (2.9, 0)],
-            "browMid": [(0.55, 0), (0.85, 1.0), (1.9, 0.9), (2.9, 0)],
+            "browL":   [(0.55, 0), (0.85, 1.4), (1.9, 1.35), (2.9, 0)],
+            "browR":   [(0.55, 0), (0.85, 1.4), (1.9, 1.3), (2.9, 0)],
+            "browMid": [(0.55, 0), (0.85, 1.3), (1.9, 1.2), (2.9, 0)],
             "eyeL":    [(0.55, 0), (0.85, -0.8), (1.9, -0.7), (2.9, 0)],
             "eyeR":    [(0.55, 0), (0.85, -0.8), (1.9, -0.7), (2.9, 0)],
             "open":    [(0.6, 0), (0.95, 0.38), (1.9, 0.34), (2.9, 0)],

@@ -29,7 +29,7 @@ ap.add_argument("--stride", type=int, default=1)
 ap.add_argument("--mp4", default=None, help="folder to write <clip>.mp4 into")
 ap.add_argument("--samples", type=int, default=0, help="override TAA samples")
 ap.add_argument("--save-blend", action="store_true")
-ap.add_argument("--crf", type=int, default=17)
+ap.add_argument("--crf", type=int, default=21)
 args = ap.parse_args(argv)
 
 FPS = CLIPDEF.FPS
@@ -61,6 +61,8 @@ CHANNELS = {
     "nostrils": ("Expressions_nostrilsExpansion_max", None),
 }
 BONE_CHANNELS = ("pitch", "yaw", "roll", "spine_roll", "spine_pitch", "rise")
+OVERDRIVE = ("browL", "browR", "browMid")     # channels allowed above 1.0
+OVERDRIVE_MAX = 1.5
 GAZE_PER_DEG = 1.0 / 36.0       # eyesHoriz 1.0 ~ 36 deg (measured on the atlas)
 
 
@@ -276,10 +278,16 @@ def apply(body, arm, frames):
         used_keys.add(kmax)
         if kmin:
             used_keys.add(kmin)
+    # brow keys may be over-driven (LivePortrait's brow channel is conservative)
+    for c in OVERDRIVE:
+        for k in CHANNELS[c]:
+            if k:
+                kb[k].slider_max = OVERDRIVE_MAX
     for f, ch in enumerate(frames):
         for c, (kmax, kmin) in CHANNELS.items():
             v = ch[c]
-            vmax = max(0.0, min(1.0, v)); vmin = max(0.0, min(1.0, -v)) if kmin else 0.0
+            lim = OVERDRIVE_MAX if c in OVERDRIVE else 1.0
+            vmax = max(0.0, min(lim, v)); vmin = max(0.0, min(1.0, -v)) if kmin else 0.0
             kb[kmax].value = vmax
             if kmin:
                 kb[kmin].value = vmin
