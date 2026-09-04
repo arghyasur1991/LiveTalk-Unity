@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-04
+
+Idle motion is now edited in keypoint space at avatar-creation time so it plays as a forward loop at a known frame rate, and speech continues from wherever idle is instead of restarting the clip. The avatar id signature changes, so **every existing avatar folder is rebuilt once** on its next `CreateAvatarAsync`; characters keep working, they just pay the LivePortrait pass again. Speech audio cache entries are unaffected; frames entries key on the avatar id and so are simply re-rendered.
+
+### Added
+- `DrivingMotionOptions` (`TargetFps`, default 25; `LoopBlendSeconds`, default 0.4; `SourceFps`) and a `LiveTalkAPI.GenerateAnimatedTexturesAsync` overload that takes it. Avatar creation passes `DrivingMotionOptions.Default`.
+- `avatar.json` records `fps`, `loopable` and `motionPipelineVersion`. `Avatar.FrameRate` and `Avatar.IsLoopable` expose them (legacy folders read as 25 fps, not loopable — and are rebuilt anyway, see above). `Character.IdleFrameRate` / `Character.IdleIsLoopable` forward them.
+- `Character.SpeakAsync(..., int startFrameIndex = 0)`: the avatar frame the first lip-sync frame is rendered onto. Threaded through `LiveTalkAPI.GenerateTalkingHeadWithPreloadedData` / `GenerateTalkingHeadIncremental` and `MuseTalkInference`; `FrameStream.StartFrameIndex` reports the value a stream was rendered from.
+- `CharacterPlayer.SpeechContinuity` (default on), `MaxContinuityWaitSeconds` (2 s), `ContinuityLeadSeconds` (0.25 s) and `CurrentAvatarFrameIndex`.
+
+### Changed
+- **Driving motion is resampled to 25 fps and made loopable before rendering.** After LivePortrait extracts a `MotionInfo` per driving frame, the sequence is linearly resampled from the clip's native rate (the bundled clips are 30 fps) to `TargetFps` — pitch/yaw/roll, translation, scale, expression deltas and keypoints componentwise, which is exact for the small per-frame angles involved — and then the last N frames (N = `LoopBlendSeconds × fps`) are crossfaded toward the first N with a smoothstep weight and dropped from the head, so the last frame flows into the first with continuous velocity. Only then are the PNG frames and MuseTalk latents rendered, exactly as before. The bundled clips are untouched. A 179-frame 30 fps clip becomes 139 loopable frames at 25 fps. Measured on the neutral clip: mean absolute pixel difference across the wrap fell from 2.26 (9.7× the median consecutive-frame difference) to 0.17 (0.75×).
+- **Idle plays as a forward loop with wrap** for loopable avatars, timed from `Avatar.FrameRate` rather than a fixed 25 fps (the 30 fps clips used to play at 0.83×). Ping-pong is kept only for non-loopable (legacy) avatars.
+- **Speech continues from the idle frame.** When a line is queued the player predicts, from a running estimate of generation time, which avatar frame idle will be showing when the frames are ready and asks for the line from that frame; when the line lands it runs idle forward to that frame (bounded by `MaxContinuityWaitSeconds`) and starts, and idle resumes from the frame speech ended on. Cached frames entries record the frame they were rendered from (`start.txt` in the frames folder) and the player lines idle up to it on replay; the frames cache key itself is unchanged, so a line is rendered once. The first line after a cold model load is still likely to cut: generation time is unknown until one line has been measured. Subsequent lines bridge (measured: idle frame 98 → first speech frame 99, pixel difference 0.63 against a 1.26 worst-case consecutive difference inside the loop).
+- Avatar ids include the motion pipeline version (`HashUtils.GenerateAvatarId` expression signature).
+
+### Fixed
+- Motion extractor pitch was read from the yaw output (`results[1]` twice); head nods were lost and turns tilted. Existing avatars rebuild.
+- `CharacterPlayer` updated `CurrentAvatarFrameIndex` after raising `OnFrameUpdate`, so listeners saw the previous frame's index.
+
 ## [2.0.0] - 2026-09-04
 
 A breaking release. The TTS backend moved from Spark-TTS to Qwen3-TTS, which changes the dependency and invalidates 1.x voice folders; the character folder format changed from copies to references; and the speech/frames cache keys changed. The `IEnumerator` + `onComplete` / `onError` API style is unchanged and is the primary style going forward. See **Migration** at the end of this section.

@@ -131,13 +131,22 @@ namespace LiveTalk.Core
         /// <param name="sourceImage">The source image texture containing the face to animate</param>
         /// <param name="outputStream">The output stream to receive generated animated frames</param>
         /// <param name="drivingStream">The input stream providing driving frames for motion transfer</param>
+        /// <param name="motion">
+        /// Optional. When given, the motion of every driving frame is extracted
+        /// first, the sequence is retimed to <see cref="DrivingMotionOptions.TargetFps"/>
+        /// and made loopable (<see cref="MotionSequence"/>), and only then are
+        /// frames rendered — so the output is a different length from the
+        /// input and starts once the whole driving clip has been read. Null
+        /// renders each driving frame as it arrives, unchanged.
+        /// </param>
         /// <returns>An enumerator for Unity coroutine execution</returns>
         /// <exception cref="ArgumentNullException">Thrown when any parameter is null</exception>
         /// <exception cref="InvalidOperationException">Thrown when face detection or model initialization fails</exception>
         public IEnumerator GenerateAsync(
             Texture2D sourceImage,
             FrameStream outputStream,
-            FrameStream drivingStream)
+            FrameStream drivingStream,
+            DrivingMotionOptions motion = null)
         {
             // Validate parameters
             if (sourceImage == null)
@@ -182,6 +191,12 @@ namespace LiveTalk.Core
                     InitialMotionInfo = null
                 };
 
+                // With motion editing the whole clip's motion is read before
+                // anything is rendered, so the sequence can be retimed and
+                // looped as one piece. Without it each frame is rendered as it
+                // arrives (the original pipelined path).
+                var motions = motion != null ? new List<MotionInfo>() : null;
+
                 while (processedFrames < drivingStream.TotalExpectedFrames && drivingStream.HasMoreFrames)
                 {
                     var awaiter = drivingStream.WaitForNext();
@@ -193,16 +208,27 @@ namespace LiveTalk.Core
                         var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
                         UnityEngine.Object.DestroyImmediate(drivingFrame);
 
-                        (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
-                        yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
-                            r => prediction = r, "LivePortraitInference.ProcessNextFrame");
-                        predInfo = prediction.updatedPredInfo;
-
-                        if (prediction.generatedImg.data != null)
+                        if (motions != null)
                         {
-                            var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
-                            outputStream.Queue.Enqueue(generatedImgTexture);
-                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
+                            MotionInfo extracted = null;
+                            yield return TaskYield.Wait(ExtractDrivingMotionAsync(predInfo, imgRgbData),
+                                r => extracted = r, "LivePortraitInference.ExtractDrivingMotion");
+                            motions.Add(extracted);
+                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Extracted motion {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
+                        }
+                        else
+                        {
+                            (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
+                            yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
+                                r => prediction = r, "LivePortraitInference.ProcessNextFrame");
+                            predInfo = prediction.updatedPredInfo;
+
+                            if (prediction.generatedImg.data != null)
+                            {
+                                var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
+                                outputStream.Queue.Enqueue(generatedImgTexture);
+                                Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
+                            }
                         }
 
                         processedFrames++;
@@ -219,7 +245,37 @@ namespace LiveTalk.Core
                         drivingStream.Error);
                 }
 
-                Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
+                if (motions != null)
+                {
+                    if (motions.Count == 0)
+                        throw new InvalidOperationException("The driving clip yielded no frames to extract motion from.");
+
+                    // Edit in keypoint space, then render. The relative
+                    // retargeting reference (x_d_0) stays the clip's first
+                    // frame, so the edited motions are still expressed
+                    // against the same neutral as before.
+                    var edited = EditMotion(motions, motion, out float outputFps, out int blendFrames);
+                    outputStream.TotalExpectedFrames = edited.Count;
+                    Logger.Log($"[LivePortraitInference] Motion edited: {motions.Count} frames @ {motion.SourceFps:F2} fps → " +
+                               $"{edited.Count} frames @ {outputFps:F2} fps (loop blend {blendFrames} frames)");
+
+                    for (int i = 0; i < edited.Count; i++)
+                    {
+                        Frame rendered = default;
+                        yield return TaskYield.Wait(RenderMotionAsync(processResult, predInfo.InitialMotionInfo, edited[i]),
+                            r => rendered = r, "LivePortraitInference.RenderMotion");
+                        if (rendered.data != null)
+                        {
+                            outputStream.Queue.Enqueue(TextureUtils.FrameToTexture2D(rendered));
+                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Rendered frame {i + 1}/{edited.Count}");
+                        }
+                    }
+                    Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Motion-edited processing completed: {edited.Count} frames generated");
+                }
+                else
+                {
+                    Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
+                }
             }
             finally
             {
@@ -512,7 +568,10 @@ namespace LiveTalk.Core
 
             var results = await _motionExtractor.Run(inputs);
             
-            var pitchTensor = results[1].AsTensor<float>();
+            // Motion extractor output order: pitch, yaw, roll, t, exp, scale, kp.
+            // Pitch used to be read from results[1] (the yaw logits), which
+            // dropped head nods and turned yaw into a diagonal tilt.
+            var pitchTensor = results[0].AsTensor<float>();
             var yawTensor = results[1].AsTensor<float>();
             var rollTensor = results[2].AsTensor<float>();
             var tTensor = results[3].AsTensor<float>();
@@ -725,6 +784,63 @@ namespace LiveTalk.Core
             MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs, 
             Frame img, LivePortraitPredInfo predInfo)
         {
+            var xDInfo = await ExtractDrivingMotion(img, predInfo);
+            var resultTexture = await RenderMotion(xSInfo, Rs, fs, xs, predInfo.InitialMotionInfo, xDInfo);
+            return (resultTexture, predInfo);
+        }
+
+        /// <summary>
+        /// Off-main-thread wrapper of <see cref="ExtractDrivingMotion"/> for the
+        /// two-phase (edit-then-render) path.
+        /// </summary>
+        private Task<MotionInfo> ExtractDrivingMotionAsync(LivePortraitPredInfo predInfo, Frame drivingFrame)
+            => Task.Run(() => ExtractDrivingMotion(drivingFrame, predInfo));
+
+        /// <summary>
+        /// Off-main-thread render of one (possibly edited) driving motion,
+        /// pasted back into the source image.
+        /// </summary>
+        private Task<Frame> RenderMotionAsync(ProcessSourceImageResult processResult, MotionInfo xD0Info, MotionInfo xDInfo)
+        {
+            return Task.Run(async () =>
+            {
+                var Ip = await RenderMotion(processResult.XsInfo, processResult.Rs, processResult.Fs, processResult.Xs,
+                    xD0Info, xDInfo);
+                return PasteBack(Ip, processResult.CropInfo.Transform, processResult.SrcImg, processResult.MaskOri);
+            });
+        }
+
+        /// <summary>
+        /// Applies <see cref="DrivingMotionOptions"/> to an extracted motion
+        /// sequence: resample to the target rate, then crossfade into a loop.
+        /// </summary>
+        private static List<MotionInfo> EditMotion(
+            List<MotionInfo> motions, DrivingMotionOptions options, out float outputFps, out int blendFrames)
+        {
+            var edited = motions;
+            if (options.TargetFps > 0f && options.SourceFps > 0f)
+                edited = MotionSequence.Resample(edited, options.SourceFps, options.TargetFps);
+            outputFps = options.OutputFps;
+
+            blendFrames = options.LoopBlendFrames(outputFps);
+            if (blendFrames > 0)
+            {
+                int before = edited.Count;
+                edited = MotionSequence.MakeLoopable(edited, blendFrames);
+                blendFrames = before - edited.Count;
+            }
+            return edited;
+        }
+
+        /// <summary>
+        /// Tracks the face through <paramref name="img"/> and extracts its
+        /// motion (pose, translation, scale, expression, canonical keypoints)
+        /// with the rotation matrix filled in. The first frame seen becomes
+        /// <see cref="LivePortraitPredInfo.InitialMotionInfo"/> — the reference
+        /// every later frame is retargeted relative to.
+        /// </summary>
+        private async Task<MotionInfo> ExtractDrivingMotion(Frame img, LivePortraitPredInfo predInfo)
+        {
             bool frame0 = predInfo.Landmarks == null;
             Vector2[] lmk;
             if (frame0)
@@ -760,9 +876,22 @@ namespace LiveTalk.Core
             {
                 predInfo.InitialMotionInfo = xDInfo;
             }
-            
-            var xD0Info = predInfo.InitialMotionInfo;
-            var Rd0 = xD0Info.RotationMatrix;
+            return xDInfo;
+        }
+
+        /// <summary>
+        /// Renders the source face under driving motion <paramref name="xDInfo"/>,
+        /// expressed relative to the reference motion <paramref name="xD0Info"/>
+        /// (the clip's first frame): pose <c>R_d R_d0^T R_s</c>, expression,
+        /// scale and translation as deltas from the reference added to the
+        /// source's own. The returned frame is the 512x512 crop, not yet pasted back.
+        /// </summary>
+        private async Task<Frame> RenderMotion(
+            MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs,
+            MotionInfo xD0Info, MotionInfo xDInfo)
+        {
+            var Rd = xDInfo.RotationMatrix ?? MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
+            var Rd0 = xD0Info.RotationMatrix ?? MathUtils.GetRotationMatrix(xD0Info.Pitch, xD0Info.Yaw, xD0Info.Roll);
             
             var Rd0Transposed = MathUtils.TransposeMatrix(Rd0);
             var RdTimesRd0T = MathUtils.MatrixMultiply(Rd, Rd0Transposed);
@@ -784,8 +913,7 @@ namespace LiveTalk.Core
             var xDNew = CalculateNewKeypoints(xCs, RNew, deltaNew, scaleNew, tNew);
             xDNew = await Stitching(xs, xDNew);
             var output = await WarpingSpade(fs, xs, xDNew);
-            var resultTexture = FrameUtils.TensorToFrame(output, 0, 1);
-            return (resultTexture, predInfo);
+            return FrameUtils.TensorToFrame(output, 0, 1);
         }
         
         /// <summary>

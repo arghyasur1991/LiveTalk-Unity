@@ -166,6 +166,16 @@ namespace LiveTalk.API
         /// Gets or sets the total number of frames expected to be processed through this stream.
         /// </summary>
         public int TotalExpectedFrames { get; set; }
+
+        /// <summary>
+        /// For lip-sync frames: the avatar frame (index into the expression's
+        /// driving frames) the first frame of this stream was rendered onto;
+        /// frame <c>i</c> is on avatar frame <c>StartFrameIndex + i</c>, wrapped.
+        /// Set by the generator (the requested start) or by a frames-cache
+        /// hit (the start the cached frames were rendered from). -1 when
+        /// unknown or not applicable.
+        /// </summary>
+        public int StartFrameIndex { get; internal set; } = -1;
         
         /// <summary>
         /// Gets a value indicating whether more frames are available for processing.
@@ -751,6 +761,21 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated animated frames</returns>
         /// <exception cref="ArgumentException">Thrown when source image or video player is null</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
+            => GenerateAnimatedTexturesAsync(sourceImage, videoPlayer, motion: null, maxFrames);
+
+        /// <summary>
+        /// As <see cref="GenerateAnimatedTexturesAsync(Texture2D, VideoPlayer, int)"/>,
+        /// with the driving motion edited in keypoint space before rendering:
+        /// retimed to <see cref="DrivingMotionOptions.TargetFps"/> and, when
+        /// <see cref="DrivingMotionOptions.LoopBlendSeconds"/> is positive,
+        /// crossfaded into a seamless forward loop. The output frame count is
+        /// then <c>MotionSequence.EditedCount</c> of the clip's, not the clip's,
+        /// and the first frame arrives only after the whole clip has been read.
+        /// <see cref="DrivingMotionOptions.SourceFps"/> of 0 reads the clip's
+        /// own frame rate. Null <paramref name="motion"/> is the unedited path.
+        /// </summary>
+        public FrameStream GenerateAnimatedTexturesAsync(
+            Texture2D sourceImage, VideoPlayer videoPlayer, DrivingMotionOptions motion, int maxFrames = -1)
         {
             if (!_initialized)
             {
@@ -759,12 +784,25 @@ namespace LiveTalk.API
             ValidateAnimationInputs(sourceImage, videoPlayer);
 
             int frameCount = CalculateFrameCount(videoPlayer, maxFrames);
-            Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
+            int outputCount = frameCount;
+            if (motion != null)
+            {
+                if (motion.SourceFps <= 0f)
+                    motion.SourceFps = (float)videoPlayer.clip.frameRate;
+                outputCount = MotionSequence.EditedCount(frameCount, motion.SourceFps, motion.TargetFps,
+                    motion.LoopBlendFrames(motion.OutputFps));
+                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames @ {motion.SourceFps:F2} fps " +
+                           $"→ {outputCount} frames @ {motion.OutputFps:F2} fps{(motion.Loopable ? ", loopable" : "")}");
+            }
+            else
+            {
+                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
+            }
             
-            var outputStream = new FrameStream(frameCount);
+            var outputStream = new FrameStream(outputCount);
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
+                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream, motion), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(video)"));
             
             return outputStream;
@@ -844,18 +882,18 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated talking head frames</returns>
         /// <exception cref="ArgumentException">Thrown when audio clip is null</exception>
         /// <exception cref="InvalidOperationException">Thrown when the controller is not available</exception>
-        internal FrameStream GenerateTalkingHeadWithPreloadedData(AvatarData avatarData, AudioClip audioClip)
+        internal FrameStream GenerateTalkingHeadWithPreloadedData(AvatarData avatarData, AudioClip audioClip, int startFrameIndex = 0)
         {
             ValidateControllerAvailability();
             ValidateTalkingHeadInputs(null, audioClip);
             
-            Logger.Log($"[LiveTalkAPI] Generating talking head: {audioClip.name} ({audioClip.length:F2}s)");
+            Logger.Log($"[LiveTalkAPI] Generating talking head: {audioClip.name} ({audioClip.length:F2}s) from avatar frame {startFrameIndex}");
             
             int estimatedFrames = EstimateFrameCount(audioClip);
-            var outputStream = new FrameStream(estimatedFrames);
+            var outputStream = new FrameStream(estimatedFrames) { StartFrameIndex = startFrameIndex };
             
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream), outputStream,
+                _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadWithPreloadedData"));
             return outputStream;
         }
@@ -867,7 +905,7 @@ namespace LiveTalk.API
         /// the extractor's lifetime (feed, complete or fail it) and the
         /// MuseTalk lease.
         /// </summary>
-        internal FrameStream GenerateTalkingHeadIncremental(AvatarData avatarData, StreamingAudioFeatures features)
+        internal FrameStream GenerateTalkingHeadIncremental(AvatarData avatarData, StreamingAudioFeatures features, int startFrameIndex = 0)
         {
             ValidateControllerAvailability();
             if (avatarData == null)
@@ -875,11 +913,11 @@ namespace LiveTalk.API
             if (features == null)
                 throw new ArgumentNullException(nameof(features));
 
-            Logger.Log("[LiveTalkAPI] Generating talking head (streaming)");
+            Logger.Log($"[LiveTalkAPI] Generating talking head (streaming) from avatar frame {startFrameIndex}");
 
-            var outputStream = new FrameStream(0);
+            var outputStream = new FrameStream(0) { StartFrameIndex = startFrameIndex };
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _museTalk.GenerateFramesIncremental(avatarData, features, outputStream), outputStream,
+                _museTalk.GenerateFramesIncremental(avatarData, features, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadIncremental"));
             return outputStream;
         }
