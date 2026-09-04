@@ -700,13 +700,36 @@ namespace LiveTalk.API
             Action<FrameStream, AudioClip> onAudioReady = null,
             Action<FrameStream> onAnimationComplete = null,
             Action<Exception> onError = null,
-            Action<float[], int> onSpeechChunk = null)
+            Action<float[], int> onSpeechChunk = null,
+            Action<SpeechStream> onStreamStarted = null)
         {
             return TaskYield.Guard(
-                SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk),
+                SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk, onStreamStarted),
                 onError,
                 "Character.SpeakAsync");
         }
+
+        /// <summary>
+        /// Wraps a synthesis failure handed to the streaming animation so its
+        /// guard can tell "the audio producer already reported this" from a
+        /// fault of its own, and not report it a second time.
+        /// </summary>
+        private sealed class UpstreamFailure : Exception
+        {
+            public UpstreamFailure(Exception inner) : base(inner?.Message ?? "Speech synthesis failed.", inner) { }
+        }
+
+        /// <summary>Seconds of audio per TTS codec frame, which is the unit <see cref="SpeechOptions.FirstChunkFrames"/> counts in.</summary>
+        private const float TtsCodecFrameSeconds = 0.08f;
+
+        /// <summary>
+        /// Audio the first streamed chunk carries past the hold-back, so the
+        /// first encoder run already yields ~5 frames (0.2 s at 25 fps) instead
+        /// of one. Later chunks double from this size (see
+        /// <see cref="SpeechOptions.MaxChunkFrames"/>), so a longer first chunk
+        /// also means fewer, larger encoder runs.
+        /// </summary>
+        private const float FirstChunkFramesLeadSeconds = 0.2f;
 
         private IEnumerator SpeakCore(
             string text,
@@ -714,7 +737,8 @@ namespace LiveTalk.API
             Action<FrameStream, AudioClip> onAudioReady,
             Action<FrameStream> onAnimationComplete,
             Action<Exception> onError,
-            Action<float[], int> onSpeechChunk)
+            Action<float[], int> onSpeechChunk,
+            Action<SpeechStream> onStreamStarted)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
@@ -768,13 +792,22 @@ namespace LiveTalk.API
             string cacheKey = null;
             string framesCacheKey = null;
             bool audioFromCache = false;
+            bool framesCached = false;
+            string cachedFramesFolder = null;
+            int cachedFrameCount = 0;
 
             // Check audio cache first
             if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(Voice.Id))
             {
                 cacheKey = HashUtils.GenerateSpeechCacheKey(Voice.Id, text);
                 if (expressionIndex != -1)
+                {
                     framesCacheKey = HashUtils.GenerateFramesCacheKey(Voice.Id, text, Avatar.Id, expressionIndex);
+                    // Known before synthesis so the streaming decision below
+                    // can defer to cached frames when they exist.
+                    (framesCached, cachedFramesFolder, cachedFrameCount) = LiveTalkCache.CheckFramesCacheExists(framesCacheKey);
+                    framesCached &= cachedFrameCount > 0;
+                }
                 var (exists, cachedPath) = LiveTalkCache.CheckExists(cacheKey);
                 
                 if (exists)
@@ -798,9 +831,21 @@ namespace LiveTalk.API
                 }
             }
 
+            // The animation stream and the streaming state. When lip-sync is
+            // streamed, the animation starts before the audio is finished and
+            // the stream object exists before synthesis begins.
+            FrameStream outputStream = null;
+            SpeechStream speechStream = null;
+            bool streamed = false;
+
             // Generate new audio if not cached (with queuing)
             if (audioClip == null)
             {
+                // Stream lip-sync only for a line that will actually be
+                // animated from scratch: cached frames replay faster than
+                // either path, and voice-only has nothing to animate.
+                streamed = expressionIndex != -1 && liveTalkAPI.StreamLipSync && !framesCached;
+
                 // Acquire voice queue lock. The lease is released in the
                 // finally below on every exit: success, a fault rethrown by
                 // the bridge, or the host stopping this coroutine.
@@ -810,18 +855,89 @@ namespace LiveTalk.API
                 {
                     var options = new SpeechOptions { SampleRate = SpeechSampleRate };
 
+                    StreamingAudioFeatures features = null;
+                    if (streamed)
+                    {
+                        // Chunks arrive at the requested rate (or the engine's
+                        // native one when 0), which is what the stream reports.
+                        int streamRate = SpeechSampleRate > 0 ? SpeechSampleRate : QwenTts.NativeSampleRate;
+                        outputStream = new FrameStream(0);
+                        speechStream = new SpeechStream(outputStream, streamRate);
+                        features = liveTalkAPI.MuseTalk.CreateStreamingFeatures(
+                            extraContextSeconds: liveTalkAPI.StreamLipSyncContextSeconds);
+
+                        // A consumer that stops mid-line abandons the frames still
+                        // being generated for it, so the engine is free for the
+                        // next line rather than finishing work nobody will see.
+                        var cancelTarget = features;
+                        speechStream.CancelGeneration = () =>
+                            cancelTarget.Fail(new UpstreamFailure(new OperationCanceledException("Lip-sync generation cancelled by the consumer.")));
+
+                        // Size the first chunk so the mel reference can be captured
+                        // from it (warm-up) and it already yields a few frames past
+                        // the hold-back, rather than the first frames waiting for
+                        // the second, larger chunk.
+                        float firstChunkSeconds = Mathf.Max(features.WarmupSeconds,
+                            StreamingAudioFeatures.MarginSeconds + features.ExtraContextSeconds + FirstChunkFramesLeadSeconds);
+                        int firstChunkFrames = Mathf.CeilToInt(firstChunkSeconds / TtsCodecFrameSeconds);
+                        options.FirstChunkFrames = Mathf.Max(options.FirstChunkFrames, firstChunkFrames);
+
+                        // The animation starts now and waits for audio. Guarded
+                        // like the batch animation; a synthesis fault is relayed
+                        // to it as UpstreamFailure and not reported twice.
+                        var expression = Avatar.LoadedExpressions[expressionIndex];
+                        var animationStream = outputStream;
+                        var extractor = features;
+                        liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                            GenerateAnimationWithQueue(liveTalkAPI, expression.Data,
+                                () => liveTalkAPI.GenerateTalkingHeadIncremental(expression.Data, extractor),
+                                animationStream, framesCacheKey, onAnimationComplete, extractor),
+                            ex =>
+                            {
+                                animationStream.Fail(ex);
+                                if (ex is not UpstreamFailure)
+                                    onError?.Invoke(ex);
+                            },
+                            "Character.GenerateAnimation(streaming)"));
+                    }
+
                     // Progress<T> captures the SynchronizationContext it is
                     // built on. This coroutine runs on the main thread, so the
                     // engine's worker-thread reports arrive back here rather
                     // than on the thread that generated them — which matters,
                     // because a host will want to hand these to an AudioSource.
-                    var chunkRelay = onSpeechChunk == null
-                        ? null
-                        : new Progress<SpeechChunk>(c => onSpeechChunk(c.Pcm, c.SampleRate));
+                    Progress<SpeechChunk> chunkRelay = null;
+                    if (onSpeechChunk != null || streamed)
+                    {
+                        var stream = speechStream;
+                        var extractor = features;
+                        bool started = false;
+                        chunkRelay = new Progress<SpeechChunk>(c =>
+                        {
+                            if (stream != null && !stream.AudioFinished)
+                            {
+                                stream.Append(c.Pcm);
+                                extractor.Append(c.Pcm, c.SampleRate);
+                                if (!started)
+                                {
+                                    started = true;
+                                    onStreamStarted?.Invoke(stream);
+                                }
+                            }
+                            onSpeechChunk?.Invoke(c.Pcm, c.SampleRate);
+                        });
+                    }
 
                     var audioTask = chunkRelay == null
                         ? voice.SpeakAsync(text, options)
                         : voice.SpeakStreamAsync(text, chunkRelay, options);
+
+                    // Completion of the streamed audio is tied to the task, not
+                    // to this coroutine: a host may stop the coroutine while
+                    // synthesis is mid-flight, and the animation holding the
+                    // MuseTalk lease must still be told the audio has ended.
+                    if (streamed)
+                        CompleteStreamWhenSynthesised(audioTask, speechStream, features, onStreamStarted);
 
                     // A faulted synthesis rethrows here, unwinds through the
                     // finally (releasing the lease) and reaches onError via
@@ -863,7 +979,7 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            var outputStream = new FrameStream(0);
+            outputStream ??= new FrameStream(0);
             
             // For voice-only mode, both callbacks immediately
             if (expressionIndex == -1)
@@ -875,39 +991,43 @@ namespace LiveTalk.API
                 yield break;
             }
 
-            // Check for cached animation frames
-            if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(framesCacheKey))
+            // Streamed: the animation has been running since the first chunk
+            // on the stream the host already holds. The finished clip is
+            // delivered as always, for hosts that want the whole take.
+            if (streamed)
             {
-                var (framesExist, framesFolder, frameCount) = LiveTalkCache.CheckFramesCacheExists(framesCacheKey);
+                onAudioReady?.Invoke(outputStream, audioClip);
+                Logger.Log($"[Character] Audio ready for {Name} in {start.Elapsed.TotalMilliseconds}ms (streamed; animation in progress)");
+                yield break;
+            }
+
+            // Check for cached animation frames
+            if (framesCached)
+            {
+                Logger.LogVerbose($"[Character] Loading {cachedFrameCount} cached animation frames for: {text[..Math.Min(30, text.Length)]}...");
                 
-                if (framesExist && frameCount > 0)
-                {
-                    Logger.LogVerbose($"[Character] Loading {frameCount} cached animation frames for: {text[..Math.Min(30, text.Length)]}...");
-                    
-                    // Load frames from cache into output stream
-                    outputStream = new FrameStream(frameCount);
-                    
-                    // Audio ready callback
-                    onAudioReady?.Invoke(outputStream, audioClip);
-                    
-                    // Load frames and call animation complete when done. Guarded
-                    // so a failed read finishes the stream and reaches onError
-                    // rather than dying inside Unity's coroutine scheduler.
-                    var cachedStream = outputStream;
-                    liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
-                        LoadFramesFromCacheWithCallback(framesFolder, frameCount, cachedStream, onAnimationComplete),
-                        ex => { cachedStream.Fail(ex); onError?.Invoke(ex); },
-                        "Character.LoadFramesFromCache"));
-                    
-                    var stopCached = start.Elapsed;
-                    Logger.Log($"[Character] Audio ready for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached, loading...)");
-                    yield break;
-                }
+                // Load frames from cache into output stream
+                outputStream = new FrameStream(cachedFrameCount);
+                
+                // Audio ready callback
+                onAudioReady?.Invoke(outputStream, audioClip);
+                
+                // Load frames and call animation complete when done. Guarded
+                // so a failed read finishes the stream and reaches onError
+                // rather than dying inside Unity's coroutine scheduler.
+                var cachedStream = outputStream;
+                liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                    LoadFramesFromCacheWithCallback(cachedFramesFolder, cachedFrameCount, cachedStream, onAnimationComplete),
+                    ex => { cachedStream.Fail(ex); onError?.Invoke(ex); },
+                    "Character.LoadFramesFromCache"));
+                
+                var stopCached = start.Elapsed;
+                Logger.Log($"[Character] Audio ready for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached, loading...)");
+                yield break;
             }
 
             // Audio ready - callback immediately, animation will be generated in background
             var expressionData = Avatar.LoadedExpressions[expressionIndex];
-            outputStream = new FrameStream(0); // Will be updated with actual count when generation starts
             
             // Audio ready callback
             onAudioReady?.Invoke(outputStream, audioClip);
@@ -919,23 +1039,76 @@ namespace LiveTalk.API
             // model that failed to load, most often — into a finished stream
             // plus an onError call, instead of a consumer that waits forever
             // and a MuseTalk lease that is never given back.
-            var animationStream = outputStream;
+            var batchStream = outputStream;
+            var clip = audioClip;
             liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
-                GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data, audioClip, animationStream, framesCacheKey, onAnimationComplete),
-                ex => { animationStream.Fail(ex); onError?.Invoke(ex); },
+                GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data,
+                    () => liveTalkAPI.GenerateTalkingHeadWithPreloadedData(expressionData.Data, clip),
+                    batchStream, framesCacheKey, onAnimationComplete, features: null),
+                ex => { batchStream.Fail(ex); onError?.Invoke(ex); },
                 "Character.GenerateAnimation"));
         }
 
         /// <summary>
+        /// Closes the streamed audio when the synthesis task settles, on the
+        /// main thread and after every chunk report queued before it (the
+        /// synchronisation context is FIFO, and the last chunk is reported
+        /// before the task completes). The engine only flags a chunk final
+        /// when frames remain past the last emitted one, so completion is
+        /// keyed to the task. Any tail the chunks did not cover — a chunk
+        /// boundary landing on the last frame, or one sample of per-chunk
+        /// resampling rounding — is filled from the whole result so the
+        /// streamed audio and the finished clip have the same length.
+        /// </summary>
+        private static async void CompleteStreamWhenSynthesised(
+            Task<SpeechResult> audioTask,
+            SpeechStream speechStream,
+            StreamingAudioFeatures features,
+            Action<SpeechStream> onStreamStarted)
+        {
+            try
+            {
+                var speech = await audioTask;
+                if (!speechStream.AudioFinished)
+                {
+                    int streamed = speechStream.SamplesAvailable;
+                    if (speech.Pcm != null && speech.Pcm.Length > streamed)
+                    {
+                        var tail = new float[speech.Pcm.Length - streamed];
+                        Array.Copy(speech.Pcm, streamed, tail, 0, tail.Length);
+                        speechStream.Append(tail);
+                        features.Append(tail, speech.SampleRate);
+                        // A line short enough to arrive in one go never
+                        // reported a chunk; the host still gets its stream.
+                        if (streamed == 0)
+                            onStreamStarted?.Invoke(speechStream);
+                    }
+                    speechStream.Finish();
+                }
+                features.Complete();
+            }
+            catch (Exception ex)
+            {
+                speechStream.Fail(ex);
+                features.Fail(new UpstreamFailure(ex));
+            }
+        }
+
+        /// <summary>
         /// Generate animation frames with queuing to prevent parallel MuseTalk usage.
+        /// <paramref name="startProducer"/> is invoked once the lease is held and
+        /// returns the stream the engine produces into (batch: the whole clip;
+        /// streaming: incremental from <paramref name="features"/>, which is
+        /// disposed here when the run ends).
         /// </summary>
         private static IEnumerator GenerateAnimationWithQueue(
             LiveTalkAPI liveTalkAPI,
             AvatarData avatarData,
-            AudioClip audioClip,
+            Func<FrameStream> startProducer,
             FrameStream outputStream,
             string framesCacheKey,
-            Action<FrameStream> onAnimationComplete)
+            Action<FrameStream> onAnimationComplete,
+            StreamingAudioFeatures features)
         {
             // Acquire MuseTalk queue lock. Released in the finally below on
             // every exit — success, fault, or the coroutine being disposed —
@@ -947,10 +1120,7 @@ namespace LiveTalk.API
             try
             {
                 // Generate talking head using MuseTalk with preloaded data
-                var generatedStream = liveTalkAPI.GenerateTalkingHeadWithPreloadedData(
-                    avatarData,
-                    audioClip
-                );
+                var generatedStream = startProducer();
                 outputStream.TotalExpectedFrames = generatedStream.TotalExpectedFrames;
 
                 // Forward frames from generated stream to output stream
@@ -965,6 +1135,10 @@ namespace LiveTalk.API
                 {
                     var awaiter = generatedStream.WaitForNext();
                     yield return awaiter;
+
+                    // The streaming producer learns the utterance length late.
+                    if (generatedStream.TotalExpectedFrames != outputStream.TotalExpectedFrames)
+                        outputStream.TotalExpectedFrames = generatedStream.TotalExpectedFrames;
 
                     if (awaiter.Texture != null)
                     {
@@ -1024,6 +1198,9 @@ namespace LiveTalk.API
                 {
                     LiveTalkCache.DeleteFramesCache(framesCacheKey);
                 }
+
+                // Streaming: the extractor's Whisper session and buffers.
+                features?.Dispose();
 
                 // Release MuseTalk queue lock
                 liveTalkAPI.MuseTalkQueue.Release();

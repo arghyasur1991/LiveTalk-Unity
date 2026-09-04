@@ -357,6 +357,26 @@ Uninitialized → Loading → Ready ⇄ Speaking
 - `withAnimation: false`, or a character with no animatable avatar, plays audio
   only; the static portrait is shown if there is one.
 
+### Streaming lip-sync (experimental, off by default)
+
+By default a line is fully synthesised and fully animated before the first
+frame is shown. `LiveTalkAPI.Instance.StreamLipSync = true` instead feeds
+each TTS chunk to an incremental feature extractor and animates frames as
+their audio window becomes final, so playback starts after roughly the first
+half second of audio (`CharacterPlayer.PrerollSeconds`, default 0.35 s, is the
+audio buffered before playback begins; `StreamLipSyncContextSeconds`, default
+0.5 s, is extra audio held back per frame for the encoder's context).
+
+Why it is off: measured against the batch path, streamed frames differ in
+the mouth region by a mean of about 0.5–1.0/255 (max ~4.8/255). The residual
+is the Whisper encoder's global attention seeing a prefix instead of the
+whole clip, so it does not close with more context. And unless the GPU can
+generate a frame in under 40 ms, playback holds the last frame while
+generation catches up. Time to first mouth movement drops from ~29 s to
+~2.4 s on a 4 s line. Turn it on when latency matters more than fidelity;
+the batch path is unchanged when it is off, and cache hits are unaffected
+either way.
+
 ## Speak directly with SpeakAsync
 
 `Character.SpeakAsync` is the primitive the player is built on: one utterance,

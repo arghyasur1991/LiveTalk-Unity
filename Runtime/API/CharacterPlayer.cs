@@ -138,10 +138,40 @@ namespace LiveTalk.API
             public AudioClip AudioClip { get; set; }
             public bool AudioReady { get; set; }
             public bool AnimationReady { get; set; }
-            public bool IsReady => AudioReady && AnimationReady;
             public FrameStream FrameStream { get; set; }
             public bool WithAnimation { get; set; } = true;
+
+            /// <summary>Set when the line's lip-sync is streamed: audio and frames arrive while it plays.</summary>
+            public SpeechStream Stream { get; set; }
+
+            /// <summary>A <see cref="CollectAnimationFrames"/> is draining <see cref="FrameStream"/> into <see cref="Frames"/>.</summary>
+            public bool CollectorStarted { get; set; }
         }
+
+        // Streaming playback: one streaming AudioClip whose PCM reader pulls
+        // from the line's SpeechStream on the audio thread.
+        private AudioClip _streamClip;
+        private volatile SpeechStream _streamSource;
+        private volatile int _streamReadPos;
+        private volatile int _streamMaxBlock;
+        private int _streamUnderruns;
+        private const int MaxStreamedSeconds = 600;
+
+        // OnSpeechStarted bookkeeping: fired on the first displayed speech
+        // frame of a Speaking run, not when the run is queued.
+        private bool _speechRunStarted;
+        private float _speechQueuedAt;
+
+        /// <summary>
+        /// Audio buffered before a streamed line starts playing, in seconds.
+        /// Streamed lip-sync (<see cref="LiveTalkAPI.StreamLipSync"/>) begins
+        /// once the first frames exist <i>and</i> this much audio is in hand.
+        /// Larger values start later but ride out a slow synthesis chunk
+        /// without the audio pausing to wait for it; smaller values start
+        /// sooner. Speech is generated slightly faster than real time, so
+        /// 0.35 s is normally enough. Not used by the batch path or cache hits.
+        /// </summary>
+        public float PrerollSeconds { get; set; } = 0.35f;
 
         /// <summary>One in-flight <see cref="CollectAnimationFrames"/>, so <see cref="Stop"/> can find it.</summary>
         private class FrameCollector
@@ -399,9 +429,19 @@ namespace LiveTalk.API
                 _audioSource.Stop();
                 _audioSource.clip = null;
             }
+            // Streamed lines: abandon the frames still being generated for them
+            // (the playing one and any queued behind it), so the lip-sync engine
+            // is free for whatever is queued next instead of finishing frames
+            // nobody will display. The synthesis itself runs to completion on
+            // its normal path, as for a batch line.
+            _streamSource?.Cancel();
+            foreach (var pending in _pendingAnimations)
+                pending.Stream?.Cancel();
+            ReleaseStreamClip();
             
             _speechQueue.Clear();
             _pendingAnimations.Clear();
+            _speechRunStarted = false;
 
             // Reset processing flags so new speech can start fresh. Leaving
             // them set survives the stop: AnimationPlayerLoop is gated on
@@ -763,8 +803,12 @@ namespace LiveTalk.API
             {
                 _state = PlaybackState.Speaking;
                 // DON'T stop idle animation yet - let it play while speech is being generated
-                // AnimationPlayerLoop will stop it when first segment is ready to play
-                OnSpeechStarted?.Invoke();
+                // AnimationPlayerLoop will stop it when first segment is ready to play.
+                // OnSpeechStarted fires from MarkSpeechStarted when that first
+                // frame (or audio-only clip) actually plays.
+                _speechRunStarted = false;
+                _speechQueuedAt = Time.realtimeSinceStartup;
+                Logger.Log($"[CharacterPlayer] Speaking run queued at t={_speechQueuedAt:F3}s");
             }
             
             // Start both processor and player loops for pipelining. Flags first:
@@ -895,6 +939,24 @@ namespace LiveTalk.API
                             {
                                 hasError2 = true;
                                 ReportSpeechError(epoch, "Speech error", ex);
+                            },
+                            onStreamStarted: (speech) =>
+                            {
+                                // Streamed lip-sync: audio and frames are arriving
+                                // now, seconds before onAudioReady. Start draining
+                                // frames so the player loop can begin on the first.
+                                if (epoch != _epoch)
+                                {
+                                    // Stopped before the first chunk: nobody will
+                                    // play this line, so do not animate it.
+                                    speech.Cancel();
+                                    return;
+                                }
+                                pendingItem.Stream = speech;
+                                pendingItem.FrameStream = speech.Frames;
+                                frameStream = speech.Frames;
+                                StartFrameCollector(pendingItem, speech.Frames);
+                                Logger.Log($"[CharacterPlayer] Speech stream started at t={Time.realtimeSinceStartup:F3}s ({speech.SecondsAvailable:F2}s of audio)");
                             }
                         );
                         
@@ -911,15 +973,14 @@ namespace LiveTalk.API
                         {
                             Logger.LogWarning($"[CharacterPlayer] Failed to generate speech for line");
                             pendingItem.AudioReady = true;
-                            pendingItem.AnimationReady = true; // Mark as ready (but empty) so player can skip
+                            if (!pendingItem.CollectorStarted)
+                                pendingItem.AnimationReady = true; // Mark as ready (but empty) so player can skip
                             continue;
                         }
                         
                         // Audio is ready! Start a separate coroutine to collect frames
-                        // in parallel. Tracked so Stop() can find it.
-                        var collector = new FrameCollector();
-                        _frameCollectors.Add(collector);
-                        collector.Handle = StartCoroutine(CollectAnimationFrames(pendingItem, frameStream, collector));
+                        // in parallel (already running for a streamed line).
+                        StartFrameCollector(pendingItem, frameStream);
                         
                         // DON'T wait for animation - immediately continue to next line's audio generation
                         Logger.Log($"[CharacterPlayer] Audio done for line - starting next audio generation immediately!");
@@ -969,6 +1030,64 @@ namespace LiveTalk.API
             OnError?.Invoke(ex);
         }
         
+        /// <summary>
+        /// Starts draining <paramref name="frameStream"/> into the item's frame
+        /// list, once per item. Tracked so <see cref="Stop"/> can find it.
+        /// </summary>
+        private void StartFrameCollector(PendingSpeechItem item, FrameStream frameStream)
+        {
+            if (item.CollectorStarted || frameStream == null)
+                return;
+            item.CollectorStarted = true;
+            var collector = new FrameCollector();
+            _frameCollectors.Add(collector);
+            collector.Handle = StartCoroutine(CollectAnimationFrames(item, frameStream, collector));
+        }
+
+        /// <summary>
+        /// Whether the player loop may start this item. Batch: audio and every
+        /// frame are in. Streamed: the first frame exists and at least
+        /// <see cref="PrerollSeconds"/> of audio is buffered (or the audio is
+        /// already complete). Failed items are marked ready-and-empty so they
+        /// are skipped rather than waited on.
+        /// </summary>
+        private bool IsItemReady(PendingSpeechItem item)
+        {
+            if (item.AudioReady && item.AnimationReady)
+                return true;
+            var stream = item.Stream;
+            if (stream == null || item.Frames.Count == 0)
+                return false;
+            return stream.AudioFinished || stream.SecondsAvailable >= EffectivePrerollSeconds(stream.SampleRate);
+        }
+
+        /// <summary>
+        /// <see cref="PrerollSeconds"/>, raised to cover what the mixer reads
+        /// ahead on Play: a streaming clip's reader is asked for two blocks up
+        /// front, so a preroll smaller than that would starve the moment
+        /// playback began. The block size is learnt from the first line.
+        /// </summary>
+        private float EffectivePrerollSeconds(int hz)
+        {
+            float readAhead = (2f * Mathf.Max(_streamMaxBlock, 4096)) / hz;
+            return Mathf.Max(PrerollSeconds, readAhead + 0.1f);
+        }
+
+        /// <summary>
+        /// First audible/visible moment of a Speaking run: raises
+        /// <see cref="OnSpeechStarted"/> once and logs the latency since the run
+        /// was queued.
+        /// </summary>
+        private void MarkSpeechStarted(string how)
+        {
+            if (_speechRunStarted)
+                return;
+            _speechRunStarted = true;
+            float now = Time.realtimeSinceStartup;
+            Logger.Log($"[CharacterPlayer] Speech started ({how}) at t={now:F3}s, {now - _speechQueuedAt:F3}s after queue");
+            OnSpeechStarted?.Invoke();
+        }
+
         /// <summary>
         /// Collects animation frames in parallel with audio generation for next segment.
         /// </summary>
@@ -1026,7 +1145,7 @@ namespace LiveTalk.API
                 while (_isSpeechProcessorRunning || _pendingAnimations.Count > 0)
                 {
                     // Check if we need to wait for next segment
-                    bool needsToWait = _pendingAnimations.Count == 0 || !_pendingAnimations.Peek().IsReady;
+                    bool needsToWait = _pendingAnimations.Count == 0 || !IsItemReady(_pendingAnimations.Peek());
                     
                     if (needsToWait && !isFirstSegment && _state != PlaybackState.Paused)
                     {
@@ -1038,7 +1157,7 @@ namespace LiveTalk.API
                     }
                     
                     // Wait for next segment to be ready (idle animates during this wait)
-                    while (_pendingAnimations.Count == 0 || !_pendingAnimations.Peek().IsReady)
+                    while (_pendingAnimations.Count == 0 || !IsItemReady(_pendingAnimations.Peek()))
                     {
                         yield return new WaitForSeconds(0.05f);
                         
@@ -1058,21 +1177,26 @@ namespace LiveTalk.API
                     while (_state == PlaybackState.Paused)
                         yield return null;
                     
+                    // A streamed line plays from its stream even if synthesis
+                    // failed part-way: what arrived is played, then the segment ends.
+                    bool streamed = item.Stream != null;
+
                     // Skip empty items
-                    if (item.AudioClip == null)
+                    if (item.AudioClip == null && !streamed)
                     {
                         Logger.LogWarning("[CharacterPlayer] Skipping empty speech item");
                         continue;
                     }
                     
                     // For audio-only playback
-                    if (!item.WithAnimation || item.Frames.Count == 0)
+                    if (!streamed && (!item.WithAnimation || item.Frames.Count == 0))
                     {
                         Logger.Log($"[CharacterPlayer] Playing audio-only: {item.AudioClip.length}s");
                         
                         // Just play the audio
                         _audioSource.clip = item.AudioClip;
                         _audioSource.Play();
+                        MarkSpeechStarted("audio only");
                         
                         // Wait for audio to finish (a paused source is not
                         // "playing", so hold on the state as well)
@@ -1109,10 +1233,18 @@ namespace LiveTalk.API
                         Logger.Log("[CharacterPlayer] Next segment ready - playing immediately");
                     }
                     
-                    Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
-                    
-                    // Play this segment with its audio
-                    yield return PlayFramesSynchronized(item.Frames, item.AudioClip);
+                    if (streamed)
+                    {
+                        Logger.Log($"[CharacterPlayer] Playing streamed segment: {item.Frames.Count} frames and {item.Stream.SecondsAvailable:F2}s of audio so far");
+                        yield return PlayStreamingSegment(item);
+                    }
+                    else
+                    {
+                        Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
+                        
+                        // Play this segment with its audio
+                        yield return PlayFramesSynchronized(item.Frames, item.AudioClip);
+                    }
                     
                     // After playing, we're no longer in first segment
                     isFirstSegment = false;
@@ -1193,6 +1325,8 @@ namespace LiveTalk.API
                     yield break;
 
                 DisplayImage = frames[i];
+                if (i == 0)
+                    MarkSpeechStarted("batch");
                 yield return new WaitForSeconds(frameInterval);
             }
             
@@ -1201,6 +1335,184 @@ namespace LiveTalk.API
                    || (_audioSource.isPlaying && _state == PlaybackState.Speaking))
             {
                 yield return null;
+            }
+        }
+
+        /// <summary>
+        /// Plays a line whose audio and frames are still arriving.
+        ///
+        /// <para><b>Audio.</b> One streaming <see cref="AudioClip"/>
+        /// (<c>AudioClip.Create(..., stream: true, reader)</c>) whose reader
+        /// copies from the <see cref="SpeechStream"/> on the audio thread. Every
+        /// chunk lands in one contiguous buffer, so there is no seam to schedule
+        /// or crossfade and <see cref="AudioSource.timeSamples"/> is one
+        /// monotonic clock for the whole line. That clock, not wall time,
+        /// decides which frame is up: frame <c>i</c> shows at sample
+        /// <c>i * rate / 25</c>, so drift cannot accumulate and a pause holds
+        /// both together.</para>
+        ///
+        /// <para><b>Starvation.</b> If synthesis falls behind playback the
+        /// source is paused until <see cref="PrerollSeconds"/> is buffered
+        /// again, rather than letting the reader hand the mixer silence. If
+        /// generation falls behind (frames slower than real time) the last frame
+        /// is held — never skipped forward — and one warning names the deficit.
+        /// The segment ends when the audio has been fully played.</para>
+        /// </summary>
+        private IEnumerator PlayStreamingSegment(PendingSpeechItem item)
+        {
+            var stream = item.Stream;
+            int hz = stream.SampleRate;
+
+            ReleaseStreamClip();
+            _streamReadPos = 0;
+            _streamUnderruns = 0;
+            _streamSource = stream;
+            _streamClip = AudioClip.Create("LiveTalkStreamedSpeech", hz * MaxStreamedSeconds, 1, hz, true,
+                OnStreamPcmRead, OnStreamPcmSetPosition);
+            _audioSource.clip = _streamClip;
+            _audioSource.Play();
+
+            int shown = -1;
+            int displayed = 0;
+            int heldTicks = 0;
+            int maxDeficit = 0;
+            bool holdWarned = false;
+            int starvations = 0;
+            int lastPos = 0;
+
+            try
+            {
+                while (true)
+                {
+                    while (_state == PlaybackState.Paused)
+                        yield return null;
+                    if (_state != PlaybackState.Speaking)
+                        yield break;
+
+                    int pos = _audioSource.timeSamples;
+                    lastPos = pos;
+
+                    // Audio about to outrun synthesis: hold the source rather than
+                    // let the reader fill the mixer with zeros. The mixer reads
+                    // ahead of the play position in blocks, so the guard watches
+                    // the reader's position and keeps a block (at least 0.1 s) of
+                    // real samples ahead of it, and resumes once the preroll is
+                    // buffered again. The low-water mark stays below the resume
+                    // level so the two cannot chase each other.
+                    int readAhead = stream.SamplesAvailable - _streamReadPos;
+                    int resumeAt = Mathf.Max(hz / 10, Mathf.RoundToInt(EffectivePrerollSeconds(hz) * hz));
+                    int lowWater = Mathf.Min(Mathf.Max(_streamMaxBlock, hz / 10), resumeAt / 2);
+                    if (!stream.AudioFinished && readAhead < lowWater)
+                    {
+                        starvations++;
+                        if (starvations == 1)
+                            Logger.LogWarning($"[CharacterPlayer] Streamed audio caught up with synthesis at {pos / (float)hz:F2}s; holding until {resumeAt / (float)hz:F2}s is buffered");
+                        _audioSource.Pause();
+                        do
+                        {
+                            yield return null;
+                            if (_state != PlaybackState.Speaking && _state != PlaybackState.Paused)
+                                yield break;
+                        }
+                        while (!stream.AudioFinished && stream.SamplesAvailable - _streamReadPos < resumeAt);
+                        if (_state == PlaybackState.Speaking)
+                            _audioSource.UnPause();
+                        continue;
+                    }
+
+                    // Frame due at this audio position.
+                    int target = (int)((long)pos * 25 / hz);
+                    if (target > shown)
+                    {
+                        int available = item.Frames.Count;
+                        if (target < available)
+                        {
+                            shown = target;
+                            DisplayImage = item.Frames[shown];
+                            displayed++;
+                            MarkSpeechStarted("streamed");
+                        }
+                        else if (available > 0)
+                        {
+                            // Generation is behind the audio: show the newest frame
+                            // we do have and hold it.
+                            if (available - 1 > shown)
+                            {
+                                shown = available - 1;
+                                DisplayImage = item.Frames[shown];
+                                displayed++;
+                                MarkSpeechStarted("streamed");
+                            }
+                            if (!item.AnimationReady)
+                            {
+                                heldTicks++;
+                                int deficit = target - (available - 1);
+                                maxDeficit = Math.Max(maxDeficit, deficit);
+                                if (!holdWarned)
+                                {
+                                    holdWarned = true;
+                                    Logger.LogWarning($"[CharacterPlayer] Audio ahead of frames: frame {target} due, {available} generated (deficit {deficit}); holding the last frame");
+                                }
+                            }
+                        }
+                    }
+
+                    if (stream.AudioFinished && pos >= stream.SamplesAvailable)
+                        break;
+                    if (stream.AudioFinished && !_audioSource.isPlaying)
+                        break;
+
+                    yield return null;
+                }
+
+                Logger.Log($"[CharacterPlayer] Streamed segment done: {displayed} frames displayed (last index {shown}) of {item.Frames.Count} generated, " +
+                           $"{lastPos / (float)hz:F2}s audio, held on {heldTicks} tick(s) (max deficit {maxDeficit} frames), " +
+                           $"{starvations} audio hold(s), {_streamUnderruns} reader underrun(s), reader block {_streamMaxBlock} samples");
+            }
+            finally
+            {
+                if (_audioSource != null && _audioSource.clip == _streamClip)
+                {
+                    _audioSource.Stop();
+                    _audioSource.clip = null;
+                }
+                ReleaseStreamClip();
+            }
+        }
+
+        /// <summary>Audio thread: fill the mixer's buffer from the stream at the reader position.</summary>
+        private void OnStreamPcmRead(float[] data)
+        {
+            var source = _streamSource;
+            if (source == null)
+            {
+                Array.Clear(data, 0, data.Length);
+                return;
+            }
+            if (data.Length > _streamMaxBlock)
+                _streamMaxBlock = data.Length;
+            int copied = source.ReadSamples(_streamReadPos, data, 0, data.Length);
+            _streamReadPos += data.Length;
+            if (copied < data.Length && !source.AudioFinished)
+                System.Threading.Interlocked.Increment(ref _streamUnderruns);
+        }
+
+        private void OnStreamPcmSetPosition(int position)
+        {
+            _streamReadPos = position;
+        }
+
+        private void ReleaseStreamClip()
+        {
+            _streamSource = null;
+            if (_streamClip != null)
+            {
+                var clip = _streamClip;
+                _streamClip = null;
+                if (Application.isPlaying)
+                    Destroy(clip);
+                else
+                    DestroyImmediate(clip);
             }
         }
 

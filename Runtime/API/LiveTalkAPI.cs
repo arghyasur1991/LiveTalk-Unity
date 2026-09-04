@@ -228,7 +228,7 @@ namespace LiveTalk.API
         /// The frame is then accessible through the FrameAwaiter.Texture property.
         /// </summary>
         /// <returns>A FrameAwaiter instance that can be used in Unity coroutines</returns>
-        public FrameAwaiter WaitForNext() => new(Queue);
+        public FrameAwaiter WaitForNext() => new(Queue, () => Finished);
 
         /// <summary>
         /// Attempts to retrieve the next frame from the queue without blocking.
@@ -249,20 +249,23 @@ namespace LiveTalk.API
         #region Private Fields
 
         private readonly ConcurrentQueue<Texture2D> _queue;
+        private readonly Func<bool> _finished;
 
         #endregion
 
         #region Properties
 
         /// <summary>
-        /// Gets the texture that was retrieved from the queue.
-        /// This property is set when a frame becomes available.
+        /// Gets the texture that was retrieved from the queue, or null when the
+        /// wait ended because the stream finished with nothing left to deliver.
         /// </summary>
         public Texture2D Texture { get; private set; }
 
         /// <summary>
         /// Gets a value indicating whether the coroutine should continue waiting.
-        /// Returns false when a frame is available, allowing the coroutine to continue.
+        /// Returns false when a frame is available, or when the stream has
+        /// finished (or failed) with the queue empty — otherwise a consumer that
+        /// was already waiting when the producer stopped would wait forever.
         /// </summary>
         public override bool keepWaiting
         {
@@ -272,6 +275,11 @@ namespace LiveTalk.API
                 {
                     Texture = texture;
                     return false; // Stop waiting - caller resumes
+                }
+                if (_finished != null && _finished())
+                {
+                    Texture = null;
+                    return false; // Nothing more will come
                 }
                 return true; // Keep waiting this frame
             }
@@ -285,9 +293,18 @@ namespace LiveTalk.API
         /// Initializes a new instance of the FrameAwaiter class with the specified queue.
         /// </summary>
         /// <param name="queue">The concurrent queue to monitor for available frames</param>
-        public FrameAwaiter(ConcurrentQueue<Texture2D> queue)
+        public FrameAwaiter(ConcurrentQueue<Texture2D> queue) : this(queue, null)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a FrameAwaiter that also stops waiting once
+        /// <paramref name="finished"/> reports the producer is done.
+        /// </summary>
+        public FrameAwaiter(ConcurrentQueue<Texture2D> queue, Func<bool> finished)
         {
             _queue = queue;
+            _finished = finished;
         }
 
         #endregion
@@ -372,6 +389,49 @@ namespace LiveTalk.API
         /// Gets the MuseTalk inference queue for serializing animation requests.
         /// </summary>
         internal InferenceQueue MuseTalkQueue => _museTalkQueue;
+
+        /// <summary>
+        /// Generate lip-sync frames while the speech is still being synthesised,
+        /// instead of after it. With this on, <see cref="Character.SpeakAsync"/>
+        /// feeds each TTS chunk into an incremental Whisper feature extractor
+        /// and runs the UNet on frames as soon as their audio window is final,
+        /// so <see cref="CharacterPlayer"/> can start playing after the first
+        /// ~0.5 s of audio rather than after the whole clip has been animated.
+        /// The finished clip is still delivered to <c>onAudioReady</c> and the
+        /// frames still go to the cache.
+        ///
+        /// <para>Trade-off: the mel normalisation reference
+        /// (<c>power_to_db(ref=max)</c>) is captured from the first
+        /// 0.5 s and held for the utterance. When the loudest moment comes
+        /// later, features differ from the batch path by up to ~0.05 on
+        /// [-1, 1] (measured; a fixed constant reference is 3–4x worse), and
+        /// the encoder's global attention sees a shorter context. See the
+        /// changelog for the measured frame difference. Off: the batch path,
+        /// bit-identical to 1.x. Cache hits are unaffected either way.</para>
+        ///
+        /// <para><b>EXPERIMENTAL — default off.</b> Measured against the batch
+        /// path on two utterances, streamed frames differ in the mouth band by
+        /// a mean of 0.5–1.0/255 (max up to 4.8/255), and the residual is the
+        /// Whisper encoder's global attention seeing a prefix instead of the
+        /// full clip — it is not a margin, reference or alignment bug and does
+        /// not close with more held-back context. First mouth movement drops
+        /// from ~29 s to ~2.4 s on a 4 s line, but generation runs slower than
+        /// real time on this hardware, so playback holds the last frame while
+        /// it catches up. Turn on to trade fidelity and smoothness for latency.
+        /// Behaviour and knobs may change without a major version bump.</para>
+        /// </summary>
+        public bool StreamLipSync { get; set; } = false;
+
+        /// <summary>
+        /// Audio held back, in seconds, beyond the exact 146 ms a frame's own
+        /// feature window needs, before that frame is generated while
+        /// streaming. The Whisper encoder's self-attention sees the whole
+        /// window, so a frame encoded with more real audio after it lands
+        /// closer to the batch result; the cost is that much more first-frame
+        /// latency. Measured numbers for several values are in the changelog.
+        /// Only used when <see cref="StreamLipSync"/> is on.
+        /// </summary>
+        public float StreamLipSyncContextSeconds { get; set; } = 0.5f;
 
         /// <summary>
         /// Root of everything LiveTalk saves. Layout:
@@ -797,6 +857,30 @@ namespace LiveTalk.API
             _controller.StartCoroutine(LiveTalkController.Produce(
                 _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadWithPreloadedData"));
+            return outputStream;
+        }
+
+        /// <summary>
+        /// Streaming counterpart of <see cref="GenerateTalkingHeadWithPreloadedData"/>:
+        /// frames are produced as <paramref name="features"/> is fed audio, and
+        /// the stream finishes when the extractor completes. The caller owns
+        /// the extractor's lifetime (feed, complete or fail it) and the
+        /// MuseTalk lease.
+        /// </summary>
+        internal FrameStream GenerateTalkingHeadIncremental(AvatarData avatarData, StreamingAudioFeatures features)
+        {
+            ValidateControllerAvailability();
+            if (avatarData == null)
+                throw new ArgumentNullException(nameof(avatarData));
+            if (features == null)
+                throw new ArgumentNullException(nameof(features));
+
+            Logger.Log("[LiveTalkAPI] Generating talking head (streaming)");
+
+            var outputStream = new FrameStream(0);
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _museTalk.GenerateFramesIncremental(avatarData, features, outputStream), outputStream,
+                "LiveTalkAPI.GenerateTalkingHeadIncremental"));
             return outputStream;
         }
 

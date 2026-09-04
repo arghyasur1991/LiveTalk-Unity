@@ -234,6 +234,110 @@ namespace LiveTalk.Core
             }
         }
 
+        /// <summary>
+        /// An incremental feature extractor bound to this engine's Whisper
+        /// model, for <see cref="GenerateFramesIncremental"/>.
+        /// </summary>
+        public StreamingAudioFeatures CreateStreamingFeatures(
+            float warmupSeconds = StreamingAudioFeatures.DefaultWarmupSeconds,
+            float extraContextSeconds = 0f,
+            bool raiseReference = true)
+            => new(_whisperModel, warmupSeconds, extraContextSeconds, raiseReference);
+
+        /// <summary>
+        /// Generates talking head frames while the audio is still arriving.
+        /// Frames are produced, in order, as <paramref name="features"/>
+        /// reports them safe, through the same per-frame pipeline as the batch
+        /// path (latent cycling, positional encoding, UNet, VAE decode, blend).
+        /// Runs until the extractor is complete and every frame is out, or the
+        /// extractor reports a failure, which is rethrown.
+        /// </summary>
+        /// <param name="avatarData">Preloaded avatar data (face regions, latents).</param>
+        /// <param name="features">The extractor the audio producer is feeding.</param>
+        /// <param name="stream">Receives the frames; <see cref="FrameStream.TotalExpectedFrames"/> is set once the utterance length is known.</param>
+        public IEnumerator GenerateFramesIncremental(AvatarData avatarData, StreamingAudioFeatures features, FrameStream stream)
+        {
+            if (avatarData == null)
+                throw new ArgumentNullException(nameof(avatarData));
+            if (features == null)
+                throw new ArgumentNullException(nameof(features));
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+
+            if (avatarData.Latents.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "No avatar latents available for frame generation — the character's " +
+                    "expression data is empty or failed to load (see earlier errors).");
+            }
+
+            try
+            {
+                yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
+                yield return TaskYield.Wait(features.StartSessionAsync(), "MuseTalkInference.Whisper.StartSession");
+
+                var cycleDLatents = BuildCycledLatents(avatarData);
+                int emitted = 0;
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+
+                while (true)
+                {
+                    // Wait for more audio or the end of the utterance. A fault
+                    // on the producer side is observed by UpdateAsync.
+                    while (!features.HasPendingInput)
+                        yield return null;
+
+                    bool updated = false;
+                    yield return TaskYield.Wait(features.UpdateAsync(), r => updated = r,
+                        "MuseTalkInference.StreamingAudioFeatures.Update");
+
+                    if (features.TotalFrameCount >= 0)
+                        stream.TotalExpectedFrames = features.TotalFrameCount;
+
+                    if (!updated)
+                        continue;
+
+                    int safe = features.SafeFrameCount;
+                    if (safe > emitted)
+                        Logger.LogVerbose($"[MuseTalkInference] Streaming: {features.AccumulatedSeconds:F2}s of audio, frames {emitted}..{safe - 1} safe at {watch.Elapsed.TotalSeconds:F2}s");
+
+                    for (int idx = emitted; idx < safe; idx++)
+                    {
+                        var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
+                        var audioBatch = PrepareAudioBatch(features.GetFrameChunk(idx));
+
+                        DenseTensor<float> audioWithPE = null;
+                        yield return TaskYield.Wait(AddPositionalEncoding(audioBatch), r => audioWithPE = r,
+                            "MuseTalkInference.AddPositionalEncoding");
+
+                        Tensor<float> predictedLatents = null;
+                        yield return TaskYield.Wait(RunUNet(latentBatch, audioWithPE), r => predictedLatents = r,
+                            "MuseTalkInference.RunUNet");
+
+                        Frame frame = default;
+                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, idx, avatarData), r => frame = r,
+                            "MuseTalkInference.DecodeLatents");
+
+                        stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
+                        Logger.LogVerbose($"[MuseTalkInference] Frame {idx} completed (streaming)");
+                    }
+                    emitted = Mathf.Max(emitted, safe);
+
+                    if (features.IsFinal && emitted >= features.TotalFrameCount)
+                        break;
+                }
+
+                stream.TotalExpectedFrames = emitted;
+                Logger.LogVerbose($"[MuseTalkInference] Streaming generation finished: {emitted} frames in {watch.Elapsed.TotalSeconds:F2}s");
+            }
+            finally
+            {
+                features.EndSession();
+                EndGeneratorSession();
+                stream.Finished = true;
+            }
+        }
+
         #endregion
 
         #region Private Methods - Model Initialization
@@ -545,21 +649,7 @@ namespace LiveTalk.Core
                 // The bridge logs the original fault and rethrows it.
                 yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
 
-                // Create cycled latent list for smooth ping-pong animation
-                // Pattern: [0,1,2,3,2,1] instead of [0,1,2,3,3,2,1,0] to avoid duplicate frames
-                var cycleDLatents = new List<float[]>(avatarData.Latents);
-                var reversedLatents = new List<float[]>(avatarData.Latents);
-                reversedLatents.Reverse();
-
-                // Remove first element of reversed (duplicate of last forward frame)
-                if (reversedLatents.Count > 0)
-                    reversedLatents.RemoveAt(0);
-
-                cycleDLatents.AddRange(reversedLatents);
-
-                // Remove last element (duplicate of first forward frame) to complete the cycle
-                if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
-                    cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
+                var cycleDLatents = BuildCycledLatents(avatarData);
 
                 for (int idx = 0; idx < numFrames; idx++)
                 {
@@ -743,6 +833,31 @@ namespace LiveTalk.Core
         }
         
         /// <summary>
+        /// Cycled latent list for smooth ping-pong animation:
+        /// [0,1,2,3,2,1] rather than [0,1,2,3,3,2,1,0], so no frame repeats at
+        /// the turn. Shared by the batch and streaming generators so both walk
+        /// the avatar's frames identically.
+        /// </summary>
+        private static List<float[]> BuildCycledLatents(AvatarData avatarData)
+        {
+            var cycleDLatents = new List<float[]>(avatarData.Latents);
+            var reversedLatents = new List<float[]>(avatarData.Latents);
+            reversedLatents.Reverse();
+
+            // Remove first element of reversed (duplicate of last forward frame)
+            if (reversedLatents.Count > 0)
+                reversedLatents.RemoveAt(0);
+
+            cycleDLatents.AddRange(reversedLatents);
+
+            // Remove last element (duplicate of first forward frame) to complete the cycle
+            if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
+                cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
+
+            return cycleDLatents;
+        }
+
+        /// <summary>
         /// Prepares a latent batch with proper cycling for smooth frame-based animation.
         /// </summary>
         /// <param name="cycleDLatents">The cycled latent arrays for animation smoothness</param>
@@ -790,18 +905,21 @@ namespace LiveTalk.Core
         /// <returns>A formatted audio tensor with dimensions [1, 50, 384] for UNet processing</returns>
         private DenseTensor<float> PrepareAudioBatch(List<float[]> audioChunks, int startIdx)
         {
+            return PrepareAudioBatch(startIdx < audioChunks.Count ? audioChunks[startIdx] : null);
+        }
+
+        /// <summary>
+        /// Formats one frame's feature chunk (or zeros when null) as the
+        /// [1, 50, 384] tensor the positional encoding and UNet expect.
+        /// </summary>
+        private static DenseTensor<float> PrepareAudioBatch(float[] chunk)
+        {
             int timeSteps = 50, features = 384;
             int totalSize = timeSteps * features;
             var flatBatch = new float[totalSize];
-            var audioIdx = startIdx;
-            if (audioIdx < audioChunks.Count)
+            if (chunk != null)
             {
-                var chunk = audioChunks[audioIdx];
-                int batchOffset = 0;
-                for (int idx = 0; idx < chunk.Length && idx < timeSteps * features; idx++)
-                {
-                    flatBatch[batchOffset + idx] = chunk[idx];
-                }
+                Array.Copy(chunk, flatBatch, Math.Min(chunk.Length, totalSize));
             }
             
             return new DenseTensor<float>(flatBatch, new[] { 1, timeSteps, features });

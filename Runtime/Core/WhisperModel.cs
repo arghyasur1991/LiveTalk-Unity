@@ -25,6 +25,77 @@ namespace LiveTalk.Core
 
         #endregion
 
+        #region Feature layout constants
+
+        /// <summary>Output (video) frame rate the feature chunks are cut for.</summary>
+        internal const int FPS = 25;
+
+        /// <summary>Whisper encoder timestep rate: one timestep per two mel columns.</summary>
+        internal const int AUDIO_FPS = 50;
+
+        /// <summary>Timesteps of context before a frame's own two timesteps (in units of <c>AUDIO_FPS / FPS</c>).</summary>
+        internal const int AUDIO_PADDING_LEFT = 2;
+
+        /// <summary>Timesteps of lookahead after a frame's own two timesteps (same units).</summary>
+        internal const int AUDIO_PADDING_RIGHT = 2;
+
+        /// <summary>Mel columns per encoder timestep (the stride-2 conv in the Whisper front end).</summary>
+        internal const int MEL_FRAMES_PER_TIMESTEP = 2;
+
+        /// <summary>
+        /// Extra mel columns an encoder timestep reads past its own two: the
+        /// Whisper front end is two kernel-3 convolutions, each reaching one
+        /// column further.
+        /// </summary>
+        internal const int CONV_REACH_MEL_FRAMES = 2;
+
+        /// <summary><c>AUDIO_FPS / FPS</c>: encoder timesteps per output frame.</summary>
+        internal static int TimestepsPerFrame => Mathf.CeilToInt((float)AUDIO_FPS / FPS);
+
+        /// <summary>Encoder timesteps each frame's chunk holds: <c>2 * (left + right + 1)</c> = 10.</summary>
+        internal static int TimestepsPerChunk => TimestepsPerFrame * (AUDIO_PADDING_LEFT + AUDIO_PADDING_RIGHT + 1);
+
+        /// <summary>Zero timesteps prepended before the first real one.</summary>
+        internal static int LeftPaddingTimesteps => TimestepsPerFrame * AUDIO_PADDING_LEFT;
+
+        /// <summary>Number of output frames for <paramref name="audioLength16k"/> samples at 16 kHz.</summary>
+        internal static int FrameCountFor(int audioLength16k) =>
+            Mathf.FloorToInt((float)audioLength16k / AudioUtils.SAMPLE_RATE * FPS);
+
+        /// <summary>Encoder timesteps that carry real audio for <paramref name="audioLength16k"/> samples, capped by the encoder's sequence length.</summary>
+        internal static int ActualTimestepsFor(int audioLength16k, int seqLen) =>
+            Mathf.Min(Mathf.FloorToInt((float)audioLength16k / AudioUtils.SAMPLE_RATE * AUDIO_FPS), seqLen);
+
+        /// <summary>
+        /// Frames whose chunk fits inside the padded sequence (left zeros + real
+        /// timesteps + right zeros). Equal to <paramref name="numFrames"/> unless
+        /// the clip is longer than the encoder's 30 s window, in which case the
+        /// tail is dropped — the long-standing batch behaviour.
+        /// </summary>
+        internal static int ChunkableFrameCount(int numFrames, int actualTimesteps)
+        {
+            int rightPaddingSize = TimestepsPerFrame * 3 * AUDIO_PADDING_RIGHT;
+            int totalPaddedLength = LeftPaddingTimesteps + actualTimesteps + rightPaddingSize;
+            int count = 0;
+            while (count < numFrames && TimestepsPerFrame * count + TimestepsPerChunk <= totalPaddedLength)
+                count++;
+            return count;
+        }
+
+        /// <summary>
+        /// The last mel column output frame <paramref name="frameIndex"/> depends on
+        /// through the local part of the pipeline (chunk window, conv front end,
+        /// STFT window). Global self-attention in the encoder is not counted —
+        /// it reaches everything and cannot be held back.
+        /// </summary>
+        internal static int LastMelColumnFor(int frameIndex)
+        {
+            int lastTimestep = TimestepsPerFrame * frameIndex + TimestepsPerChunk - 1 - LeftPaddingTimesteps;
+            return MEL_FRAMES_PER_TIMESTEP * lastTimestep + (MEL_FRAMES_PER_TIMESTEP - 1) + CONV_REACH_MEL_FRAMES;
+        }
+
+        #endregion
+
         #region Properties
 
         /// <summary>
@@ -110,10 +181,10 @@ namespace LiveTalk.Core
                 float[,] melSpectrogram = AudioUtils.ExtractMelSpectrogram(resampledAudio);
                 
                 // Step 3: Process through ONNX Whisper
-                var whisperFeatures = await RunWhisperInference(melSpectrogram);
+                var encoding = await EncodeAsync(melSpectrogram);
                 
                 // Step 4: Convert to MuseTalk audio chunks
-                var audioFeatures = ProcessWhisperFeatures(whisperFeatures, resampledAudio.Length);
+                var audioFeatures = ProcessWhisperFeatures(encoding, resampledAudio.Length);
                 
                 return audioFeatures;
             }
@@ -142,43 +213,46 @@ namespace LiveTalk.Core
 
         #endregion
 
-        #region Private Methods
-        
+        #region Encoder output
+
         /// <summary>
-        /// Asynchronously runs ONNX Whisper model inference on the mel spectrogram.
-        /// This method prepares the input tensor, executes the Whisper encoder model,
-        /// and returns the multi-layer audio features for temporal analysis.
+        /// One run of the Whisper encoder: <c>[seqLen, layers, features]</c>
+        /// flattened row-major (<c>s * layers * features + l * features + f</c>).
         /// </summary>
-        /// <param name="melSpectrogram">The mel spectrogram to process [mel_bands, time_frames]</param>
-        /// <returns>A task containing the Whisper features [batch, sequence_length, layers, features]</returns>
-        /// <exception cref="InvalidOperationException">Thrown when ONNX inference fails</exception>
-        private async Task<float[,,,]> RunWhisperInference(float[,] melSpectrogram)
+        internal sealed class Encoding
+        {
+            public float[] Data;
+            public int SeqLen;
+            public int Layers;
+            public int Features;
+
+            public int ChunkLength => TimestepsPerChunk * Layers * Features;
+        }
+
+        /// <summary>
+        /// Runs the encoder over a mel spectrogram, zero-padded to
+        /// <see cref="AudioUtils.TARGET_FRAMES"/> columns as the model requires.
+        /// The session must be started.
+        /// </summary>
+        internal async Task<Encoding> EncodeAsync(float[,] melSpectrogram)
         {
             int melBands = melSpectrogram.GetLength(0);
             int frames = melSpectrogram.GetLength(1);
             
-            // Pad to target frames
-            float[,,] inputTensor = new float[1, melBands, AudioUtils.TARGET_FRAMES];
-            
+            // Pad to target frames. Row-major [1, melBands, TARGET_FRAMES].
+            var flat = new float[melBands * AudioUtils.TARGET_FRAMES];
+            int copyFrames = Mathf.Min(frames, AudioUtils.TARGET_FRAMES);
             for (int mel = 0; mel < melBands; mel++)
             {
-                for (int frame = 0; frame < AudioUtils.TARGET_FRAMES; frame++)
-                {
-                    if (frame < frames)
-                    {
-                        inputTensor[0, mel, frame] = melSpectrogram[mel, frame];
-                    }
-                    // else: padding with zeros (default initialization)
-                }
+                int row = mel * AudioUtils.TARGET_FRAMES;
+                for (int frame = 0; frame < copyFrames; frame++)
+                    flat[row + frame] = melSpectrogram[mel, frame];
+                // else: padding with zeros (default initialization)
             }
             
-            // Create ONNX tensor
             var inputShape = new int[] { 1, melBands, AudioUtils.TARGET_FRAMES };
-            var tensor = new DenseTensor<float>(inputTensor.Cast<float>().ToArray(), inputShape);
-            var inputs = new List<Tensor<float>>
-            {
-                tensor
-            };
+            var tensor = new DenseTensor<float>(flat, inputShape);
+            var inputs = new List<Tensor<float>> { tensor };
             
             var outputs = await _model.Run(inputs);
             var output = outputs.First(o => o.Name == OUTPUT_NAME);
@@ -187,117 +261,74 @@ namespace LiveTalk.Core
             {
                 // Expected shape: [batch, seq_len, layers, features] = [1, seq_len, layers, 384]
                 var shape = outputTensor.Dimensions.ToArray();
-                
-                // Convert to 4D array for easier processing
-                int batchSize = (int)shape[0];
-                int seqLen = (int)shape[1];
-                int layers = (int)shape[2];
-                int features = (int)shape[3];
-                
-                float[,,,] result = new float[batchSize, seqLen, layers, features];
-                var buffer = outputTensor.Buffer.ToArray();
-                
-                for (int b = 0; b < batchSize; b++)
+                if (shape.Length != 4 || shape[0] != 1)
+                    throw new InvalidOperationException(
+                        $"Unexpected Whisper output shape [{string.Join(", ", shape)}]; expected [1, seq, layers, features]");
+
+                // The preallocated output buffer is reused by the next run, so
+                // the caller gets its own copy.
+                return new Encoding
                 {
-                    for (int s = 0; s < seqLen; s++)
-                    {
-                        for (int l = 0; l < layers; l++)
-                        {
-                            for (int f = 0; f < features; f++)
-                            {
-                                int index = b * seqLen * layers * features + 
-                                           s * layers * features + 
-                                           l * features + f;
-                                result[b, s, l, f] = buffer[index];
-                            }
-                        }
-                    }
-                }
-                
-                return result;
+                    Data = outputTensor.Buffer.ToArray(),
+                    SeqLen = shape[1],
+                    Layers = shape[2],
+                    Features = shape[3],
+                };
             }
             
             throw new InvalidOperationException("Failed to get valid output tensor from Whisper ONNX");
         }
 
         /// <summary>
+        /// The feature chunk for output frame <paramref name="frameIndex"/>:
+        /// <see cref="TimestepsPerChunk"/> consecutive encoder timesteps starting
+        /// <see cref="LeftPaddingTimesteps"/> before <c>2 * frameIndex</c>, with
+        /// zeros where a timestep falls before the audio or at or after
+        /// <paramref name="actualTimesteps"/>. Layout
+        /// <c>(t * layers + l) * features + f</c>, which is what
+        /// <c>MuseTalkInference.PrepareAudioBatch</c> reads.
+        /// </summary>
+        internal static float[] BuildFrameChunk(Encoding encoding, int actualTimesteps, int frameIndex)
+        {
+            int layers = encoding.Layers;
+            int features = encoding.Features;
+            int perTimestep = layers * features;
+            var chunk = new float[TimestepsPerChunk * perTimestep];
+            int firstPadded = TimestepsPerFrame * frameIndex;
+            for (int t = 0; t < TimestepsPerChunk; t++)
+            {
+                int s = firstPadded + t - LeftPaddingTimesteps;
+                if (s < 0 || s >= actualTimesteps || s >= encoding.SeqLen)
+                    continue; // zero padding
+                Array.Copy(encoding.Data, s * perTimestep, chunk, t * perTimestep, perTimestep);
+            }
+            return chunk;
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        /// <summary>
         /// Processes Whisper features into MuseTalk audio chunks for temporal synchronization.
         /// This method converts the multi-layer Whisper features into frame-based chunks with proper
         /// padding and temporal alignment.
         /// </summary>
-        /// <param name="whisperFeatures">The raw Whisper features [batch, sequence_length, layers, features]</param>
+        /// <param name="encoding">The encoder output for the whole clip</param>
         /// <param name="audioLength">The original audio length in samples for duration calculation</param>
         /// <returns>AudioFeatures object containing properly formatted feature chunks for MuseTalk</returns>
-        private AudioFeatures ProcessWhisperFeatures(float[,,,] whisperFeatures, int audioLength)
+        private AudioFeatures ProcessWhisperFeatures(Encoding encoding, int audioLength)
         {
-            const int fps = 25;
-            const int audioFps = 50;
-            const int audioPaddingLeft = 2;
-            const int audioPaddingRight = 2;
+            int numFrames = FrameCountFor(audioLength);
+            int actualLength = ActualTimestepsFor(audioLength, encoding.SeqLen);
             
-            // Get dimensions [batch, seq_len, layers, features]
-            int seqLen = whisperFeatures.GetLength(1);
-            int layers = whisperFeatures.GetLength(2);
-            int features = whisperFeatures.GetLength(3);
-            
-            // Calculate parameters
-            float whisperIdxMultiplier = (float)audioFps / fps;
-            int numFrames = Mathf.FloorToInt((float)audioLength / AudioUtils.SAMPLE_RATE * fps);
-            int actualLength = Mathf.FloorToInt((float)audioLength / AudioUtils.SAMPLE_RATE * audioFps);
-            
-            // Trim to actual length
-            actualLength = Mathf.Min(actualLength, seqLen);
-            
-            // Add padding
-            int paddingNums = Mathf.CeilToInt(whisperIdxMultiplier);
-            int leftPaddingSize = paddingNums * audioPaddingLeft;
-            int rightPaddingSize = paddingNums * 3 * audioPaddingRight;
-            
-            int totalPaddedLength = leftPaddingSize + actualLength + rightPaddingSize;
-            
-            // Create padded features array
-            float[,,,] paddedFeatures = new float[1, totalPaddedLength, layers, features];
-            
-            // Copy actual features to padded array (padding is zeros by default)
-            for (int s = 0; s < actualLength; s++)
-            {
-                for (int l = 0; l < layers; l++)
-                {
-                    for (int f = 0; f < features; f++)
-                    {
-                        paddedFeatures[0, leftPaddingSize + s, l, f] = whisperFeatures[0, s, l, f];
-                    }
-                }
-            }
-            
-            // Generate chunks
-            int audioFeatureLengthPerFrame = 2 * (audioPaddingLeft + audioPaddingRight + 1);
-            var featureChunks = new List<float[]>();
-            
+            // BuildFrameChunk zero-fills past actualLength exactly as the
+            // padded array did.
+            numFrames = ChunkableFrameCount(numFrames, actualLength);
+            var featureChunks = new List<float[]>(numFrames);
             for (int frameIndex = 0; frameIndex < numFrames; frameIndex++)
             {
-                int audioIndex = Mathf.FloorToInt(frameIndex * whisperIdxMultiplier);
-                
-                if (audioIndex + audioFeatureLengthPerFrame <= totalPaddedLength)
-                {
-                    int chunkHeight = audioFeatureLengthPerFrame * layers;
-                    float[] chunk = new float[chunkHeight * features];
-                    
-                    for (int t = 0; t < audioFeatureLengthPerFrame; t++)
-                    {
-                        for (int l = 0; l < layers; l++)
-                        {
-                            for (int f = 0; f < features; f++)
-                            {
-                                int rowIndex = t * layers + l;
-                                int chunkIndex = rowIndex * features + f;
-                                chunk[chunkIndex] = paddedFeatures[0, audioIndex + t, l, f];
-                            }
-                        }
-                    }
-                    
-                    featureChunks.Add(chunk);
-                }
+                featureChunks.Add(BuildFrameChunk(encoding, actualLength, frameIndex));
             }
             
             var audioFeatures = new AudioFeatures

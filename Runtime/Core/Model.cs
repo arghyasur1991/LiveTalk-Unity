@@ -245,6 +245,11 @@ namespace LiveTalk.Core
             }
             finally
             {
+                // Inputs are per run. Left in place they accumulate for the
+                // life of the session (every UNet call held every earlier
+                // frame's tensors), and a long streaming session keeps the
+                // session open for many frames.
+                _inputs?.Clear();
                 var elapsed = start.ElapsedMilliseconds;
                 Logger.Log($"[Model] {_config.modelName} execution completed in {elapsed}ms");
             }
@@ -306,6 +311,7 @@ namespace LiveTalk.Core
             }
             finally
             {
+                _inputs?.Clear();
                 var elapsed = start.ElapsedMilliseconds;
                 Logger.Log($"[Model] {_config.modelName} execution completed in {elapsed}ms");
             }
