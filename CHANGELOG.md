@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **New rendered driving clips.** `Resources/driving/*.mp4` are now authored, not filmed: a realistic MB-Lab face rendered in Blender (Eevee, 512×512, 25 fps, H.264 yuv420p as before) with geometric brows, lashes and hair, subsurface skin, a wet cornea and a crew-neck top. Every clip starts and ends on the same rest pose at zero velocity, so the seven clips cut between each other and loop without a visible seam; the idle is a 27 s attentive-listening take (slow sway, four small tilts/turns, one deeper breath, six aperiodic blinks, gaze micro-saccades, two micro-nods, relaxed closed mouth) and the six expression clips run rest → expression → rest in 3.8–5.6 s with brows keyed at 100 % where used, breathing and head sway throughout. The authoring pipeline (character build, table-driven clip definitions, renderer, analysis) lives in `Tools~/driving_clips/`.
+- **Avatar ids now cover the driving clips.** `Avatar.Signature` includes a fingerprint of the bundled clips (`Avatar.DrivingClipsHash`: per-clip frame count, frame rate, size and length — what a `VideoClip` exposes at runtime), and `avatar.json` records it as `drivingClipsHash`. Because the id used to hash only the portrait and the expression *names*, replacing the clips would have left every existing avatar serving frames driven by the old footage forever; **every avatar folder is rebuilt once** on its next `CreateAvatarAsync`, and the same will happen whenever a clip is re-authored.
+
 ## [2.1.0] - 2026-09-04
 
 Idle motion is now edited in keypoint space at avatar-creation time so it plays as a forward loop at a known frame rate, and speech continues from wherever idle is instead of restarting the clip. The avatar id signature changes, so **every existing avatar folder is rebuilt once** on its next `CreateAvatarAsync`; characters keep working, they just pay the LivePortrait pass again. Speech audio cache entries are unaffected; frames entries key on the avatar id and so are simply re-rendered.

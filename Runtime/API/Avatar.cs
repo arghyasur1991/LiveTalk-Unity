@@ -119,6 +119,14 @@ namespace LiveTalk.API
         /// </summary>
         public int? motionPipelineVersion;
 
+        /// <summary>
+        /// Fingerprint of the bundled driving clips the frames were rendered
+        /// from (<see cref="Avatar.DrivingClipsHash"/>). Part of the avatar
+        /// id, so replacing a clip rebuilds every avatar instead of serving
+        /// frames driven by the old footage. Absent in folders built before it.
+        /// </summary>
+        public string drivingClipsHash;
+
         public const string FileName = "avatar.json";
     }
 
@@ -251,12 +259,57 @@ namespace LiveTalk.API
 
         /// <summary>
         /// The expression-set half of the avatar id. Carries the motion
-        /// pipeline version so a pipeline change gives every avatar a new id:
-        /// an old folder is neither reused nor half-matched, and the two
-        /// generations can coexist on disk until the old one is deleted.
+        /// pipeline version and the driving-clip fingerprint, so a pipeline
+        /// change or a new set of clips gives every avatar a new id: an old
+        /// folder is neither reused nor half-matched, and the two generations
+        /// can coexist on disk until the old one is deleted.
         /// </summary>
         internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion;
+            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion
+            + ";clips=" + DrivingClipsHash;
+
+        private static string _drivingClipsHash;
+
+        /// <summary>
+        /// Fingerprint of the bundled driving clips, computed once per session
+        /// from every <c>Resources/driving/*</c> <see cref="VideoClip"/>. Hashes
+        /// what a <see cref="VideoClip"/> exposes in a player as well as in the
+        /// editor — name, frame count, frame rate, size, length — which is what
+        /// changes when a clip is re-authored (the raw bytes are not readable
+        /// from an imported VideoClip at runtime). All seven clips are covered
+        /// whatever the mode, so a change to any of them rebuilds every avatar.
+        /// </summary>
+        internal static string DrivingClipsHash
+        {
+            get
+            {
+                if (_drivingClipsHash == null)
+                    _drivingClipsHash = ComputeDrivingClipsHash();
+                return _drivingClipsHash;
+            }
+        }
+
+        private static string ComputeDrivingClipsHash()
+        {
+            var sb = new System.Text.StringBuilder();
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            foreach (string expression in AllExpressionNames)
+            {
+                VideoClip clip = LoadDrivingVideoForExpression(expression);
+                sb.Append(expression).Append('=');
+                if (clip == null)
+                {
+                    sb.Append("missing;");
+                    continue;
+                }
+                sb.Append(clip.frameCount).Append('@').Append(clip.frameRate.ToString("R", inv))
+                  .Append(',').Append(clip.width).Append('x').Append(clip.height)
+                  .Append(',').Append(clip.length.ToString("R", inv)).Append(';');
+            }
+            string hash = HashUtils.GenerateTextHash(sb.ToString()).Substring(0, 12);
+            Logger.LogVerbose($"[Avatar] Driving clips fingerprint {hash} ({sb})");
+            return hash;
+        }
 
         /// <summary>Human name of an expression index, for logs.</summary>
         internal static string GetExpressionName(int index) =>
@@ -409,6 +462,7 @@ namespace LiveTalk.API
                     fps = motion.TargetFps > 0f ? motion.TargetFps : DefaultFrameRate,
                     loopable = motion.Loopable,
                     motionPipelineVersion = MotionPipelineVersion,
+                    drivingClipsHash = DrivingClipsHash,
                 };
                 string manifestPath = Path.Combine(staging, AvatarManifest.FileName);
                 yield return TaskYield.Wait(
