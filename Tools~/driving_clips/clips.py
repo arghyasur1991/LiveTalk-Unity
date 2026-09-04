@@ -131,7 +131,7 @@ CLIPS = {
     ),
     # -------------------------------------------------------------- sad
     "sad": dict(
-        seconds=6.4, seed=505,
+        seconds=6.8, seed=505,
         beats=[1.6],
         breath=dict(bpm=11.0),
         # a blink while the gaze is lowered made LivePortrait pop the whole face
@@ -178,11 +178,11 @@ CLIPS = {
     ),
     # -------------------------------------------------------------- surprised
     "surprised": dict(
-        seconds=3.8, seed=707,
+        seconds=4.3, seed=707,
         beats=[0.9],
         # no blink while the eyes are held wide: wide-open -> shut in three frames
         # made LivePortrait pop the whole face (MAD 5.5 vs 0.4 median); blink in the settle
-        blinks=dict(interval=(9.0, 9.0), forced=[3.05]),
+        blinks=dict(interval=(9.0, 9.0), forced=[3.0]),   # must reopen well before the end: 0.45 s + margin
         gestures={
             "browL":   [(0.55, 0), (0.85, 1.5), (1.9, 1.45), (2.9, 0)],
             "browR":   [(0.55, 0), (0.85, 1.5), (1.9, 1.4), (2.9, 0)],

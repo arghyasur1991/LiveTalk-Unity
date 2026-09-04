@@ -109,6 +109,15 @@ identical rest pose** — across all seven clips.
   consecutive MAD against a 0.4 median); use `blinks.forced` to put the
   blink in the return instead.
 - Nothing symmetric: `asym` scales left/right brows, smile, squint, cheeks.
+- **The last blink must be over before the clip's final 0.3 s.** A blink
+  takes ~0.45 s to close and reopen; one at 3.05 s in a 3.84 s clip left the
+  final frame with half-shut eyes and a first↔last difference of 1.5 in the
+  *encoded* clip. Check the mp4, not the PNGs.
+- **Emotions need to be over-driven, not just brows.** LivePortrait is
+  conservative on everything subtle: sad reads only with inner brows at 1.5,
+  outer brows down ~0.6, mouth corners at -0.95, gaze -0.45 and ~7° of pitch,
+  held for 2–3 s. The first authored pass (browMid 1.35, smile -0.7, pitch
+  4.5) transferred as a faint frown.
 - Eyes stay on the camera: the renderer counter-rotates the gaze against
   head yaw/pitch (`saccades.vor`), so a nod or turn does not read as
   looking away.
@@ -124,6 +133,23 @@ does the portrait do what the driver does, no jaw stretch, no eye wander,
 no identity drift, hair not flickering.
 
 ## Character notes (what `mblab_rich.py` fixes and why)
+
+- **Render with Cycles** (`lp_scene.setup_render` default): random-walk
+  subsurface skin, physically shaded hair, a bundled studio-light HDR for
+  ambient and eye catch lights, f/4 depth of field, noise-driven skin
+  roughness and pore bump. ~3–4.5 s/frame on Apple Silicon (Metal, OIDN).
+  Eevee is 4x faster and reads as plastic. Do not run a Unity LivePortrait
+  pass at the same time: Metal contention silently killed a render at frame 0.
+- **Hair is a short combed-back cut**, not long strands. Long procedural
+  hair read as straw and swung past the face edges — the extractor then sees
+  hair, not face, changing frame to frame. The head-hair material is matte
+  (roughness 0.58) because bright strand highlights flicker between frames.
+- **Lashes are rooted through the skin's UV island.** `Deform Curves on
+  Surface` finds a root by sampling the surface at the strand's UV; MB-Lab's
+  eyelash cards are stacks of planes sharing UV space, so the lookup missed
+  and the lashes stood still while the lids closed (the cards themselves move
+  13 mm under `eyeClosed`). Margin positions still come from the cards; the
+  UV comes from the nearest skin face, interpolated.
 
 - **Hair Curves, not particle hair.** `ParticleHairKey.co_object_set`
   writes are lost on save in background mode (the original particle
