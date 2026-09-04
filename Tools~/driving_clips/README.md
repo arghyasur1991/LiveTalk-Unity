@@ -101,7 +101,13 @@ identical rest pose** — across all seven clips.
 - Expressions (`approve`, `confused`, `disapprove`, `sad`, `smile`,
   `surprised`): rest → expression → rest, 3–6 s, breathing and sway kept
   running underneath.
-- **Key brows at ≥ 100 %** — brow raise transfers weaker than authored.
+- **Key brows at ≥ 100 %** — brow raise transfers weaker than authored
+  (the brow channels may go to 1.5; the renderer raises the keys' range).
+- **Never blink while the eyes are in an extreme state** (held wide, gaze
+  lowered). LivePortrait pops the whole face for a few frames when a
+  driver blink starts from wide-open or lowered eyes (measured 5.5–8.1
+  consecutive MAD against a 0.4 median); use `blinks.forced` to put the
+  blink in the return instead.
 - Nothing symmetric: `asym` scales left/right brows, smile, squint, cheeks.
 - Eyes stay on the camera: the renderer counter-rotates the gaze against
   head yaw/pitch (`saccades.vor`), so a nod or turn does not read as
