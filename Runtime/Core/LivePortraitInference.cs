@@ -147,82 +147,90 @@ namespace LiveTalk.Core
             if (drivingStream == null)
                 throw new ArgumentNullException(nameof(drivingStream));
 
-            if (_config.MemoryUsage == MemoryUsage.Optimal)
-            {
-                LoadMaskTemplate();
-            }
-            
-            // Convert source image to RGB24 format and process
-            sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
-            var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
-
-            // Start session
-            var startSessionTask = StartSession();
-            Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
-            yield return new WaitUntil(() => startSessionTask.IsCompleted);
-
-            // IsCompleted is also true for a faulted task; see MuseTalkInference.
-            if (startSessionTask.IsFaulted)
-            {
-                Logger.LogError("[LivePortraitInference] Models failed to load: " +
-                    startSessionTask.Exception?.GetBaseException().Message);
-                outputStream.Finished = true;
-                yield break;
-            }
-            
-            // Process source image
-            var processSrcTask = ProcessSourceImageAsync(srcImg);            
-            Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
-            
-            yield return new WaitUntil(() => processSrcTask.IsCompleted);
-            var processResult = processSrcTask.Result;
-            
-            Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing completed, starting frame processing pipeline");
-
             int processedFrames = 0;
-            var predInfo = new LivePortraitPredInfo
+
+            // Every exit — normal, driving stream fault, or a bridged task
+            // rethrowing — must mark the output finished, or the consumer
+            // draining it waits forever. finally is the only construct an
+            // iterator may wrap a yield in, and it is enough.
+            try
             {
-                Landmarks = null,
-                InitialMotionInfo = null
-            };
+                if (_config.MemoryUsage == MemoryUsage.Optimal)
+                {
+                    LoadMaskTemplate();
+                }
 
-            while (processedFrames < drivingStream.TotalExpectedFrames && drivingStream.HasMoreFrames)
-            {
-                var awaiter = drivingStream.WaitForNext();
-                yield return awaiter;
-                var drivingFrame = awaiter.Texture;
+                // Convert source image to RGB24 format and process
+                sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
+                var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
 
-                if (drivingFrame != null)
-                { 
-                    var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
-                    UnityEngine.Object.DestroyImmediate(drivingFrame);
-                    
-                    var predictTask = ProcessNextFrameAsync(processResult, predInfo, imgRgbData);
-                    yield return new WaitUntil(() => predictTask.IsCompleted);
-                    var (generatedImg, updatedPredInfo) = predictTask.Result;
-                    predInfo = updatedPredInfo;
+                // Start session
+                Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
+                yield return TaskYield.Wait(StartSession(), "LivePortraitInference.StartSession");
 
-                    if (generatedImg.data != null)
+                // Process source image
+                Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
+                ProcessSourceImageResult processResult = null;
+                yield return TaskYield.Wait(ProcessSourceImageAsync(srcImg), r => processResult = r,
+                    "LivePortraitInference.ProcessSourceImage");
+
+                Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing completed, starting frame processing pipeline");
+
+                var predInfo = new LivePortraitPredInfo
+                {
+                    Landmarks = null,
+                    InitialMotionInfo = null
+                };
+
+                while (processedFrames < drivingStream.TotalExpectedFrames && drivingStream.HasMoreFrames)
+                {
+                    var awaiter = drivingStream.WaitForNext();
+                    yield return awaiter;
+                    var drivingFrame = awaiter.Texture;
+
+                    if (drivingFrame != null)
                     {
-                        var generatedImgTexture = TextureUtils.FrameToTexture2D(generatedImg);
-                        outputStream.Queue.Enqueue(generatedImgTexture);
-                        Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
-                    }
+                        var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
+                        UnityEngine.Object.DestroyImmediate(drivingFrame);
 
-                    processedFrames++;
+                        (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
+                        yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
+                            r => prediction = r, "LivePortraitInference.ProcessNextFrame");
+                        predInfo = prediction.updatedPredInfo;
+
+                        if (prediction.generatedImg.data != null)
+                        {
+                            var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
+                            outputStream.Queue.Enqueue(generatedImgTexture);
+                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
+                        }
+
+                        processedFrames++;
+                    }
+                }
+
+                // The driving loader finishing early because it failed is a
+                // failure of this animation too — a short, silently truncated
+                // clip is worse than an error that names the cause.
+                if (drivingStream.Error != null)
+                {
+                    throw new InvalidOperationException(
+                        $"Driving frames failed to load after {processedFrames} frame(s): {drivingStream.Error.Message}",
+                        drivingStream.Error);
+                }
+
+                Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
+            }
+            finally
+            {
+                outputStream.Finished = true;
+                EndSession();
+
+                if (_config.MemoryUsage == MemoryUsage.Optimal)
+                {
+                    _maskTemplate = Frame.Zero;
                 }
             }
-
-            // Mark streams as finished
-            outputStream.Finished = true;
-            EndSession();
-
-            if (_config.MemoryUsage == MemoryUsage.Optimal)
-            {
-                _maskTemplate = Frame.Zero;
-            }
-
-            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
         }
 
         #endregion

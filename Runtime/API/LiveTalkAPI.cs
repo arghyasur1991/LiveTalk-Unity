@@ -174,6 +174,24 @@ namespace LiveTalk.API
         internal bool Finished { get; set; } = false;
 
         /// <summary>
+        /// The exception that stopped the producer, or null when it finished
+        /// normally (or is still running). A faulted producer still sets
+        /// <see cref="Finished"/> so consumers drain and exit; check this
+        /// afterwards to tell a short stream from a complete one.
+        /// </summary>
+        public Exception Error { get; internal set; }
+
+        /// <summary>
+        /// Marks the stream finished with the given failure. Idempotent; the
+        /// first error wins.
+        /// </summary>
+        internal void Fail(Exception error)
+        {
+            Error ??= error;
+            Finished = true;
+        }
+
+        /// <summary>
         /// Gets the internal concurrent queue used for frame storage and retrieval.
         /// </summary>
         internal readonly ConcurrentQueue<Texture2D> Queue = new();
@@ -623,7 +641,9 @@ namespace LiveTalk.API
             var inputStream = CreateInputStreamFromFrames(drivingFrames);
             inputStream.TotalExpectedFrames = drivingFrames.Count;
             
-            _controller.StartCoroutine(_livePortrait.GenerateAsync(sourceImage, outputStream, inputStream));
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _livePortrait.GenerateAsync(sourceImage, outputStream, inputStream), outputStream,
+                "LiveTalkAPI.GenerateAnimatedTextures(frames)"));
             return outputStream;
         }
 
@@ -649,7 +669,9 @@ namespace LiveTalk.API
             
             var outputStream = new FrameStream(frameCount);
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
-            _controller.StartCoroutine(_livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream));
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
+                "LiveTalkAPI.GenerateAnimatedTextures(video)"));
             
             return outputStream;
         }
@@ -676,7 +698,9 @@ namespace LiveTalk.API
             
             var outputStream = new FrameStream(frameFiles.Length);
             _controller.LoadDrivingFrames(frameFiles);
-            _controller.StartCoroutine(_livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream));
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
+                "LiveTalkAPI.GenerateAnimatedTextures(directory)"));
             
             return outputStream;
         }
@@ -710,7 +734,9 @@ namespace LiveTalk.API
             int estimatedFrames = EstimateFrameCount(audioClip);
             
             var outputStream = new FrameStream(estimatedFrames);
-            _controller.StartCoroutine(_museTalk.GenerateAsync(avatarTextures, audioClip, outputStream));
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _museTalk.GenerateAsync(avatarTextures, audioClip, outputStream), outputStream,
+                "LiveTalkAPI.GenerateTalkingHead"));
             
             return outputStream;
         }
@@ -734,7 +760,9 @@ namespace LiveTalk.API
             int estimatedFrames = EstimateFrameCount(audioClip);
             var outputStream = new FrameStream(estimatedFrames);
             
-            _controller.StartCoroutine(_museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream));
+            _controller.StartCoroutine(LiveTalkController.Produce(
+                _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream), outputStream,
+                "LiveTalkAPI.GenerateTalkingHeadWithPreloadedData"));
             return outputStream;
         }
 
@@ -784,6 +812,14 @@ namespace LiveTalk.API
         /// <param name="useBundle">Whether to use a bundle if possible</param>
         /// <param name="voiceInstruct">Optional VoiceDesign instruct notes</param>
         /// <param name="voiceCloneRefText">Transcript of the clone reference wav (ICL). Required for Base ICL clone.</param>
+        /// <remarks>
+        /// Exactly one of <paramref name="onComplete"/> / <paramref name="onError"/>
+        /// fires. A failure anywhere in avatar generation or voice creation —
+        /// a missing model file, a clone that could not be built, a voice
+        /// folder that did not load — reaches <paramref name="onError"/>, and
+        /// <paramref name="onComplete"/> is never called with a half-built
+        /// character.
+        /// </remarks>
         public IEnumerator CreateCharacterAsync(
             string name,
             Gender gender,
@@ -799,9 +835,31 @@ namespace LiveTalk.API
             string voiceInstruct = null,
             string voiceCloneRefText = null)
         {
+            return TaskYield.Guard(
+                CreateCharacterCore(name, gender, image, pitch, speed, intro, voicePromptPath, onComplete, onError,
+                    creationMode, useBundle, voiceInstruct, voiceCloneRefText),
+                onError,
+                "LiveTalkAPI.CreateCharacterAsync");
+        }
+
+        private IEnumerator CreateCharacterCore(
+            string name,
+            Gender gender,
+            Texture2D image,
+            Pitch pitch,
+            Speed speed,
+            string intro,
+            string voicePromptPath,
+            Action<Character> onComplete,
+            Action<Exception> onError,
+            CreationMode creationMode,
+            bool useBundle,
+            string voiceInstruct,
+            string voiceCloneRefText)
+        {
             if (!_initialized)
             {
-                onError?.Invoke(new Exception("CharacterFactory not initialized. Call Initialize() first."));
+                onError?.Invoke(new Exception("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first."));
                 yield break;
             }
 
@@ -815,7 +873,11 @@ namespace LiveTalk.API
                 character.SpeechSampleRate = 0;
             }
             useBundle = useBundle && CanUseBundle();
-            yield return character.CreateAvatarAsync(voicePromptPath, useBundle, creationMode);
+
+            // Unguarded core: a fault propagates out of this iterator to the
+            // Guard above, which routes it to onError. onComplete is only
+            // reached when every step succeeded.
+            yield return character.CreateAvatarCore(voicePromptPath, useBundle, creationMode);
             onComplete?.Invoke(character);
         }
 
@@ -967,7 +1029,7 @@ namespace LiveTalk.API
             }
             catch (Exception ex)
             {
-                Logger.LogError($"[CharacterFactory] Error getting available character IDs: {ex.Message}");
+                Logger.LogError($"[LiveTalkAPI] Error getting available character IDs: {ex.Message}");
                 return new string[0];
             }
         }

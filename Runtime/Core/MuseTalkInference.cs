@@ -174,11 +174,20 @@ namespace LiveTalk.Core
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            var avatarTask = ProcessAvatarImages(avatarTextures);
-            yield return new WaitUntil(() => avatarTask.IsCompleted);
-            var avatarData = avatarTask.Result;
+            try
+            {
+                AvatarData avatarData = null;
+                yield return TaskYield.Wait(ProcessAvatarImages(avatarTextures), r => avatarData = r,
+                    "MuseTalkInference.ProcessAvatarImages");
 
-            yield return GenerateWithPreloadedDataAsync(audioClip, avatarData, stream);
+                yield return GenerateWithPreloadedDataAsync(audioClip, avatarData, stream);
+            }
+            finally
+            {
+                // Avatar processing may fault before the nested generator ever
+                // runs; the consumer still has to be released.
+                stream.Finished = true;
+            }
         }
 
         /// <summary>
@@ -203,16 +212,26 @@ namespace LiveTalk.Core
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
             
-            // Step 1: Process audio and extract features
-            var audioTask = ProcessAudio(audioClip);
-            yield return new WaitUntil(() => audioTask.IsCompleted);
-            var audioFeatures = audioTask.Result;
-            stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
-            
-            // Step 2: Generate and stream video frames
-            yield return GenerateFramesStreaming(avatarData, audioFeatures, stream);
-            
-            stream.Finished = true;
+            // Finished must be set on every exit path, including a bridged
+            // task rethrowing out of this iterator. Otherwise the consumer
+            // waits on HasMoreFrames forever and, one level up, the MuseTalk
+            // lease is never released — the next animated line then blocks
+            // on AcquireAsync with no error anywhere.
+            try
+            {
+                // Step 1: Process audio and extract features
+                AudioFeatures audioFeatures = null;
+                yield return TaskYield.Wait(ProcessAudio(audioClip), r => audioFeatures = r,
+                    "MuseTalkInference.ProcessAudio");
+                stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
+
+                // Step 2: Generate and stream video frames
+                yield return GenerateFramesStreaming(avatarData, audioFeatures, stream);
+            }
+            finally
+            {
+                stream.Finished = true;
+            }
         }
 
         #endregion
@@ -509,69 +528,73 @@ namespace LiveTalk.Core
             
             if (avatarData.Latents.Count == 0)
             {
-                Logger.LogError("[MuseTalkInference] No avatar latents available for frame generation");
-                yield break;
+                // Thrown rather than logged-and-skipped: the caller's finally
+                // marks the stream finished and the failure reaches onError,
+                // instead of an empty animation that looks like success.
+                throw new InvalidOperationException(
+                    "No avatar latents available for frame generation — the character's " +
+                    "expression data is empty or failed to load (see earlier errors).");
             }
             Logger.LogVerbose($"[MuseTalkInference] Processing {numFrames} frames");
 
-            var startSessionTask = StartGeneratorSession();
-            yield return new WaitUntil(() => startSessionTask.IsCompleted);
-
-            // IsCompleted is also true for a faulted task. Without this the
-            // load failure is never observed, and the first model touched
-            // below reports "not initialized" instead of the real cause.
-            if (startSessionTask.IsFaulted)
+            try
             {
-                Logger.LogError("[MuseTalkInference] Generator models failed to load: " +
-                    startSessionTask.Exception?.GetBaseException().Message);
-                yield break;
-            }
+                // A faulted StartGeneratorSession (a missing model file, most
+                // often) used to be skipped here, and the first model touched
+                // below reported "not initialized" instead of the real cause.
+                // The bridge logs the original fault and rethrows it.
+                yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
 
-            // Create cycled latent list for smooth ping-pong animation
-            // Pattern: [0,1,2,3,2,1] instead of [0,1,2,3,3,2,1,0] to avoid duplicate frames
-            var cycleDLatents = new List<float[]>(avatarData.Latents);
-            var reversedLatents = new List<float[]>(avatarData.Latents);
-            reversedLatents.Reverse();
-            
-            // Remove first element of reversed (duplicate of last forward frame)
-            if (reversedLatents.Count > 0)
-                reversedLatents.RemoveAt(0);
-            
-            cycleDLatents.AddRange(reversedLatents);
-            
-            // Remove last element (duplicate of first forward frame) to complete the cycle
-            if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
-                cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
-            
-            for (int idx = 0; idx < numFrames; idx++)
+                // Create cycled latent list for smooth ping-pong animation
+                // Pattern: [0,1,2,3,2,1] instead of [0,1,2,3,3,2,1,0] to avoid duplicate frames
+                var cycleDLatents = new List<float[]>(avatarData.Latents);
+                var reversedLatents = new List<float[]>(avatarData.Latents);
+                reversedLatents.Reverse();
+
+                // Remove first element of reversed (duplicate of last forward frame)
+                if (reversedLatents.Count > 0)
+                    reversedLatents.RemoveAt(0);
+
+                cycleDLatents.AddRange(reversedLatents);
+
+                // Remove last element (duplicate of first forward frame) to complete the cycle
+                if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
+                    cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
+
+                for (int idx = 0; idx < numFrames; idx++)
+                {
+                    // Prepare batch data using the frame index to cycle through latents
+                    var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
+                    var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
+
+                    // Add positional encoding to audio (async)
+                    DenseTensor<float> audioWithPE = null;
+                    yield return TaskYield.Wait(AddPositionalEncoding(audioBatch), r => audioWithPE = r,
+                        "MuseTalkInference.AddPositionalEncoding");
+
+                    // Run UNet inference (async)
+                    Tensor<float> predictedLatents = null;
+                    yield return TaskYield.Wait(RunUNet(latentBatch, audioWithPE), r => predictedLatents = r,
+                        "MuseTalkInference.RunUNet");
+
+                    // Decode latents to images (async)
+                    Frame frame = default;
+                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, idx, avatarData), r => frame = r,
+                        "MuseTalkInference.DecodeLatents");
+
+                    // Stream frames to output as they're generated
+                    stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
+
+                    // Log batch performance
+                    Logger.LogVerbose($"[MuseTalkInference] Frame {idx} completed");
+                }
+            }
+            finally
             {
-                // Prepare batch data using the frame index to cycle through latents
-                var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
-                var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
-                
-                // Add positional encoding to audio (async)
-                var audioWithPETask = AddPositionalEncoding(audioBatch);
-                yield return new WaitUntil(() => audioWithPETask.IsCompleted);
-                var audioWithPE = audioWithPETask.Result;
-                
-                // Run UNet inference (async)
-                var predictedLatentsTask = RunUNet(latentBatch, audioWithPE);
-                yield return new WaitUntil(() => predictedLatentsTask.IsCompleted);
-                var predictedLatents = predictedLatentsTask.Result;
-                
-                // Decode latents to images (async)
-                var batchFramesTask = DecodeLatents(predictedLatents, idx, avatarData);
-                yield return new WaitUntil(() => batchFramesTask.IsCompleted);
-                var frame = batchFramesTask.Result;
-                
-                // Stream frames to output as they're generated
-                stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
-                
-                // Log batch performance
-                Logger.LogVerbose($"[MuseTalkInference] Frame {idx} completed");
+                // Safe when the session never started: EndSession only
+                // disposes an initialized OnDemand model.
+                EndGeneratorSession();
             }
-
-            EndGeneratorSession();
         }
 
         /// <summary>

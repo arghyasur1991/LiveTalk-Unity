@@ -142,7 +142,7 @@ namespace LiveTalk.Samples
                 MemoryUsage memoryUsage = IsMobile() ? MemoryUsage.Optimal : MemoryUsage.Balanced;
                 _api.Initialize(logLevel, memoryUsage: memoryUsage);
                 
-                UpdateStatus("LiveTalk and CharacterFactory initialized successfully!");
+                UpdateStatus("LiveTalk initialized successfully!");
                 SetButtonsEnabled(true);
             }
             catch (System.Exception e)

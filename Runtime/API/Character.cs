@@ -235,7 +235,22 @@ namespace LiveTalk.API
             Intro = intro;
         }
 
+        /// <remarks>
+        /// Exactly one of <paramref name="onComplete"/> / <paramref name="onError"/>
+        /// fires. A character whose voice folder is missing or fails to load,
+        /// or whose expression data cannot be read, is reported through
+        /// <paramref name="onError"/> rather than handed back half-loaded.
+        /// </remarks>
         public static IEnumerator LoadCharacterAsyncFromPath(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
+            return TaskYield.Guard(LoadCharacterFromPathCore(characterPath, onComplete, onError), onError,
+                "Character.LoadCharacterAsyncFromPath");
+        }
+
+        private static IEnumerator LoadCharacterFromPathCore(
             string characterPath,
             Action<Character> onComplete,
             Action<Exception> onError)
@@ -325,6 +340,15 @@ namespace LiveTalk.API
             Action<Character> onComplete,
             Action<Exception> onError)
         {
+            return TaskYield.Guard(LoadCharacterMetadataFromPathCore(characterPath, onComplete, onError), onError,
+                "Character.LoadCharacterMetadataFromPathAsync");
+        }
+
+        private static IEnumerator LoadCharacterMetadataFromPathCore(
+            string characterPath,
+            Action<Character> onComplete,
+            Action<Exception> onError)
+        {
             if (string.IsNullOrEmpty(characterPath))
             {
                 onError?.Invoke(new ArgumentException("Character path cannot be null or empty."));
@@ -358,8 +382,30 @@ namespace LiveTalk.API
         /// <param name="voicePromptPath">The path to the voice prompt audio file</param>
         /// <param name="useBundle">True to create as macOS bundle, false to create as regular folder</param>
         /// <param name="creationMode">The creation mode to use</param>
+        /// <param name="onError">
+        /// Receives the failure when avatar generation, voice creation or the
+        /// final data load faults. The coroutine then completes normally so the
+        /// host's coroutine keeps running; <see cref="IsDataLoaded"/> stays false.
+        /// When null the failure is still logged.
+        /// </param>
         /// <returns>Coroutine for avatar creation</returns>
         public IEnumerator CreateAvatarAsync(
+            string voicePromptPath,
+            bool useBundle,
+            CreationMode creationMode,
+            Action<Exception> onError = null)
+        {
+            return TaskYield.Guard(CreateAvatarCore(voicePromptPath, useBundle, creationMode), onError,
+                "Character.CreateAvatarAsync");
+        }
+
+        /// <summary>
+        /// Unguarded avatar creation. Faults propagate out of the iterator so
+        /// the caller (<see cref="LiveTalkAPI.CreateCharacterAsync"/> or the
+        /// public wrapper above) can route them to its own onError and skip
+        /// onComplete.
+        /// </summary>
+        internal IEnumerator CreateAvatarCore(
             string voicePromptPath,
             bool useBundle,
             CreationMode creationMode)
@@ -369,13 +415,13 @@ namespace LiveTalk.API
             yield return CreateAvatarAsyncInternal(useBundle, creationMode);
             if (!string.IsNullOrEmpty(voicePromptPath))
             {
-                var voicePromptClipTask = LoadVoiceFromReference(voicePromptPath, VoiceFolder);
-                yield return new WaitUntil(() => voicePromptClipTask.IsCompleted);
+                yield return TaskYield.Wait(LoadVoiceFromReference(voicePromptPath, VoiceFolder),
+                    "Character.LoadVoiceFromReference");
             }
             else
             {
-                var voiceTask = GenerateVoiceSample(VoiceFolder);
-                yield return new WaitUntil(() => voiceTask.IsCompleted);
+                yield return TaskYield.Wait(GenerateVoiceSample(VoiceFolder),
+                    "Character.GenerateVoiceSample");
             }
             yield return LoadData();
             var stop = start.Elapsed;
@@ -406,6 +452,16 @@ namespace LiveTalk.API
         /// whole clip is already on disk and arrives via onAudioReady.
         /// </param>
         /// <returns>Coroutine for audio generation</returns>
+        /// <remarks>
+        /// Every failure reaches <paramref name="onError"/>: a faulted speech
+        /// synthesis, a lip-sync model that failed to load, a driving-frame
+        /// cache that could not be read. Failures after audio was handed to
+        /// <paramref name="onAudioReady"/> still fire <paramref name="onError"/>,
+        /// and the <see cref="FrameStream"/> is marked finished with its
+        /// <see cref="FrameStream.Error"/> set, so a consumer draining it exits.
+        /// <paramref name="onAnimationComplete"/> is not called for a failed
+        /// animation.
+        /// </remarks>
         public IEnumerator SpeakAsync(
             string text, 
             int expressionIndex = 0,
@@ -414,10 +470,26 @@ namespace LiveTalk.API
             Action<Exception> onError = null,
             Action<float[], int> onSpeechChunk = null)
         {
+            return TaskYield.Guard(
+                SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk),
+                onError,
+                "Character.SpeakAsync");
+        }
+
+        private IEnumerator SpeakCore(
+            string text,
+            int expressionIndex,
+            Action<FrameStream, AudioClip> onAudioReady,
+            Action<FrameStream> onAnimationComplete,
+            Action<Exception> onError,
+            Action<float[], int> onSpeechChunk)
+        {
             var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
             {
-                onError?.Invoke(new InvalidOperationException("Character data not loaded. Use CharacterFactory.LoadCharacterAsync() first."));
+                onError?.Invoke(new InvalidOperationException(
+                    "Character data not loaded. Use LiveTalkAPI.LoadCharacterAsyncFromId() or CreateCharacterAsync() first, " +
+                    "and check that call's onError — a character whose load failed stays unloaded."));
                 yield break;
             }
 
@@ -435,14 +507,16 @@ namespace LiveTalk.API
 
             if (LoadedVoice == null)
             {
-                onError?.Invoke(new InvalidOperationException("Character voice not loaded."));
+                onError?.Invoke(new InvalidOperationException(
+                    "Character voice not loaded — the voice folder is missing or the voice failed to design/clone/load; " +
+                    "see the earlier error from character creation or load."));
                 yield break;
             }
 
             var liveTalkAPI = LiveTalkAPI.Instance;
             if (liveTalkAPI == null)
             {
-                onError?.Invoke(new InvalidOperationException("CharacterFactory not initialized. Call CharacterFactory.Initialize() first."));
+                onError?.Invoke(new InvalidOperationException("LiveTalkAPI not initialized. Call LiveTalkAPI.Initialize() first."));
                 yield break;
             }
 
@@ -463,8 +537,15 @@ namespace LiveTalk.API
                     Logger.LogVerbose($"[Character] Loading cached audio for: {text[..Math.Min(30, text.Length)]}...");
                     var loadTask = AudioFileIO.LoadClipAsync(cachedPath);
                     yield return new WaitUntil(() => loadTask.IsCompleted);
-                    
-                    if (!loadTask.IsFaulted && loadTask.Result != null)
+
+                    // A cache hit that cannot be read is not fatal — the line
+                    // is regenerated below — but it is not silent either.
+                    if (loadTask.IsFaulted)
+                    {
+                        Logger.LogWarning($"[Character] Cached audio unreadable, regenerating: {cachedPath}: " +
+                            loadTask.Exception?.GetBaseException().Message);
+                    }
+                    else if (loadTask.Result != null)
                     {
                         audioClip = loadTask.Result;
                         audioFromCache = true;
@@ -475,9 +556,10 @@ namespace LiveTalk.API
             // Generate new audio if not cached (with queuing)
             if (audioClip == null)
             {
-                // Acquire voice queue lock
-                var acquireTask = liveTalkAPI.VoiceQueue.AcquireAsync();
-                yield return new WaitUntil(() => acquireTask.IsCompleted);
+                // Acquire voice queue lock. The lease is released in the
+                // finally below on every exit: success, a fault rethrown by
+                // the bridge, or the host stopping this coroutine.
+                yield return TaskYield.Wait(liveTalkAPI.VoiceQueue.AcquireAsync(), "Character.VoiceQueue.Acquire");
 
                 try
                 {
@@ -495,16 +577,15 @@ namespace LiveTalk.API
                     var audioTask = chunkRelay == null
                         ? LoadedVoice.SpeakAsync(text, options)
                         : LoadedVoice.SpeakStreamAsync(text, chunkRelay, options);
-                    yield return new WaitUntil(() => audioTask.IsCompleted);
 
-                    if (audioTask.IsFaulted)
-                    {
-                        onError?.Invoke(audioTask.Exception?.InnerException ?? new Exception("Failed to generate speech audio."));
-                        yield break;
-                    }
+                    // A faulted synthesis rethrows here, unwinds through the
+                    // finally (releasing the lease) and reaches onError via
+                    // the Guard in SpeakAsync.
+                    SpeechResult speech = default;
+                    yield return TaskYield.Wait(audioTask, r => speech = r, "Character.SpeakAsync (TTS)");
 
                     // ToAudioClip has to happen here: it is a main-thread API.
-                    audioClip = audioTask.Result.ToAudioClip($"{Name}_speech");
+                    audioClip = speech.ToAudioClip($"{Name}_speech");
                 }
                 finally
                 {
@@ -532,7 +613,8 @@ namespace LiveTalk.API
 
             if (audioClip == null)
             {
-                onError?.Invoke(new InvalidOperationException("Generated audio clip is null."));
+                onError?.Invoke(new InvalidOperationException(
+                    "Generated audio clip is null — the TTS engine returned no audio for this line; see the earlier error."));
                 yield break;
             }
 
@@ -563,10 +645,14 @@ namespace LiveTalk.API
                     // Audio ready callback
                     onAudioReady?.Invoke(outputStream, audioClip);
                     
-                    // Load frames and call animation complete when done
-                    liveTalkAPI.Controller.StartCoroutine(
-                        LoadFramesFromCacheWithCallback(framesFolder, frameCount, outputStream, onAnimationComplete)
-                    );
+                    // Load frames and call animation complete when done. Guarded
+                    // so a failed read finishes the stream and reaches onError
+                    // rather than dying inside Unity's coroutine scheduler.
+                    var cachedStream = outputStream;
+                    liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                        LoadFramesFromCacheWithCallback(framesFolder, frameCount, cachedStream, onAnimationComplete),
+                        ex => { cachedStream.Fail(ex); onError?.Invoke(ex); },
+                        "Character.LoadFramesFromCache"));
                     
                     var stopCached = start.Elapsed;
                     Logger.Log($"[Character] Audio ready for {Name} in {stopCached.TotalMilliseconds}ms (audio+frames cached, loading...)");
@@ -583,10 +669,16 @@ namespace LiveTalk.API
             var stopAudio = start.Elapsed;
             Logger.Log($"[Character] Audio ready for {Name} in {stopAudio.TotalMilliseconds}ms{(audioFromCache ? " (cached)" : "")}, animation pending...");
 
-            // Start animation generation in background with queuing
-            liveTalkAPI.Controller.StartCoroutine(
-                GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data, audioClip, outputStream, cacheKey, onAnimationComplete)
-            );
+            // Start animation generation in background with queuing. The
+            // Guard is what turns a fault inside the animation — a lip-sync
+            // model that failed to load, most often — into a finished stream
+            // plus an onError call, instead of a consumer that waits forever
+            // and a MuseTalk lease that is never given back.
+            var animationStream = outputStream;
+            liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data, audioClip, animationStream, cacheKey, onAnimationComplete),
+                ex => { animationStream.Fail(ex); onError?.Invoke(ex); },
+                "Character.GenerateAnimation"));
         }
 
         /// <summary>
@@ -600,10 +692,13 @@ namespace LiveTalk.API
             string cacheKey,
             Action<FrameStream> onAnimationComplete)
         {
-            // Acquire MuseTalk queue lock
-            var acquireTask = liveTalkAPI.MuseTalkQueue.AcquireAsync();
-            yield return new WaitUntil(() => acquireTask.IsCompleted);
+            // Acquire MuseTalk queue lock. Released in the finally below on
+            // every exit — success, fault, or the coroutine being disposed —
+            // so a failed animation can never wedge the next one on Acquire.
+            yield return TaskYield.Wait(liveTalkAPI.MuseTalkQueue.AcquireAsync(), "Character.MuseTalkQueue.Acquire");
 
+            string framesFolder = null;
+            bool completed = false;
             try
             {
                 // Generate talking head using MuseTalk with preloaded data
@@ -615,7 +710,6 @@ namespace LiveTalk.API
 
                 // Forward frames from generated stream to output stream
                 // If caching is enabled, also save frames
-                string framesFolder = null;
                 if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey))
                 {
                     framesFolder = LiveTalkCache.CreateFramesCacheFolder(cacheKey);
@@ -655,8 +749,19 @@ namespace LiveTalk.API
                     }
                 }
 
+                // The producer finishing early because it faulted must not
+                // become a short animation that looks complete — and its
+                // partial frames folder must not become a cache hit next time.
+                if (generatedStream.Error != null)
+                {
+                    throw new InvalidOperationException(
+                        $"Lip-sync animation failed after {frameIndex} frame(s): {generatedStream.Error.Message}",
+                        generatedStream.Error);
+                }
+
                 outputStream.TotalExpectedFrames = frameIndex;
                 outputStream.Finished = true;
+                completed = true;
                 Logger.LogVerbose($"[Character] Animation generation completed: {frameIndex} frames");
                 
                 // Animation complete callback
@@ -664,6 +769,17 @@ namespace LiveTalk.API
             }
             finally
             {
+                // Consumers draining outputStream exit on every path; the
+                // Guard that started this coroutine records the error on it.
+                outputStream.Finished = true;
+
+                // A run that faulted or was stopped part-way leaves a short
+                // frames folder that the next SpeakAsync would take as a hit.
+                if (!completed && framesFolder != null)
+                {
+                    LiveTalkCache.DeleteFramesCache(cacheKey);
+                }
+
                 // Release MuseTalk queue lock
                 liveTalkAPI.MuseTalkQueue.Release();
             }
@@ -691,47 +807,57 @@ namespace LiveTalk.API
         private static IEnumerator LoadFramesFromCache(string framesFolder, int frameCount, FrameStream outputStream)
         {
             outputStream.TotalExpectedFrames = frameCount;
-            
-            for (int i = 0; i < frameCount; i++)
+
+            try
             {
-                string framePath = Path.Combine(framesFolder, $"frame_{i:D6}.png");
-                
-                if (!File.Exists(framePath))
+                for (int i = 0; i < frameCount; i++)
                 {
-                    Logger.LogWarning($"[Character] Cached frame not found: {framePath}");
-                    continue;
+                    string framePath = Path.Combine(framesFolder, $"frame_{i:D6}.png");
+
+                    if (!File.Exists(framePath))
+                    {
+                        Logger.LogWarning($"[Character] Cached frame not found: {framePath}");
+                        continue;
+                    }
+
+                    // Load frame from disk. A single unreadable cached frame is
+                    // skipped (the fault is observed, logged, and the rest of
+                    // the clip still plays); the cache entry is best-effort.
+                    var loadTask = Task.Run(() => File.ReadAllBytes(framePath));
+                    yield return new WaitUntil(() => loadTask.IsCompleted);
+
+                    if (loadTask.IsFaulted)
+                    {
+                        Logger.LogWarning($"[Character] Failed to load cached frame {i}: {loadTask.Exception?.GetBaseException().Message}");
+                        continue;
+                    }
+
+                    // Create texture from bytes
+                    var texture = new Texture2D(2, 2);
+                    if (texture.LoadImage(loadTask.Result))
+                    {
+                        texture.name = $"cached_frame_{i}";
+                        outputStream.Queue.Enqueue(texture);
+                    }
+                    else
+                    {
+                        UnityEngine.Object.DestroyImmediate(texture);
+                        Logger.LogWarning($"[Character] Failed to decode cached frame {i}");
+                    }
                 }
 
-                // Load frame from disk
-                var loadTask = Task.Run(() => File.ReadAllBytes(framePath));
-                yield return new WaitUntil(() => loadTask.IsCompleted);
-
-                if (loadTask.IsFaulted)
-                {
-                    Logger.LogWarning($"[Character] Failed to load cached frame {i}: {loadTask.Exception?.InnerException?.Message}");
-                    continue;
-                }
-
-                // Create texture from bytes
-                var texture = new Texture2D(2, 2);
-                if (texture.LoadImage(loadTask.Result))
-                {
-                    texture.name = $"cached_frame_{i}";
-                    outputStream.Queue.Enqueue(texture);
-                }
-                else
-                {
-                    UnityEngine.Object.DestroyImmediate(texture);
-                    Logger.LogWarning($"[Character] Failed to decode cached frame {i}");
-                }
+                Logger.LogVerbose($"[Character] Loaded {frameCount} frames from cache");
             }
-
-            outputStream.Finished = true;
-            Logger.LogVerbose($"[Character] Loaded {frameCount} frames from cache");
+            finally
+            {
+                outputStream.Finished = true;
+            }
         }
 
         /// <summary>
-        /// Load all character data including expressions, voice, and precomputed data
+        /// Load all character data including expressions, voice, and precomputed data.
+        /// Throws (so the guarded caller's onError fires) rather than marking a
+        /// character loaded without its voice.
         /// </summary>
         internal IEnumerator LoadData()
         {
@@ -745,6 +871,16 @@ namespace LiveTalk.API
 
             // Load voice data
             yield return LoadVoiceData();
+
+            if (LoadedVoice == null)
+            {
+                // LoadVoiceData throws on every failure it can see, so this is
+                // the belt to that brace: IsDataLoaded must never be true for
+                // a character that cannot speak.
+                throw new InvalidOperationException(
+                    $"Voice for character '{Name}' did not load from {Path.Combine(CharacterFolder ?? "<no folder>", "voice")}; " +
+                    "the character is not usable. See the earlier error for the cause.");
+            }
 
             IsDataLoaded = true;
             Logger.LogVerbose($"[Character] Character data loaded successfully for {Name}");
@@ -832,8 +968,9 @@ namespace LiveTalk.API
                 voiceInstruct = VoiceInstruct
             };
             string characterConfigJson = JsonConvert.SerializeObject(characterConfig, Formatting.Indented);
-            var writeConfigTask = File.WriteAllTextAsync(Path.Combine(CharacterFolder, "character.json"), characterConfigJson);
-            yield return new WaitUntil(() => writeConfigTask.IsCompleted);
+            string configPath = Path.Combine(CharacterFolder, "character.json");
+            yield return TaskYield.Wait(File.WriteAllTextAsync(configPath, characterConfigJson),
+                $"Character.CreateAvatar write {configPath}");
 
             // Add Info.plist for macOS package (only when creating bundle)
             if (useBundle)
@@ -862,8 +999,9 @@ namespace LiveTalk.API
     <true/>
 </dict>
 </plist>";
-                var writePlistTask = File.WriteAllTextAsync(Path.Combine(CharacterFolder, "Info.plist"), infoPlistContent);
-                yield return new WaitUntil(() => writePlistTask.IsCompleted);
+                string plistPath = Path.Combine(CharacterFolder, "Info.plist");
+                yield return TaskYield.Wait(File.WriteAllTextAsync(plistPath, infoPlistContent),
+                    $"Character.CreateAvatar write {plistPath}");
             }
 
             // Create subfolder structure
@@ -880,8 +1018,8 @@ namespace LiveTalk.API
                 string imagePath = Path.Combine(CharacterFolder, "image.png");
                 var uncompressedImage = TextureUtils.ConvertToUncompressedTexture(Image);
                 byte[] imageBytes = uncompressedImage.EncodeToPNG();
-                var writeImageTask = File.WriteAllBytesAsync(imagePath, imageBytes);
-                yield return new WaitUntil(() => writeImageTask.IsCompleted);
+                yield return TaskYield.Wait(File.WriteAllBytesAsync(imagePath, imageBytes),
+                    $"Character.CreateAvatar write {imagePath}");
                 
                 // Clean up temporary texture if we created one
                 if (uncompressedImage != Image)
@@ -993,11 +1131,24 @@ namespace LiveTalk.API
             yield return ProcessFramesCoroutine(outputStream, expressionFolder, processResult);
             videoPlayer.clip = null;
 
+            // The LivePortrait producer marks its stream finished on a fault
+            // too (so the loop above exits); a truncated expression is a
+            // failed character, not a shorter one.
+            if (outputStream.Error != null)
+            {
+                throw new InvalidOperationException(
+                    $"Driving-frame generation failed for expression '{expression}': {outputStream.Error.Message}",
+                    outputStream.Error);
+            }
+
             Logger.LogVerbose($"[Character] Generated and saved {processResult.GeneratedFrames.Count} frames for expression: {expression}");
 
-            // Generate and save cache data
-            var cacheTask = GenerateAndSaveCacheData(expressionFolder, processResult);
-            yield return new WaitUntil(() => cacheTask.IsCompleted);
+            // Generate and save cache data (latents + face data). A fault here
+            // — the MuseTalk preprocess models failing to load, usually —
+            // rethrows and fails the creation instead of leaving an
+            // expression folder without latents.bin / faces.json.
+            yield return TaskYield.Wait(GenerateAndSaveCacheData(expressionFolder, processResult),
+                $"Character.GenerateAndSaveCacheData {expression}");
 
             if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
@@ -1027,8 +1178,8 @@ namespace LiveTalk.API
                     // Save LivePortrait generated frames as numbered PNGs (these are the driving frames)
                     string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
                     byte[] pngData = awaiter.Texture.EncodeToPNG();
-                    var writeTask = File.WriteAllBytesAsync(frameFileName, pngData);
-                    yield return new WaitUntil(() => writeTask.IsCompleted);
+                    yield return TaskYield.Wait(File.WriteAllBytesAsync(frameFileName, pngData),
+                        $"Character.ProcessFrames write {frameFileName}");
                     
                     // Keep reference for cache generation
                     if (LiveTalkAPI.Instance.Config.MemoryUsage != MemoryUsage.Optimal)
@@ -1350,22 +1501,20 @@ namespace LiveTalk.API
 
         private async Task LoadVoiceFromReference(string voicePromptPath, string voiceFolder)
         {
-            var voicePromptClip = await AudioFileIO.LoadClipAsync(voicePromptPath);
-            if (voicePromptClip == null)
-            {
-                Logger.LogError($"[Character] Could not read the voice prompt at {voicePromptPath}");
-                return;
-            }
+            // Thrown, not logged-and-returned: a silent return here left
+            // LoadedVoice null and the character reported as created, with
+            // the failure only showing up later as "Character voice not
+            // loaded". The bridge in CreateAvatarCore logs and rethrows.
+            var voicePromptClip = await AudioFileIO.LoadClipAsync(voicePromptPath)
+                ?? throw new FileNotFoundException(
+                    $"Could not read the voice prompt (clone reference) at {voicePromptPath}", voicePromptPath);
 
             // Async because a cold clone loads the Base tables plus two
             // reference encoders - tens of seconds of main-thread stall
             // otherwise.
-            var voice = await QwenTts.CreateClonedVoiceAsync(voicePromptClip, VoiceCloneRefText);
-            if (voice == null)
-            {
-                Logger.LogError("[Character] Failed to clone the character voice from the reference");
-                return;
-            }
+            var voice = await QwenTts.CreateClonedVoiceAsync(voicePromptClip, VoiceCloneRefText)
+                ?? throw new InvalidOperationException(
+                    $"Failed to clone the character voice from the reference {voicePromptPath} — the TTS engine returned no voice.");
 
             // The reference recording *is* this voice's sample, so it is saved
             // as one. SaveAsync also stores the derived clone prompt, which is
@@ -1399,34 +1548,31 @@ namespace LiveTalk.API
 
             Logger.LogVerbose($"[Character] Generating voice sample: Gender={Gender}, Pitch={Pitch}, Speed={Speed}");
 
+            // Thrown, not logged: see LoadVoiceFromReference.
             var voice = await QwenTts.CreateDesignedVoiceAsync(
-                new VoiceDesignSpec(LiveTalk.Utils.VoiceInstruct.Compose(Gender, Pitch, Speed, VoiceInstruct)));
+                new VoiceDesignSpec(LiveTalk.Utils.VoiceInstruct.Compose(Gender, Pitch, Speed, VoiceInstruct)))
+                ?? throw new InvalidOperationException(
+                    $"Failed to design the voice for '{Name}' ({Gender}/{Pitch}/{Speed}) — the TTS engine returned no voice. " +
+                    "Check that the VoiceDesign model is present and initialized.");
 
-            if (voice != null)
+            // Render the intro so the voice has a sample. A designed voice
+            // has no inherent audio, and callers downstream (voice preview,
+            // and cloning a chosen take) need a wav on disk. Without this
+            // the folder claims a sample it does not have.
+            var sample = await voice.SpeakAsync(Intro);
+            await voice.SaveAsync(voiceFolder, sample);
+            LoadedVoice = voice;
+            VoiceSampleClip = sample.ToAudioClip($"{Name}_sample");
+
+            // Save to cache
+            if (LiveTalkCache.IsEnabled)
             {
-                // Render the intro so the voice has a sample. A designed voice
-                // has no inherent audio, and callers downstream (voice preview,
-                // and cloning a chosen take) need a wav on disk. Without this
-                // the folder claims a sample it does not have.
-                var sample = await voice.SpeakAsync(Intro);
-                await voice.SaveAsync(voiceFolder, sample);
-                LoadedVoice = voice;
-                VoiceSampleClip = sample.ToAudioClip($"{Name}_sample");
-                
-                // Save to cache
-                if (LiveTalkCache.IsEnabled)
+                string cacheFolder = LiveTalkCache.GetFolderPath(cacheKey);
+                if (!string.IsNullOrEmpty(cacheFolder))
                 {
-                    string cacheFolder = LiveTalkCache.GetFolderPath(cacheKey);
-                    if (!string.IsNullOrEmpty(cacheFolder))
-                    {
-                        LiveTalkCache.CopyFolder(voiceFolder, cacheFolder);
-                        Logger.LogVerbose($"[Character] Saved voice sample to cache: {cacheKey}");
-                    }
+                    LiveTalkCache.CopyFolder(voiceFolder, cacheFolder);
+                    Logger.LogVerbose($"[Character] Saved voice sample to cache: {cacheKey}");
                 }
-            }
-            else
-            {
-                Logger.LogError("[Character] Failed to create character voice");
             }
         }
 
@@ -1438,12 +1584,12 @@ namespace LiveTalk.API
             string drivingFramesFolder = Path.Combine(CharacterFolder, "drivingFrames");
             if (!Directory.Exists(drivingFramesFolder))
             {
-                Logger.LogWarning($"[CharacterFactory] No driving frames folder found: {drivingFramesFolder}");
+                Logger.LogWarning($"[Character] No driving frames folder found: {drivingFramesFolder}");
                 yield break;
             }
 
             var expressionFolders = Directory.GetDirectories(drivingFramesFolder);
-            Logger.LogVerbose($"[CharacterFactory] Found {expressionFolders.Length} expression folders");
+            Logger.LogVerbose($"[Character] Found {expressionFolders.Length} expression folders");
 
             for (int i = 0; i < expressionFolders.Length; i++)
             {
@@ -1465,7 +1611,7 @@ namespace LiveTalk.API
                     yield return LoadExpressionFaceData(expressionFolder, expressionData);
 
                     LoadedExpressions[expressionIndex] = expressionData;
-                    Logger.LogVerbose($"[CharacterFactory] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");
+                    Logger.LogVerbose($"[Character] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");
                 }
             }
         }
@@ -1478,26 +1624,20 @@ namespace LiveTalk.API
             string latentsFile = Path.Combine(expressionFolder, "latents.bin");
             if (!File.Exists(latentsFile))
             {
-                Logger.LogWarning($"[CharacterFactory] No latents file found: {latentsFile}");
+                Logger.LogWarning($"[Character] No latents file found: {latentsFile}");
                 yield break;
             }
 
-            var readTask = File.ReadAllBytesAsync(latentsFile);
-            yield return new WaitUntil(() => readTask.IsCompleted);
+            // Both steps rethrow on fault. Skipping them used to leave the
+            // expression with zero latents, which surfaced much later as
+            // "No avatar latents available" on the first animated line.
+            byte[] latentsBytes = null;
+            yield return TaskYield.Wait(File.ReadAllBytesAsync(latentsFile), b => latentsBytes = b,
+                $"Character.LoadExpressionLatents read {latentsFile}");
 
-            if (!readTask.IsFaulted)
-            {
-                var latentsBytes = readTask.Result;
-                
-                // Process latents in parallel using unsafe code for optimal performance
-                var processTask = Task.Run(() => ProcessLatentsUnsafe(latentsBytes, expressionData));
-                yield return new WaitUntil(() => processTask.IsCompleted);
-                
-                if (processTask.IsFaulted)
-                {
-                    Logger.LogError($"[CharacterFactory] Error processing latents: {processTask.Exception?.InnerException?.Message}");
-                }
-            }
+            // Process latents in parallel using unsafe code for optimal performance
+            yield return TaskYield.Wait(Task.Run(() => ProcessLatentsUnsafe(latentsBytes, expressionData)),
+                $"Character.LoadExpressionLatents process {latentsFile}");
         }
 
         /// <summary>
@@ -1514,7 +1654,7 @@ namespace LiveTalk.API
             
             if (numLatents == 0)
             {
-                Logger.LogWarning("[CharacterFactory] No valid latents found in file");
+                Logger.LogWarning("[Character] No valid latents found in file");
                 return;
             }
 
@@ -1567,53 +1707,64 @@ namespace LiveTalk.API
             string facesFile = Path.Combine(expressionFolder, "faces.json");
             if (!File.Exists(facesFile))
             {
-                Logger.LogWarning($"[CharacterFactory] No faces file found: {facesFile}");
+                Logger.LogWarning($"[Character] No faces file found: {facesFile}");
                 yield break;
             }
 
-            var readTask = File.ReadAllTextAsync(facesFile);
-            yield return new WaitUntil(() => readTask.IsCompleted);
+            string facesJson = null;
+            yield return TaskYield.Wait(File.ReadAllTextAsync(facesFile), t => facesJson = t,
+                $"Character.LoadExpressionFaceData read {facesFile}");
 
-            if (!readTask.IsFaulted)
-            {
-                var facesJson = readTask.Result;
-                var parseTask = ParseFaceDataJson(facesJson, expressionData, expressionFolder);
-                yield return new WaitUntil(() => parseTask.IsCompleted);
-            }
+            yield return TaskYield.Wait(ParseFaceDataJson(facesJson, expressionData, expressionFolder),
+                $"Character.LoadExpressionFaceData parse {facesFile}");
         }
 
         /// <summary>
-        /// Load voice data for the character from the saved reference sample
+        /// Load voice data for the character from the saved voice folder.
+        /// Throws on a missing folder, a missing <c>voice.json</c>, or a
+        /// faulted engine load: a character without a voice is not loaded.
         /// </summary>
         private IEnumerator LoadVoiceData()
         {
             string voiceFolder = Path.Combine(CharacterFolder, "voice");
             if (!Directory.Exists(voiceFolder))
             {
-                Logger.LogWarning($"[CharacterFactory] No voice folder found: {voiceFolder}");
-                yield break;
+                throw new DirectoryNotFoundException(
+                    $"No voice folder for character '{Name}': {voiceFolder}. " +
+                    "The character was never given a voice, or its creation failed part-way.");
+            }
+
+            string voiceJson = Path.Combine(voiceFolder, "voice.json");
+            if (!File.Exists(voiceJson))
+            {
+                throw new FileNotFoundException(
+                    $"Voice folder for character '{Name}' has no voice.json: {voiceJson}. " +
+                    "Voice design or clone did not complete; recreate the character.", voiceJson);
             }
 
             // Restores the stored clone prompt when there is one, so this does
-            // not re-run the speaker and tokenizer encoders.
-            var voiceTask = QwenTts.LoadVoiceAsync(voiceFolder);
-            yield return new WaitUntil(() => voiceTask.IsCompleted);
+            // not re-run the speaker and tokenizer encoders. A fault (engine
+            // not initialized, corrupt prompt, missing reference) rethrows.
+            QwenVoice voice = null;
+            yield return TaskYield.Wait(QwenTts.LoadVoiceAsync(voiceFolder), v => voice = v,
+                $"Character.LoadVoiceData {voiceFolder}");
 
-            if (voiceTask.IsFaulted)
-            {
-                Logger.LogError($"[CharacterFactory] Failed to load voice from folder: {voiceTask.Exception?.InnerException?.Message}");
-                yield break;
-            }
+            LoadedVoice = voice ?? throw new InvalidOperationException(
+                $"The TTS engine returned no voice for {voiceFolder}.");
+            Logger.LogVerbose($"[Character] Voice loaded from folder for {Name}");
 
-            LoadedVoice = voiceTask.Result;
-            Logger.LogVerbose($"[CharacterFactory] Voice loaded from folder for {Name}");
-
+            // The rendered sample is optional; a designed voice only has one
+            // if a take was saved with it. An unreadable one is logged and the
+            // character still loads.
             string samplePath = Path.Combine(voiceFolder, "sample.wav");
             if (File.Exists(samplePath))
             {
                 var sampleTask = AudioFileIO.LoadClipAsync(samplePath);
                 yield return new WaitUntil(() => sampleTask.IsCompleted);
-                if (!sampleTask.IsFaulted)
+                if (sampleTask.IsFaulted)
+                    Logger.LogWarning($"[Character] Voice sample unreadable, continuing without it: {samplePath}: " +
+                        sampleTask.Exception?.GetBaseException().Message);
+                else
                     VoiceSampleClip = sampleTask.Result;
             }
         }
@@ -1674,7 +1825,7 @@ namespace LiveTalk.API
             }
             catch (Exception ex)
             {
-                Logger.LogError($"[CharacterFactory] Error parsing face data: {ex.Message}");
+                Logger.LogError($"[Character] Error parsing face data: {ex.Message}");
             }
         }
 
@@ -1744,7 +1895,7 @@ namespace LiveTalk.API
             }
             catch (Exception ex)
             {
-                Logger.LogError($"[CharacterFactory] Error loading face textures: {ex.Message}");
+                Logger.LogError($"[Character] Error loading face textures: {ex.Message}");
             }
         }
 
@@ -1757,7 +1908,7 @@ namespace LiveTalk.API
             {
                 if (!File.Exists(texturePath))
                 {
-                    Logger.LogWarning($"[CharacterFactory] Texture file not found: {texturePath}");
+                    Logger.LogWarning($"[Character] Texture file not found: {texturePath}");
                     return new Frame(); // Return empty frame
                 }
 
@@ -1765,7 +1916,7 @@ namespace LiveTalk.API
             }
             catch (Exception ex)
             {
-                Logger.LogError($"[CharacterFactory] Error loading texture {texturePath}: {ex.Message}");
+                Logger.LogError($"[Character] Error loading texture {texturePath}: {ex.Message}");
                 return new Frame();
             }
         }
