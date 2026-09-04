@@ -4,7 +4,7 @@ namespace LiveTalk.Utils
     /// String utilities for LiveTalk face animation and geometric processing.
     /// Provides optimized implementations of string operations, hash mixing, and string formatting
     /// </summary>
-    public static class StringUtils
+    internal static class StringUtils
     {
         /// <summary>
         /// Mix multiple hash strings into a single deterministic hash using FNV-1a-like algorithm

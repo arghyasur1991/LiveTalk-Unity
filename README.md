@@ -1,1113 +1,625 @@
 # LiveTalk-Unity
 
-Unity package for using LiveTalk on-device models for real-time talking head generation and character animation.
+On-device talking-head characters for Unity. Give it a portrait and a line of
+text; get back speech and a lip-synced, expressive video stream, all generated
+locally through ONNX Runtime.
 
-## What is LiveTalk?
+LiveTalk combines three models behind one API:
 
-LiveTalk is a unified, high-performance talking head generation system that combines the power of [LivePortrait](https://github.com/KwaiVGI/LivePortrait) and [MuseTalk](https://github.com/TMElyralab/MuseTalk) open-source repositories. The PyTorch models from these projects have been ported to ONNX format and optimized for CoreML to enable efficient on-device inference in Unity.
+| Piece | Does | Upstream |
+|---|---|---|
+| **LivePortrait** | Animates a still portrait with expressions and head motion | [KwaiVGI/LivePortrait](https://github.com/KwaiVGI/LivePortrait) |
+| **MuseTalk** | Lip-syncs those frames to audio in real time | [TMElyralab/MuseTalk](https://github.com/TMElyralab/MuseTalk) |
+| **Qwen3-TTS** | Designs a speaker from a description, or clones one from a recording, and speaks | [Qwen3-TTS-Unity](https://github.com/arghyasur1991/Qwen3-TTS-Unity) |
 
-**LivePortrait** provides facial animation and expression transfer capabilities, while **MuseTalk** handles real-time lip synchronization with audio. Together, they create a complete pipeline for generating natural-looking talking head videos from avatar images and audio input. 
-[Spark-TTS-Unity](https://github.com/arghyasur1991/Spark-TTS-Unity) is the dependency package for TTS generation
+The PyTorch models of the first two were exported to ONNX and tuned for CoreML;
+the third is a separate package this one depends on. 2.0 changed the voice
+backend and the storage layout — see [Migrating from 1.x](#migrating-from-1x).
 
-## Key Features
+## Contents
 
-* 🎮 **Unity-Native Integration**: Complete API designed specifically for Unity with singleton pattern
-* 🎭 **Dual-Pipeline Processing**: LivePortrait for facial animation + MuseTalk for lip sync
-* 👤 **Advanced Character System**: Create, save, and load characters with multiple expressions and voices
-* 💻 **Runs Offline**: All processing happens on-device with ONNX Runtime
-* ⚡ **Real-time Performance**: Optimized for real-time inference with frame streaming
-* 🎨 **Multiple Expression Support**: 7 built-in expressions (talk-neutral, approve, disapprove, smile, sad, surprised, confused)
-* 🔊 **Integrated TTS**: Built-in SparkTTS integration for voice generation
-* 📦 **Cross-Platform Character Format**: Supports both folder and macOS bundle formats
-* 🎥 **Flexible Input**: Supports images, videos, and directory-based driving frames
-* 🧠 **Memory Management**: Configurable memory usage modes for desktop and mobile devices
-* 🎭 **Flexible Creation Modes**: Voice-only, single expression, or full character creation
+- [The 2.0 model: Avatar, Voice, Character](#the-20-model-avatar-voice-character)
+- [Install](#install)
+- [Models](#models)
+- [Initialize](#initialize)
+- [Create an avatar](#create-an-avatar)
+- [Design a voice (roll the dice)](#design-a-voice-roll-the-dice)
+- [Clone a voice from a take](#clone-a-voice-from-a-take)
+- [Create a character](#create-a-character)
+- [Speak with CharacterPlayer](#speak-with-characterplayer)
+- [Speak directly with SpeakAsync](#speak-directly-with-speakasync)
+- [DialogueOrchestrator](#dialogueorchestrator)
+- [Raw animation without a character](#raw-animation-without-a-character)
+- [Caching](#caching)
+- [Error handling contract](#error-handling-contract)
+- [Memory](#memory)
+- [Migrating from 1.x](#migrating-from-1x)
+- [Requirements and performance](#requirements-and-performance)
+- [License](#license)
 
-## Perfect For
+## The 2.0 model: Avatar, Voice, Character
 
-* AI-driven NPCs in games
-* Virtual assistants and chatbots
-* Real-time character animation
-* Interactive storytelling applications
-* Video content generation
-* Accessibility features
-* Virtual avatars and digital humans
-
-## Installation
-
-### Using Unity Package Manager (Recommended)
-
-1. Open your Unity project
-2. Open the Package Manager (Window > Package Manager)
-3. Click the "+" button in the top-left corner
-4. Select "Add package from git URL..."
-5. Enter the repository URL: `https://github.com/arghyasur1991/LiveTalk-Unity.git`
-6. Click "Add"
-
-### Manual Installation
-
-1. Clone this repository
-2. Copy the contents into your Unity project's Packages folder
-
-## Dependencies
-
-This package requires the following Unity packages:
-- com.genesis.sparktts.unity
-
-### Setting up Package Dependencies
-
-Some dependencies require additional scoped registry configuration. Add the following to your project's `Packages/manifest.json` file:
-
-```json
-{
-  "scopedRegistries": [
-    {
-      "name": "NPM",
-      "url": "https://registry.npmjs.com",
-      "scopes": [
-        "com.github.asus4"
-      ]
-    }
-  ],
-  "dependencies": {
-    "com.genesis.LiveTalk.unity": "https://github.com/arghyasur1991/LiveTalk-Unity.git",
-    // ... other dependencies
-  }
-}
-```
-
-**Note**: The git URL `https://github.com/arghyasur1991/LiveTalk-Unity.git` will automatically fetch the latest version of the package.
-
-## Model Setup
-
-### LiveTalk Models
-
-LiveTalk requires ONNX models from both LivePortrait and MuseTalk in the following location:
+Three entities with independent lifetimes, all under
+`LiveTalkAPI.CharacterSaveLocation` (default
+`Application.persistentDataPath/Characters`):
 
 ```
-Assets/StreamingAssets/LiveTalk/
-  └── models/
-      ├── LivePortrait/
-      │   ├── *.onnx
-      └── MuseTalk/
-          ├── *.onnx
+<saveLocation>/
+  avatars/<avatarId>/         image.png, avatar.json, drivingFrames/expression-N/…
+  voices/<voiceId>/           voice.json, clone_prompt.bin, reference.wav, sample.wav, voice.meta.json
+  characters/<characterId>/   character.json   (references one avatarId and one voiceId)
+  <legacyId>[.bundle]/        pre-2.0 inline character folder (read-only, still loads)
 ```
 
-### SparkTTS Models
-
-SparkTTS models are required for voice generation and should be placed in:
-
-```
-Assets/StreamingAssets/SparkTTS/
-  ├── *.onnx
-  └── LLM/
-      ├── model.onnx
-      ├── model.onnx_data
-      ├── ...
-```
-
-### Model Deployment Tool
-
-LiveTalk includes a built-in Editor tool that automatically analyzes your codebase and copies only the required models from `Assets/Models` to `StreamingAssets` with the correct precision settings (FP16, FP32, etc.).
-
-**Access the tool**: `Window > LiveTalk > Model Deployment Tool`
-
-#### Key Features
-
-* **Precision-Aware**: Copies only the required precision variants (FP16/FP32) based on code analysis
-* **Size Optimization**: Reduces build size by excluding unused models
-* **Folder Structure Preservation**: Maintains the correct directory structure in StreamingAssets
-* **Backup Support**: Creates backups of existing models before overwriting
-* **Dry Run Mode**: Preview changes without actually copying files
-
-#### How to Use
-
-1. **Open the tool**: Go to `Window > LiveTalk > Model Deployment Tool`
-2. **Configure paths**: 
-   - Source: `Assets/Models` (automatically detected)
-   - Destination: `Assets/StreamingAssets/LiveTalk` (automatically configured)
-3. **Select components**: Choose which model categories to deploy:
-   - ✅ **SparkTTS Models** (deployed via SparkTTS-Unity package)
-   - ✅ **LivePortrait Models** (deployed directly)
-   - ✅ **MuseTalk Models** (deployed directly)
-4. **Review selection**: The tool shows you exactly which LiveTalk models will be copied and their file sizes
-5. **Deploy**: Click "Deploy All Models" to copy both LiveTalk and SparkTTS models using their respective deployment systems
-
-#### Model Precision Settings
-
-The tool selects the used precision for each model based on the LiveTalk codebase:
-
-| Model Category | Precision | Execution Provider | Notes |
+| Entity | What it is | Id | Cost |
 |---|---|---|---|
-| **LivePortrait** | | | |
-| warping_spade | FP16 | CoreML | GPU-accelerated rendering |
-| Other LivePortrait | FP32 | CoreML | Full precision for facial features |
-| **MuseTalk** | | | |
-| unet, vae_encoder, vae_decoder | FP16 | CoreML | GPU-accelerated inference |
-| whisper_encoder, positional_encoding | FP32 | CPU | Audio processing precision |
-| **SparkTTS** | | | |
-| *Models deployed via SparkTTS-Unity package* | *See SparkTTS documentation* | *Various* | *Handled by SparkTTS deployment tool* |
+| `Avatar` | A portrait plus the driving frames, latents and face crops LivePortrait and MuseTalk need to animate it. Immutable once built. | Content hash of the image bytes and the expression set (`CreationMode`). The same portrait built the same way always has the same id, so `CreateAvatarAsync` is get-or-create. | Minutes and hundreds of MB the first time; seconds to load afterwards. |
+| `Voice` | A saved speaker. `VoiceKind.Designed` (VoiceDesign checkpoint, from a description) or `VoiceKind.Cloned` (Base checkpoint, in-context from a reference recording and its transcript). Carries `Sample` / `SampleText`: the rendered take for a designed voice, the reference itself for a clone. | Designed: a fresh GUID per call — every design samples a new speaker, so two rolls are two voices. Cloned: content hash of the reference PCM and transcript, so cloning the same take twice loads the existing folder. | Seconds. |
+| `Character` | A name plus references to one avatar and one voice. Nothing is copied. | GUID, assigned at creation, never changes. | Instant. |
 
-#### Advanced Options
+What falls out of that:
 
-* **Overwrite Existing**: Replace existing models in StreamingAssets
-* **Create Backup**: Keep .backup copies of replaced files (includes .onnx.data files)
-* **Dry Run**: Preview operations without copying files
+- Several characters share one avatar folder; a new voice on the same face
+  never re-runs the avatar pass.
+- `Character.ReplaceVoice(voice)` is a one-line write to `character.json`.
+- Speech audio is cached on **voice + text**, and lip-sync frames on
+  **voice + text + avatar + expression** — never on the character.
+- Deleting a character leaves its halves for the others. `DeleteAvatar` /
+  `DeleteVoice` refuse (with the offending character ids) while something
+  still references them.
 
-#### Large Model Handling
+## Install
 
-The tool automatically handles large models that use separate data files:
-- **MuseTalk UNet**: `unet.onnx` (710KB) + `unet.onnx.data` (3.2GB) - uses dot notation
-- **SparkTTS LLM**: Handled by SparkTTS-Unity deployment tool with `model.onnx_data` files
+Requires Unity **6000.0.46f1** or newer. Developed on macOS (CoreML); Windows
+is untested.
 
-LiveTalk model and data files are copied together and included in size calculations and backup operations. SparkTTS models are handled by the SparkTTS-Unity package's own deployment system.
+Three steps, in this order, in `Packages/manifest.json` (or the equivalent
+Package Manager UI):
 
-This tool ensures your Unity project includes only the models you actually need, significantly reducing build size while maintaining optimal performance.
+1. **OpenUPM scoped registry** so `com.github.asus4.onnxruntime` resolves:
 
-#### Standalone SparkTTS Deployment
+   ```json
+   "scopedRegistries": [
+     {
+       "name": "OpenUPM",
+       "url": "https://package.openupm.com",
+       "scopes": [ "com.github.asus4" ]
+     }
+   ]
+   ```
 
-SparkTTS models can also be deployed independently using the SparkTTS-Unity package's standalone tool:
+2. **Qwen3-TTS-Unity** from its git URL. LiveTalk's `package.json` declares
+   `com.genesis.qwentts.unity` as a dependency by version, and Unity cannot
+   resolve a dependency from a git URL by itself, so add it first:
 
-**Access**: `Window > SparkTTS > Model Deployment Tool`
+   ```json
+   "com.genesis.qwentts.unity": "https://github.com/arghyasur1991/Qwen3-TTS-Unity.git"
+   ```
 
-This allows you to:
-- Deploy only SparkTTS models without LiveTalk models
-- Use SparkTTS in projects that don't include LiveTalk
-- Have fine-grained control over SparkTTS model deployment
+3. **This package**:
 
-### Downloading Pre-Exported Models
+   ```json
+   "com.genesis.livetalk.unity": "https://github.com/arghyasur1991/LiveTalk-Unity.git"
+   ```
 
-#### LiveTalk Models
-Download the pre-exported ONNX models from [Google Drive](https://drive.google.com/file/d/1UvssShqniAj_p-yw0dLDTWQEqe-O_n6K/view?usp=sharing).
+`com.github.asus4.onnxruntime`, `com.unity.nuget.newtonsoft-json` and
+`com.unity.ugui` are pulled in as dependencies. Or clone both repositories
+and add them with *Add package from disk…*.
 
-1. Download the ZIP file from the link
-2. Extract the contents
-3. Copy the extracted `LiveTalk` folder with models to your Unity project's `Assets/Models/` directory
-4. **Use the Model Deployment Tool** (recommended): Go to `Window > LiveTalk > Model Deployment Tool` to automatically copy only the required models with optimal precision settings
+The optional **LiveTalk Demo** sample (Package Manager → LiveTalk Unity →
+Samples) is a single uGUI MonoBehaviour that runs every step below.
 
-#### SparkTTS Models
-Check the [Model Setup](https://github.com/arghyasur1991/Spark-TTS-Unity#model-setup) section of Spark-TTS-Unity
+## Models
 
-### Exporting Models (Coming Soon)
+Weights are not included. Two sets are needed.
 
-Coming Soon - conversion scripts to export models from the original Python repositories:
+### LivePortrait and MuseTalk (ONNX)
 
-- **LivePortrait**: [https://github.com/KwaiVGI/LivePortrait](https://github.com/KwaiVGI/LivePortrait)
-- **MuseTalk**: [https://github.com/TMElyralab/MuseTalk](https://github.com/TMElyralab/MuseTalk)
+Download the pre-exported ONNX models from
+[Google Drive](https://drive.google.com/file/d/1UvssShqniAj_p-yw0dLDTWQEqe-O_n6K/view?usp=sharing),
+extract, and place the `LiveTalk` folder under `Assets/Models/` so the layout is
 
-The export scripts will convert PyTorch models to ONNX format and apply CoreML optimizations for Unity integration.
-
-## Usage
-
-### Initialization and Model Loading
-
-```csharp
-using UnityEngine;
-using LiveTalk.API;
-using System.Threading.Tasks;
-
-public class LiveTalkExample : MonoBehaviour
-{
-    async void Start()
-    {
-        // Initialize the LiveTalk system
-        LiveTalkAPI.Instance.Initialize(
-            logLevel: LogLevel.INFO,
-            characterSaveLocation: "", // Uses default location (persistentDataPath/Characters)
-            parentModelPath: "",       // Uses StreamingAssets
-            memoryUsage: MemoryUsage.Performance // Load all models at startup
-        );
-        
-        // Wait for all models to be loaded (Performance mode)
-        // This includes LivePortrait, MuseTalk, and SparkTTS models
-        await LiveTalkAPI.Instance.WaitForAllModelsAsync(
-            onProgress: (modelName, progress) => {
-                Debug.Log($"Loading {modelName}: {progress * 100:F0}%");
-            }
-        );
-        
-        Debug.Log("All models loaded and ready!");
-        
-        // Now you can create characters and generate speech...
-    }
-}
+```
+Assets/Models/LiveTalk/models/
+  LivePortrait/   appearance_feature_extractor, motion_extractor, stitching, stitching_eye,
+                  stitching_lip, warping_spade_fp16, det_10g, 2d106det, landmark   (.onnx)
+  MuseTalk/       unet_fp16, vae_encoder_fp16, vae_decoder_fp16, positional_encoding,
+                  whisper_encoder, face_parsing                                   (.onnx)
 ```
 
-#### Model Loading Progress (Performance Mode)
+Then open **LiveTalk → Model Deployment Tool** (a top-level editor menu). It
+copies only the variants the runtime actually loads — FP16 for `warping_spade`
+and the MuseTalk UNet/VAE on CoreML, FP32 for the rest — from `Assets/Models`
+into `Assets/StreamingAssets/LiveTalk/models/`, with dry-run, overwrite and
+backup options and a *Clean StreamingAssets* button. The runtime reads them
+from `<parentModelPath>/LiveTalk/models/`, where `parentModelPath` defaults to
+`Application.streamingAssetsPath`.
 
-When using `MemoryUsage.Performance` mode, you can track model loading progress:
+`MemoryUsage.Quality` loads FP32 variants of the FP16 models instead; those are
+not deployed by the tool and must be placed manually.
+
+### Qwen3-TTS (ONNX)
+
+Two checkpoints, exported with the scripts in the Qwen3-TTS-Unity repository
+(`Tools~/qwen3_tts_onnx/`) and installed anywhere you like:
+
+| Checkpoint | Used for | Disk | Resident |
+|---|---|---|---|
+| `Qwen3-1.7B-VoiceDesign` | `DesignVoiceAsync` | ~8 GB | ~7 GB |
+| `Qwen3-1.7B-Base` | `CloneVoiceAsync`, and every `SpeakAsync` of a cloned voice | ~8 GB | ~7 GB |
+
+Point LiveTalk at the folder that contains both via `Initialize(ttsModelRoot:)`.
+Left null, the TTS package looks in `StreamingAssets/QwenTTS`, which is fine in
+the editor and usually wrong for a shipped player (StreamingAssets ships with
+the build). **Window → Qwen3 TTS → Model Status** shows what was found. Read the
+[Qwen3-TTS-Unity README](https://github.com/arghyasur1991/Qwen3-TTS-Unity#readme)
+for the memory budget, reference-clip rules (≥ 4 s, 24 kHz, ≤ 20 s used) and
+int8 precision.
+
+## Initialize
+
+`LiveTalkAPI` is a singleton. Call `Initialize` once; it builds the LivePortrait
+and MuseTalk engines, initializes the TTS engine, sets up the cache and creates
+a hidden `LiveTalkAPI` GameObject that hosts the coroutines.
 
 ```csharp
-// Simple usage - just wait for completion
-await LiveTalkAPI.Instance.WaitForAllModelsAsync();
-
-// With progress tracking
-await LiveTalkAPI.Instance.WaitForAllModelsAsync(
-    onProgress: (modelName, progress) => {
-        // progress is 0.0 to 1.0 for each model group
-        // modelName will be: "LivePortrait Animation", "MuseTalk Animation", or "Voice Synthesis"
-        UpdateLoadingUI($"Loading {modelName}", progress);
-    }
-);
-```
-
-**Note**: Model loading is only necessary in `MemoryUsage.Performance` mode. In `Balanced` and `Optimal` modes, models load on-demand during first use.
-
-### Basic Setup
-
-```csharp
-using UnityEngine;
 using LiveTalk.API;
 
-public class LiveTalkExample : MonoBehaviour
-{
-    void Start()
-    {
-        // Initialize the LiveTalk system
-        LiveTalkAPI.Instance.Initialize(
-            logLevel: LogLevel.INFO,
-            characterSaveLocation: "", // Uses default location (persistentDataPath/Characters)
-            parentModelPath: "",       // Uses StreamingAssets
-            memoryUsage: MemoryUsage.Balanced // Recommended for desktop
-        );
-    }
-}
-```
-
-### Memory Usage Modes
-
-LiveTalk supports different memory usage configurations optimized for various device types:
-
-```csharp
-// For desktop devices (default) - balanced memory and performance
-LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Balanced);
-
-// For performance-critical applications - loads all models upfront
-LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Performance);
-
-// For mobile devices - minimal memory footprint
-LiveTalkAPI.Instance.Initialize(memoryUsage: MemoryUsage.Optimal);
-
-// Automatic selection based on platform
-MemoryUsage memoryUsage = Application.isMobilePlatform 
-    ? MemoryUsage.Optimal 
-    : MemoryUsage.Balanced;
-LiveTalkAPI.Instance.Initialize(memoryUsage: memoryUsage);
-```
-
-### Character Creation
-
-```csharp
-using UnityEngine;
-using LiveTalk.API;
-using System.Collections;
-
-public class CharacterCreation : MonoBehaviour
-{
-    [SerializeField] private Texture2D characterImage;
-    
-    IEnumerator Start()
-    {
-        // Initialize API
-        LiveTalkAPI.Instance.Initialize();
-        
-        // Create a new character with all expressions
-        yield return LiveTalkAPI.Instance.CreateCharacterAsync(
-            name: "MyCharacter",
-            gender: Gender.Female,
-            image: characterImage,
-            pitch: Pitch.Moderate,
-            speed: Speed.Moderate,
-            intro: "Hello, I am your virtual assistant!",
-            voicePromptPath: null, // Generate voice from style parameters
-            onComplete: (character) => {
-                Debug.Log($"Character created: {character.Name}");
-            },
-            onError: (error) => {
-                Debug.LogError($"Character creation failed: {error.Message}");
-            }
-        );
-    }
-}
-```
-
-### Character Creation Modes
-
-LiveTalk supports different creation modes for flexibility:
-
-```csharp
-// Voice Only - fastest, no visual expressions generated
-yield return LiveTalkAPI.Instance.CreateCharacterAsync(
-    name: "VoiceOnlyCharacter",
-    gender: Gender.Male,
-    image: null, // No image needed for voice-only
-    pitch: Pitch.Low,
-    speed: Speed.Moderate,
-    intro: "Hello!",
-    voicePromptPath: null,
-    onComplete: OnCharacterCreated,
-    onError: OnError,
-    creationMode: CreationMode.VoiceOnly
-);
-
-// Single Expression - voice + talk-neutral expression only
-yield return LiveTalkAPI.Instance.CreateCharacterAsync(
-    name: "QuickCharacter",
-    gender: Gender.Female,
-    image: characterImage,
-    pitch: Pitch.Moderate,
-    speed: Speed.Moderate,
-    intro: "Hello!",
-    voicePromptPath: null,
-    onComplete: OnCharacterCreated,
-    onError: OnError,
-    creationMode: CreationMode.SingleExpression
-);
-
-// All Expressions - full character with all 7 expressions (default)
-yield return LiveTalkAPI.Instance.CreateCharacterAsync(
-    name: "FullCharacter",
-    gender: Gender.Female,
-    image: characterImage,
-    pitch: Pitch.High,
-    speed: Speed.High,
-    intro: "Hello!",
-    voicePromptPath: null,
-    onComplete: OnCharacterCreated,
-    onError: OnError,
-    creationMode: CreationMode.AllExpressions
-);
-```
-
-### Using a Voice Reference
-
-You can create a character voice from an existing audio reference instead of generating from style parameters:
-
-```csharp
-// Create character with voice cloned from reference audio
-yield return LiveTalkAPI.Instance.CreateCharacterAsync(
-    name: "ClonedVoiceCharacter",
-    gender: Gender.Female,
-    image: characterImage,
-    pitch: Pitch.Moderate,  // These are ignored when voicePromptPath is provided
-    speed: Speed.Moderate,
-    intro: "Hello!",
-    voicePromptPath: "/path/to/reference_voice.wav", // Clone voice from this audio
-    onComplete: OnCharacterCreated,
-    onError: OnError
-);
-```
-
-### Character Loading and Speech
-
-```csharp
-using UnityEngine;
-using LiveTalk.API;
-using System.Collections;
-
-public class CharacterSpeech : MonoBehaviour
-{
-    private Character loadedCharacter;
-    
-    IEnumerator Start()
-    {
-        // Initialize API
-        LiveTalkAPI.Instance.Initialize();
-        
-        // Load an existing character by ID
-        string characterId = "your-character-id";
-        yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromId(
-            characterId,
-            onComplete: (character) => {
-                loadedCharacter = character;
-                Debug.Log($"Character loaded: {character.Name}");
-                
-                // Make the character speak
-                StartCoroutine(MakeCharacterSpeak());
-            },
-            onError: (error) => {
-                Debug.LogError($"Character loading failed: {error.Message}");
-            }
-        );
-    }
-    
-    IEnumerator MakeCharacterSpeak()
-    {
-        if (loadedCharacter == null) yield break;
-        
-        // Speak with lip sync animation
-        // Two callbacks: onAudioReady (when audio is ready), onAnimationComplete (when all frames are done)
-        // Audio and animation generation are pipelined - audio for next segment can generate while current animates
-        yield return loadedCharacter.StartSpeakWithCallbacks(
-            text: "Hello! I can speak with realistic lip sync!",
-            expressionIndex: 0, // Use talk-neutral expression
-            onAudioReady: (frameStream, audioClip) => {
-                // Called as soon as audio is ready - you can schedule next speech here
-                // frameStream will receive animation frames as they're generated
-                Debug.Log($"Audio ready, expecting {frameStream.TotalExpectedFrames} frames");
-                StartCoroutine(PlayGeneratedVideo(frameStream, audioClip));
-            },
-            onAnimationComplete: () => {
-                // Called when all animation frames have been generated
-                Debug.Log("Animation generation complete");
-            },
-            onError: (error) => {
-                Debug.LogError($"Speech generation failed: {error.Message}");
-            }
-        );
-    }
-    
-    IEnumerator PlayGeneratedVideo(FrameStream frameStream, AudioClip audioClip)
-    {
-        // Play the audio
-        GetComponent<AudioSource>().clip = audioClip;
-        GetComponent<AudioSource>().Play();
-        
-        // Process video frames as they arrive
-        while (frameStream.HasMoreFrames)
-        {
-            var frameAwaiter = frameStream.WaitForNext();
-            yield return frameAwaiter;
-            
-            if (frameAwaiter.Texture != null)
-            {
-                // Display the frame (e.g., on a RawImage component)
-                GetComponent<UnityEngine.UI.RawImage>().texture = frameAwaiter.Texture;
-            }
-        }
-    }
-}
-```
-
-### Voice-Only Speech (No Animation)
-
-For scenarios where you only need audio without video frames:
-
-```csharp
-// Generate voice only (no lip sync animation)
-yield return loadedCharacter.StartSpeakWithCallbacks(
-    text: "This is voice-only output!",
-    expressionIndex: -1, // -1 means voice only, no video frames
-    onAudioReady: (frameStream, audioClip) => {
-        // frameStream will be empty, only audioClip is populated
-        GetComponent<AudioSource>().clip = audioClip;
-        GetComponent<AudioSource>().Play();
-    },
-    onAnimationComplete: null, // Optional - not needed for voice-only
-    onError: (error) => {
-        Debug.LogError($"Speech generation failed: {error.Message}");
-    }
-);
-```
-
-### Pipelined Speech Generation
-
-The `StartSpeakWithCallbacks` method enables pipelined audio and animation processing:
-
-```csharp
-// Start first speech
-yield return character.StartSpeakWithCallbacks(
-    text: "First sentence.",
-    expressionIndex: 0,
-    onAudioReady: (stream1, audio1) => {
-        PlayAudioAndAnimation(stream1, audio1);
-        
-        // As soon as audio is ready, schedule next speech
-        // Audio for segment 2 generates while segment 1 animates
-        StartCoroutine(character.StartSpeakWithCallbacks(
-            text: "Second sentence immediately after.",
-            expressionIndex: 0,
-            onAudioReady: (stream2, audio2) => {
-                EnqueueAudioAndAnimation(stream2, audio2);
-            },
-            onAnimationComplete: null,
-            onError: OnError
-        ));
-    },
-    onAnimationComplete: null,
-    onError: OnError
-);
-```
-
-This pipelining significantly improves responsiveness by overlapping audio generation for the next segment with animation generation for the current segment.
-
-### Loading Character from Path
-
-You can also load a character directly from a file path:
-
-```csharp
-// Load character from a specific path
-yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromPath(
-    "/path/to/character/folder",
-    onComplete: (character) => {
-        Debug.Log($"Character loaded: {character.Name}");
-    },
-    onError: (error) => {
-        Debug.LogError($"Loading failed: {error.Message}");
-    }
-);
-```
-
-### Facial Animation (LivePortrait Only)
-
-```csharp
-using UnityEngine;
-using LiveTalk.API;
-using System.Collections;
-using UnityEngine.Video;
-
-public class FacialAnimation : MonoBehaviour
-{
-    [SerializeField] private Texture2D sourceImage;
-    [SerializeField] private VideoPlayer drivingVideo;
-    
-    IEnumerator Start()
-    {
-        // Initialize API
-        LiveTalkAPI.Instance.Initialize();
-        
-        // Generate animated textures using LivePortrait
-        var animationStream = LiveTalkAPI.Instance.GenerateAnimatedTexturesAsync(
-            sourceImage, 
-            drivingVideo, 
-            maxFrames: -1 // Process all frames
-        );
-        
-        // Process the animated frames
-        while (animationStream.HasMoreFrames)
-        {
-            var frameAwaiter = animationStream.WaitForNext();
-            yield return frameAwaiter;
-            
-            if (frameAwaiter.Texture != null)
-            {
-                // Display the animated frame
-                GetComponent<UnityEngine.UI.RawImage>().texture = frameAwaiter.Texture;
-            }
-        }
-    }
-}
-```
-
-## Character System
-
-### Expression Support
-
-Characters support 7 built-in expressions, each with its own index:
-
-- **0**: talk-neutral (default speaking)
-- **1**: approve (nodding, positive)
-- **2**: disapprove (negative reaction)
-- **3**: smile (happy expression)
-- **4**: sad (sorrowful expression)  
-- **5**: surprised (shocked reaction)
-- **6**: confused (puzzled expression)
-
-Use `expressionIndex: -1` in `SpeakAsync()` to generate voice-only output without video frames.
-
-### Character Formats
-
-Characters support two storage formats:
-
-#### Bundle Format (.bundle) - macOS
-- Character data stored in a `.bundle` directory
-- Appears as a single file in macOS Finder
-- Contains `Info.plist` for proper macOS package metadata
-- Automatically used on macOS platforms
-
-#### Folder Format - Universal  
-- Character data stored in a regular directory
-- Works on all platforms (Windows, macOS, Linux)
-- Used on non-macOS platforms or when explicitly requested
-
-### Character Data Structure
-
-Each character contains:
-- **character.json**: Character configuration (name, gender, pitch, speed, intro)
-- **image.png**: Character portrait image
-- **drivingFrames/**: Expression data for each expression index
-  - **expression-N/**: Folder for expression N
-    - **XXXXX.png**: Generated driving frames
-    - **latents.bin**: Precomputed latent representations
-    - **faces.json**: Face detection and processing data
-    - **textures/**: Precomputed texture data
-- **voice/**: Voice model and configuration
-  - **sample.wav**: Reference voice sample
-  - **voice_config.json**: Voice generation parameters
-
-## API Reference
-
-### LiveTalkAPI (Singleton)
-
-#### Initialization
-```csharp
 LiveTalkAPI.Instance.Initialize(
-    LogLevel logLevel = LogLevel.INFO,
-    string characterSaveLocation = "",
-    string parentModelPath = "",
-    MemoryUsage memoryUsage = MemoryUsage.Balanced
-)
+    logLevel: LogLevel.INFO,                 // VERBOSE also opts into ONNX Runtime's own INFO/VERBOSE lines
+    characterSaveLocation: "",               // "" → persistentDataPath/Characters   (avatars/, voices/, characters/)
+    parentModelPath: "",                     // "" → Application.streamingAssetsPath (reads <path>/LiveTalk/models)
+    memoryUsage: MemoryUsage.Balanced,       // see Memory
+    cacheLocation: null,                     // null → persistentDataPath/LiveTalkCache
+    enableCache: true,                       // false disables speech/frame caching entirely
+    ttsModelRoot: null);                     // folder holding Qwen3-1.7B-VoiceDesign / Qwen3-1.7B-Base
 ```
 
-#### Character Management
+| Parameter | Meaning |
+|---|---|
+| `logLevel` | `VERBOSE`, `INFO` (default), `WARNING`, `ERROR`. Applied to LiveTalk and the TTS package. ONNX Runtime's own log level follows: `VERBOSE` → verbose, `ERROR` → error, otherwise warning (ORT at info logs an arena line per allocation). |
+| `characterSaveLocation` | Root of `avatars/`, `voices/`, `characters/`. Also readable as `LiveTalkAPI.CharacterSaveLocation`. |
+| `parentModelPath` | Parent of the `LiveTalk/models/` tree the deployment tool writes. |
+| `memoryUsage` | `Performance` (load every model at startup), `Balanced` (load on first use, keep — default), `Optimal` (load per use, dispose after; for constrained devices), `Quality` (FP32 everywhere; not recommended). Mapped onto the TTS package's policy too. |
+| `cacheLocation` / `enableCache` | Where speech WAVs and lip-sync frame folders go. See [Caching](#caching). |
+| `ttsModelRoot` | Passed straight to the TTS engine. |
+
+Calling `Initialize` twice logs a warning and does nothing more — except
+recreating the coroutine host if Play mode tore it down, which `EnsureRuntimeHost()`
+also does on its own. In `MemoryUsage.Performance` mode,
+`await LiveTalkAPI.Instance.WaitForAllModelsAsync(onProgress)` waits for the
+LivePortrait and MuseTalk sessions (the TTS checkpoints are deliberately not
+warmed there — see [Memory](#memory)).
+
+Every long operation below is an `IEnumerator` with `onComplete` / `onError`
+callbacks, meant to be driven with `yield return` from a coroutine (or
+`StartCoroutine` from anywhere). Exactly one of the two callbacks fires.
+
+## Create an avatar
+
 ```csharp
-// Create character with full options
-IEnumerator CreateCharacterAsync(
-    string name, 
-    Gender gender, 
-    Texture2D image, 
-    Pitch pitch, 
-    Speed speed, 
-    string intro,
-    string voicePromptPath,
-    Action<Character> onComplete, 
-    Action<Exception> onError,
-    CreationMode creationMode = CreationMode.AllExpressions,
-    bool useBundle = true
-)
-
-// Load character by ID (from save location)
-IEnumerator LoadCharacterAsyncFromId(
-    string characterId, 
-    Action<Character> onComplete, 
-    Action<Exception> onError
-)
-
-// Load character from specific path
-IEnumerator LoadCharacterAsyncFromPath(
-    string characterPath, 
-    Action<Character> onComplete, 
-    Action<Exception> onError
-)
-
-// Get available characters
-string[] GetAvailableCharacterIds()
-string CharacterSaveLocation { get; }
-
-// Check if bundle format is supported on current platform
-static bool CanUseBundle()
+Avatar avatar = null;
+yield return LiveTalkAPI.Instance.CreateAvatarAsync(
+    portrait,                          // readable Texture2D
+    CreationMode.AllExpressions,       // or SingleExpression (talk-neutral only), or VoiceOnly (image only, not animatable)
+    onComplete: a => avatar = a,
+    onError: ex => Debug.LogError(ex));
 ```
 
-#### Animation Generation
+`CreateAvatarAsync` hashes the image and mode; if `avatars/<id>/` exists and is
+complete it loads in seconds, otherwise LivePortrait animates the portrait with
+the bundled driving clip for each expression and MuseTalk precomputes latents
+and face crops. A run that fails removes its partial folder, so an avatar
+folder is either complete or absent.
+
+Expression indices, valid for `SpeakAsync` / `QueueSpeech` when the avatar has
+them (`Avatar.ExpressionIndices`, `Avatar.CanAnimate`):
+
+| Index | Expression | | Index | Expression |
+|---|---|---|---|---|
+| 0 | talk-neutral (also the idle loop) | | 4 | sad |
+| 1 | approve | | 5 | surprised |
+| 2 | disapprove | | 6 | confused |
+| 3 | smile | | −1 | voice only, no frames |
+
+Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
+`GetAvailableAvatarIds()`, `DeleteAvatar(avatarId)`.
+
+## Design a voice (roll the dice)
+
 ```csharp
-// LivePortrait animation from texture list
-FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, List<Texture2D> drivingFrames)
+Voice voice = null;
+yield return LiveTalkAPI.Instance.DesignVoiceAsync(
+    Gender.Female, Pitch.Moderate, Speed.Moderate,
+    instruct: "warm, unhurried, close-mic",          // optional free text, composed with the three enums
+    sampleText: "Hello, this is a short voice sample.",
+    onComplete: v => voice = v,
+    onError: ex => Debug.LogError(ex));
 
-// LivePortrait animation from video
-FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
-
-// LivePortrait animation from directory
-FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
-
-// MuseTalk lip sync
-FrameStream GenerateTalkingHeadAsync(Texture2D avatarTexture, string talkingHeadFolderPath, AudioClip audioClip)
+// Audition the take. It is exactly what a clone would lock.
+audioSource.clip = voice.Sample;
+audioSource.Play();
 ```
 
-### Character Class
+Every call draws a **new speaker** and a new GUID; there is no seed. Keep the
+one you like and `DeleteVoice(voice.Id)` the rest. `Voice.Sample` is
+`sampleText` rendered at the engine's native 24 kHz, so it is a valid clone
+reference as-is. The three enums are turned into a natural-language
+description for the VoiceDesign checkpoint; `instruct` is appended.
 
-#### Properties
+## Clone a voice from a take
+
 ```csharp
-string Name { get; }
-string CharacterId { get; }
-Gender Gender { get; }
-Texture2D Image { get; }
-Pitch Pitch { get; }
-Speed Speed { get; }
-string Intro { get; }
-bool IsDataLoaded { get; }
+Voice locked = null;
+yield return LiveTalkAPI.Instance.CloneVoiceAsync(
+    reference: voice.Sample,            // any AudioClip; ≥ 4 s at 24 kHz works best, first 20 s are used
+    transcript: voice.SampleText,       // what the clip says — required for in-context cloning
+    onComplete: v => locked = v,
+    onError: ex => Debug.LogError(ex));
 ```
 
-#### Methods
+The id is a content hash of the reference PCM and transcript, so cloning the
+same take again is a load, not another pass through the speaker and tokenizer
+encoders. Without a transcript the clone falls back to a speaker-embedding
+match: a stable voice, but not the one in your recording. The reference becomes
+the clone's `Sample`, the transcript its `SampleText`.
+
+Also: `LoadVoiceAsync(voiceId, onComplete, onError)`, `GetAvailableVoiceIds()`,
+`DeleteVoice(voiceId)`.
+
+## Create a character
+
 ```csharp
-// Make character speak with animation (pipelined audio/animation)
-IEnumerator StartSpeakWithCallbacks(
-    string text, 
-    int expressionIndex = 0,  // Use -1 for voice-only
-    Action<FrameStream, AudioClip> onAudioReady = null,  // Called when audio is ready
-    Action onAnimationComplete = null,  // Called when all frames are generated
-    Action<Exception> onError = null
-)
-
-// Legacy method (still supported but StartSpeakWithCallbacks is preferred)
-IEnumerator SpeakAsync(
-    string text, 
-    int expressionIndex = 0,  // Use -1 for voice-only
-    Action<FrameStream, AudioClip> onComplete = null, 
-    Action<Exception> onError = null
-)
-
-// Static methods for loading
-static IEnumerator LoadCharacterAsyncFromPath(
-    string characterPath,
-    Action<Character> onComplete,
-    Action<Exception> onError
-)
-
-static IEnumerator LoadCharacterAsyncFromId(
-    string characterId,
-    Action<Character> onComplete,
-    Action<Exception> onError
-)
+Character character = LiveTalkAPI.Instance.CreateCharacter("Mara", avatar, locked);
+// character.Id, character.Name, character.Avatar, character.Voice, character.IsDataLoaded == true
 ```
 
-### CharacterPlayer Component
-
-A reusable MonoBehaviour that handles character loading, idle animation, speech playback, and smooth transitions. This is the recommended way to integrate LiveTalk characters into your Unity scenes.
-
-#### Features
-
-- **Auto-loads character** when assigned
-- **Idle animation** playback (expression 0) at 25 FPS with ping-pong cycling
-- **Speech queueing** with automatic playback
-- **Smooth transitions** between idle and speech states
-- **Event-driven** architecture for UI integration
-- **Audio-only mode** for characters without avatars (narrators, phone voices, etc.)
-- **Static image fallback** for characters without idle animations
-
-#### Quick Setup
+Synchronous and instant: both halves already exist, so this writes
+`characters/<guid>/character.json` and hands back a character that is loaded
+and ready to speak. `avatar` may be null for a voice-only character.
+`Character.SpeechSampleRate` is set to 16 kHz for an animatable avatar (what
+the lip-sync stack consumes) and to the TTS model's native rate otherwise, and
+is persisted.
 
 ```csharp
-using LiveTalk.API;
-using UnityEngine;
-using UnityEngine.UI;
+character.ReplaceVoice(anotherVoice);   // rewrites character.json; drops speech still queued in the old voice
+```
 
-public class CharacterPlayerExample : MonoBehaviour
-{
-    [SerializeField] private Character myCharacter;
-    
-    void Start()
+Loading later:
+
+```csharp
+yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromId(id, c => character = c, ex => …);
+yield return LiveTalkAPI.Instance.LoadCharacterAsyncFromPath(folder, c => …, ex => …);
+yield return LiveTalkAPI.Instance.LoadCharacterMetadataAsync(id, c => …, ex => …);   // name + image only, for lists
+string[] ids = LiveTalkAPI.Instance.GetAvailableCharacterIds();                       // 2.0 folders plus legacy inline ones
+LiveTalkAPI.Instance.DeleteCharacter(id);                                             // leaves avatar and voice in place
+```
+
+A load whose avatar or voice folder is missing fails through `onError`, naming
+the missing half; it never returns a half-loaded character.
+
+## Speak with CharacterPlayer
+
+`CharacterPlayer` is a MonoBehaviour that plays the idle loop (expression 0,
+25 fps ping-pong), queues speech, pipelines audio generation of the next line
+with lip-sync of the current one, and raises events you can bind to any
+display. Get one from the character (created lazily under a shared
+`CharacterPlayers_Parent` GameObject) or add the component yourself and call
+`AssignCharacter`.
+
+```csharp
+var player = character.CharacterPlayer;
+
+player.OnFrameUpdate += frame => rawImage.texture = frame;   // idle and speech frames alike
+player.OnReady        += () => Debug.Log("data and idle frames loaded");
+player.OnSpeechStarted += () => Debug.Log("speaking");
+player.OnSpeechEnded  += () => Debug.Log("nothing left to say");
+player.OnError        += ex => Debug.LogError(ex);
+
+// Safe to call immediately: lines queued before Ready are held and drain on OnReady.
+player.QueueSpeech("Hello. I'm ready to talk.", expressionIndex: 0);
+player.QueueSpeech("And this one smiles.",       expressionIndex: 3);
+player.QueueSpeech("Narration, no face.",        withAnimation: false);
+
+// Later
+character.DestroyPlayer();   // Stop() + destroy the GameObject; the next CharacterPlayer access makes a new one
+```
+
+Text is split into sentences; each sentence is one segment. Audio for
+segment *n+1* is generated while segment *n* animates.
+
+### State machine
+
+```
+Uninitialized → Loading → Ready ⇄ Speaking
+                                ↘ Paused ↗
+```
+
+| State | Meaning |
+|---|---|
+| `Uninitialized` | No character, or the assigned character failed to load. `QueueSpeech` is dropped with a warning. |
+| `Loading` | Character data and/or idle frames loading. `QueueSpeech` enqueues; the queue drains right after `OnReady`. |
+| `Ready` | Data **and** idle frames loaded, idle loop playing, nothing queued or in flight. `OnReady` then `OnCharacterLoaded` fire on entry. (`PlaybackState.Idle` is an obsolete alias with the same value.) |
+| `Speaking` | At least one line is being generated or played. Stays `Speaking` across consecutive lines, including lines queued during the last segment — no intermediate `OnSpeechEnded`. |
+| `Paused` | `Pause()` stops the idle loop and pauses the audio. `Resume()` returns to `Speaking` if that was the paused state, else to `Ready`, then starts anything queued meanwhile. |
+
+- `IsPlaying` is true **only** while `Speaking`. For "finished", test
+  `!player.IsPlaying && player.QueuedSpeechCount == 0` or listen for
+  `OnSpeechEnded`. `IsReady` is `State == Ready`.
+- `Stop()` stops the idle loop, the segment player, every in-flight frame
+  collector and the audio source; clears the speech and pending queues; resets
+  the pause bookkeeping; and returns to `Ready` (with idle) if the character is
+  loaded. It does **not** abort a character load in progress (loading is not
+  playback), and it does **not** kill a line whose TTS synthesis is mid-flight:
+  the speech processor is retired and lets that synthesis finish on its normal
+  path — which is where the voice lease is released — then discards the result.
+- `ClearQueue()` drops queued lines without stopping the current one.
+- `withAnimation: false`, or a character with no animatable avatar, plays audio
+  only; the static portrait is shown if there is one.
+
+### Streaming lip-sync (experimental, off by default)
+
+By default a line is fully synthesised and fully animated before the first
+frame is shown. `LiveTalkAPI.Instance.StreamLipSync = true` instead feeds
+each TTS chunk to an incremental feature extractor and animates frames as
+their audio window becomes final, so playback starts after roughly the first
+half second of audio (`CharacterPlayer.PrerollSeconds`, default 0.35 s, is the
+audio buffered before playback begins; `StreamLipSyncContextSeconds`, default
+0.5 s, is extra audio held back per frame for the encoder's context).
+
+Why it is off: measured against the batch path, streamed frames differ in
+the mouth region by a mean of about 0.5–1.0/255 (max ~4.8/255). The residual
+is the Whisper encoder's global attention seeing a prefix instead of the
+whole clip, so it does not close with more context. And unless the GPU can
+generate a frame in under 40 ms, playback holds the last frame while
+generation catches up. Time to first mouth movement drops from ~29 s to
+~2.4 s on a 4 s line. Turn it on when latency matters more than fidelity;
+the batch path is unchanged when it is off, and cache hits are unaffected
+either way.
+
+## Speak directly with SpeakAsync
+
+`Character.SpeakAsync` is the primitive the player is built on: one utterance,
+audio first, frames streamed after.
+
+```csharp
+yield return character.SpeakAsync(
+    "Where were you last night?",
+    expressionIndex: 5,
+    onAudioReady: (frames, clip) =>
     {
-        // CharacterPlayer is automatically created by the Character
-        var player = myCharacter.CharacterPlayer;
-        
-        // Subscribe to events
-        player.OnFrameUpdate += (frame) => {
-            // Display frame in your UI (e.g., RawImage)
-            GetComponent<RawImage>().texture = frame;
-        };
-        
-        player.OnSpeechStarted += () => Debug.Log("Character started speaking");
-        player.OnSpeechEnded += () => Debug.Log("Character finished speaking");
-        player.OnCharacterLoaded += () => Debug.Log("Character loaded and ready");
-        
-        // Queue speech (automatically plays idle animation between speeches)
-        player.QueueSpeech("Hello! I'm ready to talk.", expressionIndex: 0);
-        player.QueueSpeech("This is my second line.", expressionIndex: 3); // smile
-    }
-}
-```
+        audioSource.clip = clip;               // schedule the next SpeakAsync here to pipeline
+        audioSource.Play();
+        StartCoroutine(Drain(frames));
+    },
+    onAnimationComplete: frames => Debug.Log($"{frames.TotalExpectedFrames} frames"),
+    onError: ex => Debug.LogError(ex),
+    onSpeechChunk: (pcm, sampleRate) => { /* optional: audio as it is generated, main thread, ~1 s to first chunk */ });
 
-#### Properties
-
-```csharp
-PlaybackState State { get; }           // Uninitialized, Loading, Idle, Speaking, Paused
-Character Character { get; }           // The LiveTalk Character
-Texture DisplayImage { get; }          // Current display frame
-bool HasQueuedSpeech { get; }          // True if speech is in queue
-int QueuedSpeechCount { get; }         // Number of queued speech items
-```
-
-#### Methods
-
-```csharp
-// Queue a single speech line
-void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true)
-
-// Queue multiple speech lines at once
-void QueueSpeechBatch(List<string> textLines, int expressionIndex = 0, bool withAnimation = true)
-
-// Control playback
-void Pause()
-void Resume()
-void Stop()              // Stops all speech and returns to idle
-void ClearQueue()        // Removes queued speech
-```
-
-#### Events
-
-```csharp
-event Action<Texture> OnFrameUpdate;      // Fired for each new frame (idle or speech)
-event Action OnSpeechStarted;             // Speech playback started
-event Action OnSpeechEnded;               // Speech playback ended
-event Action<Exception> OnError;          // Error occurred
-event Action OnCharacterLoaded;           // Character finished loading
-event Action OnIdleStarted;               // Idle animation started
-```
-
-#### Audio-Only Mode
-
-For characters without avatars (narrators, phone voices, etc.):
-
-```csharp
-// CharacterPlayer automatically detects if character has no idle frames
-// and switches to audio-only mode
-player.QueueSpeech("This is narrator voice without animation.", withAnimation: false);
-```
-
-#### Integration with UI Toolkit
-
-CharacterPlayer works seamlessly with Unity UI Toolkit by firing `OnFrameUpdate` events that you can display in VisualElements:
-
-```csharp
-// In your UI Controller
-private VisualElement _avatarDisplay;
-private CharacterPlayer _player;
-
-void SetupCharacter(Character character)
+IEnumerator Drain(FrameStream frames)
 {
-    _player = character.CharacterPlayer;
-    
-    // Display frames in UI Toolkit VisualElement
-    _player.OnFrameUpdate += (frame) => {
-        if (_avatarDisplay != null)
-        {
-            _avatarDisplay.style.backgroundImage = new StyleBackground(frame);
-        }
-    };
-}
-```
-
-### DialogueOrchestrator Component
-
-Orchestrates multi-character turn-based dialogue, handling speaker switching, audio coordination, and visual display management. Perfect for conversations, cutscenes, and interactive dialogues.
-
-#### Features
-
-- **Multi-character support** with automatic speaker switching
-- **Turn-based dialogue** with automatic queuing
-- **Visual switching** - shows speaking character's animation
-- **Audio coordination** - ensures only one character speaks at a time
-- **Event-driven** - integrates easily with UI systems
-- **Supports audio-only characters** (narrators)
-
-#### Quick Setup
-
-```csharp
-using LiveTalk.API;
-using UnityEngine;
-using UnityEngine.UI;
-
-public class DialogueExample : MonoBehaviour
-{
-    [SerializeField] private Character detective;
-    [SerializeField] private Character suspect;
-    [SerializeField] private RawImage dialogueDisplay;
-    
-    private DialogueOrchestrator _orchestrator;
-    
-    void Start()
+    while (frames.HasMoreFrames)
     {
-        // Create orchestrator
-        var orchestratorObj = new GameObject("DialogueOrchestrator");
-        _orchestrator = orchestratorObj.AddComponent<DialogueOrchestrator>();
-        
-        // Register characters
-        _orchestrator.RegisterCharacter("detective", detective.CharacterPlayer);
-        _orchestrator.RegisterCharacter("suspect", suspect.CharacterPlayer);
-        
-        // Subscribe to events
-        _orchestrator.OnFrameUpdate += (frame) => {
-            dialogueDisplay.texture = frame;
-        };
-        
-        _orchestrator.OnSpeakerChanged += (speakerId) => {
-            Debug.Log($"Now speaking: {speakerId}");
-        };
-        
-        // Queue a conversation
-        PlayConversation();
+        var next = frames.WaitForNext();
+        yield return next;
+        if (next.Texture != null) rawImage.texture = next.Texture;
     }
-    
-    void PlayConversation()
-    {
-        _orchestrator.QueueDialogue("detective", "Where were you on the night of the murder?", expressionIndex: 0);
-        _orchestrator.QueueDialogue("suspect", "I was at home, I swear!", expressionIndex: 5); // surprised
-        _orchestrator.QueueDialogue("detective", "Can anyone confirm that?", expressionIndex: 0);
-        _orchestrator.QueueDialogue("suspect", "My... my wife can.", expressionIndex: 4); // sad
-    }
+    if (frames.Error != null) Debug.LogError(frames.Error);   // a faulted producer still finishes the stream
 }
 ```
 
-#### Batch Dialogue
-
-Queue multiple dialogue segments at once:
+Voice only — no avatar needed, native sample rate, `onAnimationComplete` fires
+immediately after `onAudioReady` with an empty stream:
 
 ```csharp
-var conversation = new List<DialogueOrchestrator.DialogueSegment>
+yield return character.SpeakAsync("Voice only.", expressionIndex: -1,
+    onAudioReady: (_, clip) => { audioSource.clip = clip; audioSource.Play(); },
+    onError: ex => Debug.LogError(ex));
+```
+
+`onSpeechChunk` delivers only samples not reported before, so appending chunks
+in order reproduces the utterance; it is skipped on a cache hit, where the whole
+clip is already on disk. TTS requests are serialised through one voice queue and
+MuseTalk requests through another, so concurrent `SpeakAsync` calls are safe
+and simply take turns.
+
+## DialogueOrchestrator
+
+Turn-based multi-character dialogue over several `CharacterPlayer`s: it
+switches the active speaker, stops the previous one, forwards the current
+speaker's frames, and waits for each line to finish before the next.
+
+```csharp
+var orchestrator = new GameObject("Dialogue").AddComponent<DialogueOrchestrator>();
+orchestrator.RegisterCharacter("mara", mara.CharacterPlayer);
+orchestrator.RegisterCharacter("tom",  tom.CharacterPlayer);
+orchestrator.RegisterCharacter("narrator", narrator.CharacterPlayer);   // voice-only character is fine
+
+orchestrator.OnFrameUpdate    += frame => rawImage.texture = frame;
+orchestrator.OnSpeakerChanged += id => nameLabel.text = id;
+orchestrator.OnDialogueEnded  += () => Debug.Log("scene over");
+
+orchestrator.QueueDialogue("mara", "Where were you last night?", expressionIndex: 0);
+orchestrator.QueueDialogue("tom",  "At home. I swear.",           expressionIndex: 5);
+orchestrator.QueueDialogue("narrator", "He was not at home.", withAnimation: false);
+
+orchestrator.QueueDialogueBatch(new List<DialogueOrchestrator.DialogueSegment>
 {
-    new() { CharacterId = "detective", Text = "Let's review the evidence.", ExpressionIndex = 0 },
-    new() { CharacterId = "suspect", Text = "I didn't do it!", ExpressionIndex = 5 },
-    new() { CharacterId = "detective", Text = "Then explain this.", ExpressionIndex = 0 }
-};
-
-_orchestrator.QueueDialogueBatch(conversation);
+    new() { CharacterId = "mara", Text = "Then explain this.", ExpressionIndex = 2 },
+});
 ```
 
-#### Properties
+Also: `UnregisterCharacter(id)`, `Stop()`, `ClearQueue()`, `IsPlaying`,
+`QueuedDialogueCount`, `CurrentSpeakerId`, `OnDialogueStarted`, `OnError`.
+
+## Raw animation without a character
+
+The two engines are also exposed directly; each returns a `FrameStream`.
 
 ```csharp
-bool IsPlaying { get; }                 // True if dialogue is currently playing
-int QueuedDialogueCount { get; }        // Number of queued dialogue segments
-string CurrentSpeakerId { get; }        // ID of currently speaking character
+// LivePortrait: transfer motion from driving frames onto a portrait
+FrameStream a = api.GenerateAnimatedTexturesAsync(portrait, drivingFrames /* List<Texture2D> */);
+FrameStream b = api.GenerateAnimatedTexturesAsync(portrait, videoPlayer, maxFrames: -1);
+FrameStream c = api.GenerateAnimatedTexturesAsync(portrait, "path/to/frames", maxFrames: 50);
+
+// MuseTalk: lip-sync a portrait (plus optional extra frames in a folder) to a clip
+FrameStream d = api.GenerateTalkingHeadAsync(portrait, "path/to/avatar/frames", audioClip);
 ```
 
-#### Methods
+`FrameStream`: `TotalExpectedFrames`, `HasMoreFrames`, `Error`,
+`WaitForNext()` (yieldable; read `.Texture`), `TryGetNext(out texture)`.
+
+## Caching
+
+With caching on (the default), `SpeakAsync` — and therefore `CharacterPlayer`
+and `DialogueOrchestrator` — read and write two kinds of entry under
+`cacheLocation` (default `persistentDataPath/LiveTalkCache`):
+
+| Entry | Key | On disk |
+|---|---|---|
+| Speech audio | `hash(voiceId, text)` | `<key>.wav` |
+| Lip-sync frames | `hash(voiceId, text, avatarId, expressionIndex)` | `<key>_frames/frame_000000.png …` |
+
+Because the key is the voice, not the character, two characters sharing a voice
+share the audio, a replaced voice never replays old takes, and the same line at
+two expressions never shares frames. A frames folder left short by a failed run
+is deleted rather than taken as a hit next time.
+
+Avatars, voices and characters are **not** cache and live under the save
+location; the avatar folder is its own cache (asking for the same portrait
+again loads instead of rebuilding).
 
 ```csharp
-// Register/unregister characters
-void RegisterCharacter(string characterId, CharacterPlayer player)
-void UnregisterCharacter(string characterId)
+LiveTalkAPI.CacheLocation;                 // the folder in use
+LiveTalkAPI.IsCacheEnabled;
+LiveTalkAPI.SetCacheEnabled(false);        // runtime toggle
+long bytes = LiveTalkAPI.GetCacheSizeBytes();      // walks the folder — not per frame
+LiveTalkAPI.ClearCache();
 
-// Queue dialogue
-void QueueDialogue(string characterId, string text, int expressionIndex = 0, bool withAnimation = true)
-void QueueDialogueBatch(List<DialogueSegment> segments)
-
-// Control
-void Stop()              // Stop all dialogue
-void ClearQueue()        // Remove queued dialogue
+// Both also take an explicit folder and then work BEFORE Initialize, so a
+// settings screen can show and clear the cache without paying for model setup:
+LiveTalkAPI.GetCacheSizeBytes(Path.Combine(Application.persistentDataPath, "LiveTalkCache"));
+LiveTalkAPI.ClearCache(Path.Combine(Application.persistentDataPath, "LiveTalkCache"));
 ```
 
-#### Events
+Entries written by 1.x (speech keyed on text + character id, `vs_*` voice-style
+folders, `df_*` driving-frame copies) use different key salts and are simply
+never matched again; `ClearCache` removes them.
+
+## Error handling contract
+
+- Every `IEnumerator` API with `onComplete` / `onError` fires **exactly one** of
+  them. `onComplete` is never called with a half-built or half-loaded object: a
+  missing model file, a clone the engine could not build, a voice folder that
+  did not load, an avatar expression without its latents — all reach `onError`
+  with the original exception (and the offending path where there is one).
+- A failed `CreateAvatarAsync` / `DesignVoiceAsync` / `CloneVoiceAsync` removes
+  its partial folder. Each writes into a `<id>.partial-…` staging folder that no
+  id lookup matches and moves it into place only when complete; leftovers from a
+  crash are swept on `Initialize`.
+- `SpeakAsync`: a failure after audio was handed to `onAudioReady` still fires
+  `onError`, never `onAnimationComplete`, and the `FrameStream` is finished with
+  `FrameStream.Error` set so a consumer draining it exits. `HasMoreFrames` alone
+  cannot tell a short clip from a failed one; check `Error`.
+- Synchronous calls (`CreateCharacter`, `ReplaceVoice`, `DeleteAvatar`,
+  `DeleteVoice`, `DeleteCharacter`) throw.
+- `CharacterPlayer.OnError` / `DialogueOrchestrator.OnError` relay failures of
+  queued lines; a line that fails is skipped and the queue continues.
+- Internally, every wait on a `Task` observes `IsFaulted`, every frame producer
+  marks its stream finished in `finally`, and every queue lease is released in
+  `finally`, so a fault cannot leave a consumer waiting forever or a lock held.
+
+## Memory
+
+| `MemoryUsage` | LivePortrait / MuseTalk | TTS |
+|---|---|---|
+| `Performance` | All sessions opened at `Initialize`; `WaitForAllModelsAsync` waits for them | Load eagerly, never drop |
+| `Balanced` (default) | Open on first use, keep | Load on first use, keep |
+| `Optimal` | Open per use, dispose after | Load per use, dispose after (idle ≈ embedding tables) |
+| `Quality` | FP32 variants, opened at startup | As `Performance` |
+
+The TTS checkpoints are the big number: ~7 GB resident each, and they are wanted
+in **different phases** — VoiceDesign while a voice is being chosen, Base for
+cloning and everything after. Load and drop them explicitly rather than holding
+both (these two take `QwenTTS.QwenCheckpoint`, so add `using QwenTTS;`):
 
 ```csharp
-event Action<string> OnSpeakerChanged;    // Fired when active speaker changes (characterId)
-event Action<Texture> OnFrameUpdate;      // Fired for each frame of current speaker
-event Action OnDialogueStarted;           // Dialogue sequence started
-event Action OnDialogueEnded;             // All dialogue completed
-event Action<Exception> OnError;          // Error occurred
+await LiveTalkAPI.WarmUpVoiceAsync(QwenCheckpoint.VoiceDesign);   // from a loading screen; ~10 s cold
+// … design, audition, pick …
+LiveTalkAPI.EvictVoice(QwenCheckpoint.VoiceDesign);               // memory back
+await LiveTalkAPI.WarmUpVoiceAsync(QwenCheckpoint.Base);
+
+LiveTalkAPI.Instance.UnloadTts();      // drop every TTS session; LivePortrait / MuseTalk stay
+LiveTalkAPI.VoiceModelsLoaded;         // true while either checkpoint is resident
+LiveTalkAPI.Instance.Dispose();        // dispose the inference engines (main thread; there is no finalizer)
 ```
 
-#### With Narrator (Audio-Only)
+Avatar building is the other peak: an `AllExpressions` avatar keeps the
+generated frames in memory while MuseTalk precomputes latents unless
+`MemoryUsage.Optimal`, which streams them through disk. 32 GB is comfortable
+for creation; 16 GB works with one TTS checkpoint resident and `Optimal`.
 
-```csharp
-// Register narrator as audio-only character
-_orchestrator.RegisterCharacter("narrator", narratorCharacter.CharacterPlayer);
+## Migrating from 1.x
 
-// Queue narrator dialogue without animation
-_orchestrator.QueueDialogue("narrator", "Meanwhile, in another part of town...", 
-    expressionIndex: 0, withAnimation: false);
-```
+2.0 is a breaking release: the TTS backend changed (Spark-TTS → Qwen3-TTS, so
+1.x voice folders cannot be reused), the character folder format changed from
+copies to references, and the cache keys changed.
 
-#### Integration with UI Toolkit
+| 1.x | 2.0 |
+|---|---|
+| `CreateCharacterAsync(name, gender, image, pitch, speed, intro, voicePromptPath, onComplete, onError, …)` | `[Obsolete]`, still works: forwards to `CreateAvatarAsync` + (`CloneVoiceAsync` when `voicePromptPath` is given, else `DesignVoiceAsync` with `intro` as the sample text) + `CreateCharacter`, and produces a 2.0 reference character with a GUID id. `useBundle` is ignored. Call the three directly. |
+| `GenerateVoicePreviewAsync` → `VoicePreviewResult` | `[Obsolete]`; the preview is now a saved `Voice` (`VoicePreviewResult.Voice`, `VoiceFolderPath` = its folder). Use `DesignVoiceAsync`; discard with `DeleteVoice`. `CleanupVoicePreviews` / `DeleteVoicePreview` likewise. |
+| `Character.Gender` / `Pitch` / `Speed` / `Intro` / `VoiceInstruct` / `VoiceCloneRefText` / `VoicePromptClip` | `[Obsolete]` forwards to `Character.Voice.Gender` / `Pitch` / `Speed` / `SampleText` / `Instruct` / `SampleText` / `Sample`. |
+| `Character.CharacterId` settable | Read-only. `Character.Id` is the same value, a GUID assigned at creation. |
+| `Character.CharacterPlayer` created eagerly on load | Created lazily on first access; `DestroyPlayer()` tears it down. |
+| `PlaybackState.Idle` | `PlaybackState.Ready` (same value; `Idle` is an `[Obsolete]` alias). `Ready` also means idle frames are loaded. |
+| `CharacterPlayer.IsPlaying` true while Idle or Speaking | True only while `Speaking`. `DialogueOrchestrator` relies on this; if you polled `IsPlaying` as "loaded", use `IsReady` / `OnReady`. |
+| `QueueSpeech` before load: dropped with a warning | Enqueued; drains on `OnReady`. |
+| Inline character folders `<saveLocation>/<id>[.bundle]/` with `image.png`, `drivingFrames/`, `voice/` | Still load via `LoadCharacterAsyncFromId` / `LoadCharacterMetadataAsync` / `GetAvailableCharacterIds` (`Character.IsLegacy`, logged once), **read-only**: their voice cannot be replaced and their halves cannot be shared or deleted on their own. Recreate through the 2.0 API to migrate. The 2.0 layout never writes `.bundle` folders (`CanUseBundle()` only says whether legacy ones can be read). |
+| Speech cache keyed on text + character id, no expression | Keyed on voice + text (+ avatar + expression for frames). Old entries are ignored; `ClearCache` reclaims them. `vs_*` / `df_*` folders are gone. |
+| `Character.CreateAvatarAsync(...)` instance method | Removed. Use `LiveTalkAPI.CreateAvatarAsync`. |
+| `LiveTalkAPI.WaitForAllModelsAsync` warmed the TTS | Waits for LivePortrait / MuseTalk only. Use `WarmUpVoiceAsync`. |
 
-```csharp
-// In your UI Controller
-private DialogueOrchestrator _orchestrator;
-private VisualElement _speakerDisplay;
-private Label _speakerNameLabel;
+Removed without replacement: `StartSpeakWithCallbacks` (the 1.x README described
+it, but `SpeakAsync` with `onAudioReady` / `onAnimationComplete` is and was the
+method), `QueueSpeechBatch`, `HasQueuedSpeech` (use `QueuedSpeechCount`).
 
-void SetupDialogue()
-{
-    // Subscribe to frame updates
-    _orchestrator.OnFrameUpdate += (frame) => {
-        _speakerDisplay.style.backgroundImage = new StyleBackground(frame);
-    };
-    
-    // Update UI when speaker changes
-    _orchestrator.OnSpeakerChanged += (speakerId) => {
-        _speakerNameLabel.text = speakerId;
-    };
-    
-    _orchestrator.OnDialogueEnded += () => {
-        Debug.Log("Conversation finished!");
-    };
-}
-```
+## Requirements and performance
 
-### FrameStream Class
+- Unity 6000.0.46f1 or newer.
+- macOS with CoreML tested (Apple silicon). Windows compiles, untested.
+- RAM: 32 GB recommended for avatar creation with a TTS checkpoint resident;
+  see [Memory](#memory).
+- Disk: ~7 GB LivePortrait + MuseTalk ONNX, plus ~8 GB per Qwen3-TTS checkpoint.
 
-#### Properties
-```csharp
-int TotalExpectedFrames { get; set; }
-bool HasMoreFrames { get; }
-```
+Measured on a MacBook Pro M4 Max, ONNX Runtime with the CoreML execution
+provider:
 
-#### Methods
-```csharp
-FrameAwaiter WaitForNext() // For use in coroutines
-bool TryGetNext(out Texture2D texture) // Non-blocking retrieval
-```
-
-## Configuration Options
-
-### LogLevel Enum
-- `VERBOSE`: Detailed debugging information
-- `INFO`: General information messages (default)
-- `WARNING`: Warning messages only
-- `ERROR`: Error messages only
-
-### MemoryUsage Enum
-- `Quality`: Uses FP32 models for maximum quality (not recommended - minimal quality improvement)
-- `Performance`: Loads all models upfront for faster first-time inference (desktop)
-- `Balanced`: Loads models on-demand, recommended for desktop devices (default)
-- `Optimal`: Minimal memory footprint, recommended for mobile devices
-
-### CreationMode Enum
-- `VoiceOnly`: Only generates voice, no visual expressions
-- `SingleExpression`: Generates voice and talk-neutral expression only
-- `AllExpressions`: Generates voice and all 7 expressions (default)
-
-### Character Configuration
-- **Gender**: `Male`, `Female`
-- **Pitch**: `VeryLow`, `Low`, `Moderate`, `High`, `VeryHigh`
-- **Speed**: `VeryLow`, `Low`, `Moderate`, `High`, `VeryHigh`
-
-## Requirements
-
-- Unity 6000.0.46f1 or later
-- Platforms: macOS (CPU/CoreML), Windows (Not tested)
-- Minimum 32GB RAM recommended for character creations
-- Storage space for models (~10GB total: ~7GB LiveTalk + ~3GB SparkTTS)
-
-## Performance
-
-**MacBook Pro M4 Max (Onnx with CoreML Execution Provider)**:
-  - Speech With LipSync generation - 10-11 FPS
-  - Character Creation - 10 minutes per character (all expressions)
-  - Character Creation - ~2 minutes per character (single expression)
-  
-### Model Execution Times (Mac M4)
-
-**LivePortrait Pipeline - 4 FPS**:
-- `motion_extractor` (FP32): 30-60ms
-- `warping_spade` (FP16): 180-250ms  
-- `landmark_runner` (FP32): 2-3ms
-
-**MuseTalk Pipeline - 11-12 FPS**:
-- `vae_encoder` (FP16): 20-30ms
-- `unet` (FP16): 30-40ms
-- `vae_decoder` (FP16): 30-50ms
+| Stage | |
+|---|---|
+| Speech with lip-sync | 10–11 fps generated |
+| Avatar creation, `SingleExpression` | ~2 minutes |
+| Avatar creation, `AllExpressions` | ~10 minutes |
+| LivePortrait pipeline | ~4 fps (`motion_extractor` 30–60 ms, `warping_spade` fp16 180–250 ms, `landmark` 2–3 ms) |
+| MuseTalk pipeline | 11–12 fps (`vae_encoder` 20–30 ms, `unet` 30–40 ms, `vae_decoder` 30–50 ms) |
+| TTS | ~0.97× real time; first streamed chunk in ~1 s; ~11 s cold session open per checkpoint |
 
 ## License
 
-This project is licensed under the MIT License, following the licensing of the underlying technologies:
+This package is licensed under the [MIT License](LICENSE).
 
-- **LivePortrait**: Licensed under the MIT License
-- **MuseTalk**: Licensed under the MIT License  
-- **SparkTTS**: Licensed under the Apache License 2.0
-- **Other dependencies**: Licensed under their respective open-source licenses
+It builds on, and its model exports derive from:
 
-See the [LICENSE](LICENSE) file for details.
-
-### Third-Party Licenses
-
-This project incorporates code and models from several open-source projects:
-- [LivePortrait](https://github.com/KwaiVGI/LivePortrait) - Portrait animation technology
-- [MuseTalk](https://github.com/TMElyralab/MuseTalk) - Real-time lip synchronization  
-- [SparkTTS](https://github.com/arghyasur1991/Spark-TTS-Unity) - Text-to-speech synthesis
-- ONNX Runtime - Cross-platform ML inference
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines and submit pull requests for any improvements.
-
-## Credits
-
-- **LivePortrait Team** at KwaiVGI for portrait animation technology
-- **MuseTalk Team** at TMElyralab for lip synchronization technology
-- **SparkTTS Team** for text-to-speech synthesis
-- ONNX Runtime team for cross-platform ML inference
+- [LivePortrait](https://github.com/KwaiVGI/LivePortrait) — MIT License
+- [MuseTalk](https://github.com/TMElyralab/MuseTalk) — MIT License
+- [Qwen3-TTS-Unity](https://github.com/arghyasur1991/Qwen3-TTS-Unity) — Apache License 2.0.
+  The Qwen3-TTS weights are Alibaba's, released under Apache-2.0 and not part
+  of either package; check the model cards before shipping:
+  [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign),
+  [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base).
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime) and
+  [onnxruntime-unity](https://github.com/asus4/onnxruntime-unity) — MIT License
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+See [CHANGELOG.md](CHANGELOG.md).

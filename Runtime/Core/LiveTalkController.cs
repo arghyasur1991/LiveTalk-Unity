@@ -22,7 +22,24 @@ namespace LiveTalk.Core
             {
                 TotalExpectedFrames = frameFiles.Length
             };
-            StartCoroutine(LoadDrivingFramesAsync(frameFiles, _drivingFramesStream));
+            StartCoroutine(Produce(LoadDrivingFramesAsync(frameFiles, _drivingFramesStream), _drivingFramesStream,
+                "LiveTalkController.LoadDrivingFrames(files)"));
+        }
+
+        /// <summary>
+        /// Runs a frame producer under <see cref="TaskYield.Guard"/> so a fault
+        /// is logged, recorded on the stream, and can never leave a consumer
+        /// waiting on an unfinished stream.
+        /// </summary>
+        internal static IEnumerator Produce(IEnumerator producer, FrameStream stream, string context)
+        {
+            return TaskYield.Guard(producer, ex =>
+            {
+                // The stream is the only channel back to whoever is draining
+                // it, and they may not check Error — so log here as well.
+                Logger.LogError($"[{context}] Frame producer failed: {ex.GetType().Name}: {ex.Message}");
+                stream.Fail(ex);
+            }, context);
         }
 
         public void LoadDrivingFrames(VideoPlayer videoPlayer, int maxFrames = -1)
@@ -44,7 +61,8 @@ namespace LiveTalk.Core
             {
                 TotalExpectedFrames = frameCount
             };
-            StartCoroutine(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream, maxFrames));
+            StartCoroutine(Produce(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream, maxFrames), _drivingFramesStream,
+                "LiveTalkController.LoadDrivingFrames(video)"));
         }
 
         private void OnFrameReady(VideoPlayer source, long frameIndex)
@@ -122,38 +140,51 @@ namespace LiveTalk.Core
                 yield break;
             }
 
-            // Prepare the video player - don't set custom targetTexture, let VideoPlayer handle it
-            videoPlayer.isLooping = false;
-            videoPlayer.playOnAwake = false;
-            videoPlayer.skipOnDrop = false;
-            
-            // Prepare and wait for video to be ready
-            videoPlayer.Prepare();
-            yield return new WaitUntil(() => videoPlayer.isPrepared);
-            
-            // Wait an additional frame to ensure everything is set up
-            yield return null;
+            try
+            {
+                // Prepare the video player - don't set custom targetTexture, let VideoPlayer handle it
+                videoPlayer.isLooping = false;
+                videoPlayer.playOnAwake = false;
+                videoPlayer.skipOnDrop = false;
 
-            // Initialize frame processing variables
-            _totalFramesToProcess = maxFrames == -1 ? (int)videoPlayer.clip.frameCount :
-                                     Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
-            
-            Logger.LogVerbose($"[LiveTalkController] Video prepared. Frame count: {_totalFramesToProcess}, Video size: {videoPlayer.clip.width}x{videoPlayer.clip.height}");
-            
-            // Enable frameReady events and subscribe to the event
-            videoPlayer.sendFrameReadyEvents = true;
-            videoPlayer.frameReady += OnFrameReady;
-            
-            // Start playback - this will trigger frameReady events for each frame
-            videoPlayer.Play();
-            
-            // Wait a frame after starting playback
-            yield return null;
-            
-            Logger.LogVerbose($"[LiveTalkController] VideoPlayer started. IsPlaying: {videoPlayer.isPlaying}");
-            
-            // Wait for all frames to be processed
-            yield return new WaitUntil(() => stream.Finished);
+                // Prepare and wait for video to be ready
+                videoPlayer.Prepare();
+                yield return new WaitUntil(() => videoPlayer.isPrepared);
+
+                // Wait an additional frame to ensure everything is set up
+                yield return null;
+
+                // Initialize frame processing variables
+                _totalFramesToProcess = maxFrames == -1 ? (int)videoPlayer.clip.frameCount :
+                                         Mathf.Min(maxFrames, (int)videoPlayer.clip.frameCount);
+
+                Logger.LogVerbose($"[LiveTalkController] Video prepared. Frame count: {_totalFramesToProcess}, Video size: {videoPlayer.clip.width}x{videoPlayer.clip.height}");
+
+                // Enable frameReady events and subscribe to the event
+                videoPlayer.sendFrameReadyEvents = true;
+                videoPlayer.frameReady += OnFrameReady;
+
+                // Start playback - this will trigger frameReady events for each frame
+                videoPlayer.Play();
+
+                // Wait a frame after starting playback
+                yield return null;
+
+                Logger.LogVerbose($"[LiveTalkController] VideoPlayer started. IsPlaying: {videoPlayer.isPlaying}");
+
+                // Wait for all frames to be processed
+                yield return new WaitUntil(() => stream.Finished);
+            }
+            finally
+            {
+                // Normally OnFrameReady has already stopped the player and
+                // unsubscribed; this covers the coroutine being stopped or
+                // disposed mid-way, so a dead loader never leaves the event
+                // hooked or the consumer waiting.
+                videoPlayer.frameReady -= OnFrameReady;
+                videoPlayer.sendFrameReadyEvents = false;
+                stream.Finished = true;
+            }
         }
 
         /// <summary>
@@ -161,52 +192,54 @@ namespace LiveTalk.Core
         /// </summary>
         private IEnumerator LoadDrivingFramesAsync(string[] frameFiles, FrameStream stream)
         {
-            for (int i = 0; i < frameFiles.Length; i++)
+            try
             {
-                string filePath = frameFiles[i];
-                
-                // Load frame data asynchronously - outside try-catch to avoid yield in try-catch
-                var loadFileTask = File.ReadAllBytesAsync(filePath);
-                yield return new WaitUntil(() => loadFileTask.IsCompleted);
-                
-                try
+                for (int i = 0; i < frameFiles.Length; i++)
                 {
-                    if (loadFileTask.IsFaulted)
+                    string filePath = frameFiles[i];
+
+                    // An unreadable driving frame fails the load. Skipping it
+                    // used to produce a silently shorter animation; the bridge
+                    // logs the file and rethrows so the consumer sees an error.
+                    byte[] fileData = null;
+                    yield return TaskYield.Wait(File.ReadAllBytesAsync(filePath), b => fileData = b,
+                        $"LiveTalkController.LoadDrivingFrame {filePath}");
+
+                    try
                     {
-                        Logger.LogError($"[LivePortraitMuseTalkAPI] Error loading driving frame {filePath}: {loadFileTask.Exception?.GetBaseException().Message}");
-                        continue;
-                    }
-                    
-                    byte[] fileData = loadFileTask.Result;
-                    Texture2D texture = new(2, 2);
-                    
-                    if (texture.LoadImage(fileData))
-                    {
-                        texture.name = Path.GetFileNameWithoutExtension(filePath);
-                        var rgbTexture = TextureUtils.ConvertTexture2DToRGB24(texture);
-                        stream.Queue.Enqueue(rgbTexture);
-                        
-                        // Clean up original texture if different
-                        if (rgbTexture != texture)
+                        Texture2D texture = new(2, 2);
+
+                        if (texture.LoadImage(fileData))
                         {
+                            texture.name = Path.GetFileNameWithoutExtension(filePath);
+                            var rgbTexture = TextureUtils.ConvertTexture2DToRGB24(texture);
+                            stream.Queue.Enqueue(rgbTexture);
+
+                            // Clean up original texture if different
+                            if (rgbTexture != texture)
+                            {
+                                UnityEngine.Object.DestroyImmediate(texture);
+                            }
+                        }
+                        else
+                        {
+                            Logger.LogWarning($"[LivePortraitMuseTalkAPI] Failed to load image: {filePath}");
                             UnityEngine.Object.DestroyImmediate(texture);
                         }
                     }
-                    else
+                    catch (Exception e)
                     {
-                        Logger.LogWarning($"[LivePortraitMuseTalkAPI] Failed to load image: {filePath}");
-                        UnityEngine.Object.DestroyImmediate(texture);
+                        Logger.LogError($"[LivePortraitMuseTalkAPI] Error processing driving frame {filePath}: {e.Message}");
                     }
+                    yield return null;
                 }
-                catch (Exception e)
-                {
-                    Logger.LogError($"[LivePortraitMuseTalkAPI] Error processing driving frame {filePath}: {e.Message}");
-                }
-                yield return null;
-            }
 
-            stream.Finished = true;
-            Logger.Log($"[LivePortraitMuseTalkAPI] Finished loading driving frames");
+                Logger.Log($"[LivePortraitMuseTalkAPI] Finished loading driving frames");
+            }
+            finally
+            {
+                stream.Finished = true;
+            }
         }
     }
 }

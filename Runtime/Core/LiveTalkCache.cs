@@ -100,90 +100,46 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Get the folder path for a given cache key (for caching folder-based content like voice data).
-        /// </summary>
-        /// <param name="cacheKey">The unique cache key</param>
-        /// <returns>Full path to the cached folder, or null if cache not initialized</returns>
-        public static string GetFolderPath(string cacheKey)
-        {
-            if (!IsEnabled || string.IsNullOrEmpty(cacheKey))
-                return null;
-            
-            return System.IO.Path.Combine(_path, cacheKey);
-        }
-
-        /// <summary>
-        /// Check if a cached folder exists for the given cache key.
-        /// </summary>
-        /// <param name="cacheKey">The unique cache key</param>
-        /// <returns>Tuple of (exists, folderPath)</returns>
-        public static (bool exists, string folderPath) CheckFolderExists(string cacheKey)
-        {
-            if (!IsEnabled || string.IsNullOrEmpty(cacheKey))
-                return (false, null);
-
-            string folderPath = GetFolderPath(cacheKey);
-            if (Directory.Exists(folderPath) && Directory.GetFiles(folderPath).Length > 0)
-                return (true, folderPath);
-
-            return (false, null);
-        }
-
-        /// <summary>
-        /// Recursively copy all files and subdirectories from source folder to destination folder.
-        /// </summary>
-        /// <param name="sourceFolder">Source folder path</param>
-        /// <param name="destFolder">Destination folder path</param>
-        public static void CopyFolder(string sourceFolder, string destFolder)
-        {
-            if (!Directory.Exists(sourceFolder))
-                return;
-
-            if (!Directory.Exists(destFolder))
-                Directory.CreateDirectory(destFolder);
-
-            // Copy all files
-            foreach (var file in Directory.GetFiles(sourceFolder))
-            {
-                string fileName = System.IO.Path.GetFileName(file);
-                string destFile = System.IO.Path.Combine(destFolder, fileName);
-                File.Copy(file, destFile, true);
-            }
-
-            // Recursively copy all subdirectories
-            foreach (var dir in Directory.GetDirectories(sourceFolder))
-            {
-                string dirName = System.IO.Path.GetFileName(dir);
-                string destSubDir = System.IO.Path.Combine(destFolder, dirName);
-                CopyFolder(dir, destSubDir);
-            }
-        }
-
-        /// <summary>
-        /// Clear all cached content (files and folders).
+        /// Clear all cached content (files and folders) in the initialized cache.
+        /// No-op before <see cref="Initialize"/>; use <see cref="Clear(string)"/>
+        /// with an explicit location then.
         /// </summary>
         public static void Clear()
         {
             if (!_initialized || string.IsNullOrEmpty(_path))
                 return;
+            Clear(_path);
+        }
+
+        /// <summary>
+        /// Clear all cached content under an explicit cache location. Works
+        /// before <see cref="Initialize"/>, so a host can offer "clear cache"
+        /// without first paying for model initialization. The folder itself
+        /// is kept.
+        /// </summary>
+        /// <param name="cachePath">The cache folder to empty</param>
+        public static void Clear(string cachePath)
+        {
+            if (string.IsNullOrEmpty(cachePath))
+                return;
 
             try
             {
-                if (Directory.Exists(_path))
+                if (Directory.Exists(cachePath))
                 {
                     int filesCleared = 0;
                     int foldersCleared = 0;
                     
                     // Clear all files
-                    var files = Directory.GetFiles(_path);
+                    var files = Directory.GetFiles(cachePath);
                     foreach (var file in files)
                     {
                         File.Delete(file);
                         filesCleared++;
                     }
                     
-                    // Clear all subdirectories (voice sample folders, etc.)
-                    var directories = Directory.GetDirectories(_path);
+                    // Clear all subdirectories (per-utterance frame folders)
+                    var directories = Directory.GetDirectories(cachePath);
                     foreach (var dir in directories)
                     {
                         Directory.Delete(dir, true);
@@ -200,16 +156,31 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Get the total size of all cached content in bytes (files and folders).
+        /// Get the total size of all cached content in bytes (files and folders)
+        /// in the initialized cache. 0 before <see cref="Initialize"/>; use
+        /// <see cref="GetSize(string)"/> with an explicit location then.
         /// </summary>
         public static long GetSize()
         {
-            if (!_initialized || string.IsNullOrEmpty(_path) || !Directory.Exists(_path))
+            if (!_initialized || string.IsNullOrEmpty(_path))
+                return 0;
+            return GetSize(_path);
+        }
+
+        /// <summary>
+        /// Get the total size in bytes of everything under an explicit cache
+        /// location. Works before <see cref="Initialize"/>. 0 when the folder
+        /// does not exist or cannot be read.
+        /// </summary>
+        /// <param name="cachePath">The cache folder to measure</param>
+        public static long GetSize(string cachePath)
+        {
+            if (string.IsNullOrEmpty(cachePath) || !Directory.Exists(cachePath))
                 return 0;
 
             try
             {
-                return GetDirectorySize(_path);
+                return GetDirectorySize(cachePath);
             }
             catch
             {
@@ -243,9 +214,11 @@ namespace LiveTalk.Core
 
         /// <summary>
         /// Get the folder path for cached animation frames.
-        /// Uses the same cache key as speech with "_frames" suffix.
+        /// The frames key (from <c>HashUtils.GenerateFramesCacheKey</c>) covers
+        /// voice, text, avatar and expression; the folder is that key with a
+        /// "_frames" suffix.
         /// </summary>
-        /// <param name="speechCacheKey">The speech cache key (from GenerateSpeechCacheKey)</param>
+        /// <param name="speechCacheKey">The frames cache key</param>
         /// <returns>Full path to the frames folder, or null if cache not initialized</returns>
         public static string GetFramesFolderPath(string speechCacheKey)
         {
@@ -256,10 +229,10 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Check if cached animation frames exist for the given speech cache key.
+        /// Check if cached animation frames exist for the given frames cache key.
         /// Validates that all expected frames are present.
         /// </summary>
-        /// <param name="speechCacheKey">The speech cache key</param>
+        /// <param name="speechCacheKey">The frames cache key</param>
         /// <param name="expectedFrameCount">Expected number of frames (0 means check existence only)</param>
         /// <returns>Tuple of (exists, folderPath, actualFrameCount)</returns>
         public static (bool exists, string folderPath, int frameCount) CheckFramesCacheExists(

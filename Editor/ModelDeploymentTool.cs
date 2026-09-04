@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using SparkTTS.Editor;
 
 namespace LiveTalk.Editor
 {
@@ -30,7 +29,7 @@ namespace LiveTalk.Editor
             public bool isRequired;
             public long fileSize;
             public string fullPath;
-            public string source; // "LiveTalk" or "SparkTTS"
+            public string source; // always "LiveTalk"; TTS weights are not deployed here
 
             public ModelConfig(string name, string path, string prec, string provider, bool required = true, string source = "LiveTalk")
             {
@@ -77,7 +76,6 @@ namespace LiveTalk.Editor
 
         [SerializeField] private Vector2 scrollPosition;
         [SerializeField] private bool showAdvancedOptions = false;
-        [SerializeField] private bool includeSparkTTS = true;
         [SerializeField] private bool includeLivePortrait = true;
         [SerializeField] private bool includeMuseTalk = true;
         [SerializeField] private bool overwriteExisting = true;
@@ -158,15 +156,9 @@ namespace LiveTalk.Editor
         {
             EditorGUILayout.LabelField("Model Selection", EditorStyles.boldLabel);
             
-            // Component toggles
-            includeSparkTTS = EditorGUILayout.Toggle("Include SparkTTS Models (via SparkTTS package)", includeSparkTTS);
-            if (includeSparkTTS)
-            {
-                EditorGUI.indentLevel++;
-                EditorGUILayout.HelpBox("SparkTTS models will be deployed using the SparkTTS-Unity package deployment tool.", MessageType.Info);
-                EditorGUI.indentLevel--;
-            }
-            
+            // Component toggles. TTS weights are not handled here: that
+            // package takes an explicit model root instead of requiring a copy
+            // under StreamingAssets. See Window > Qwen3 TTS > Model Status.
             includeLivePortrait = EditorGUILayout.Toggle("Include LivePortrait Models", includeLivePortrait);
             includeMuseTalk = EditorGUILayout.Toggle("Include MuseTalk Models", includeMuseTalk);
             
@@ -190,14 +182,6 @@ namespace LiveTalk.Editor
             else if (includeLivePortrait || includeMuseTalk)
             {
                 EditorGUILayout.HelpBox("No LiveTalk models selected or available.", MessageType.Warning);
-            }
-            
-            // SparkTTS status
-            if (includeSparkTTS)
-            {
-                EditorGUILayout.Space();
-                EditorGUILayout.LabelField("SparkTTS Models:", EditorStyles.boldLabel);
-                EditorGUILayout.HelpBox("✓ SparkTTS deployment tool integrated - models will be deployed automatically", MessageType.Info);
             }
         }
 
@@ -259,16 +243,10 @@ namespace LiveTalk.Editor
                 RefreshModelList();
             }
             
-            bool hasSelection = includeSparkTTS || includeLivePortrait || includeMuseTalk;
+            bool hasSelection = includeLivePortrait || includeMuseTalk;
             EditorGUI.BeginDisabledGroup(!hasSelection);
-            
-            string buttonText = "Deploy Selected Models";
-            if (includeSparkTTS && (includeLivePortrait || includeMuseTalk))
-                buttonText = "Deploy All Models";
-            else if (includeSparkTTS)
-                buttonText = "Deploy SparkTTS Models";
-            else if (includeLivePortrait || includeMuseTalk)
-                buttonText = "Deploy LiveTalk Models";
+
+            string buttonText = hasSelection ? "Deploy LiveTalk Models" : "Deploy Selected Models";
             
             if (GUILayout.Button(buttonText, GUILayout.Height(30)))
             {
@@ -306,21 +284,10 @@ namespace LiveTalk.Editor
             if (includeMuseTalk)
                 AddModelsFromCategory("MuseTalk");
             
-            // Add SparkTTS models if selected
-            if (includeSparkTTS)
-                AddSparkTTSModels();
-            
             // Calculate file sizes and validate paths
             foreach (var model in selectedModels)
             {
-                if (model.source == "LiveTalk")
-                {
-                    UpdateModelInfo(model);
-                }
-                else if (model.source == "SparkTTS")
-                {
-                    UpdateSparkTTSModelInfo(model);
-                }
+                UpdateModelInfo(model);
             }
             
             Repaint();
@@ -332,62 +299,6 @@ namespace LiveTalk.Editor
             {
                 selectedModels.AddRange(ModelConfigurations[category]);
             }
-        }
-
-        private void AddSparkTTSModels()
-        {
-            try
-            {
-                // Get SparkTTS model configurations from the SparkTTS deployment tool
-                var sparkTTSConfigs = GetSparkTTSModelConfigurations();
-                
-                foreach (var config in sparkTTSConfigs)
-                {
-                    var liveTalkConfig = new ModelConfig(
-                        config.modelName,
-                        config.relativePath,
-                        config.precision,
-                        "CPU", // Default execution provider for SparkTTS models
-                        config.isRequired,
-                        "SparkTTS"
-                    );
-                    selectedModels.Add(liveTalkConfig);
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[LiveTalk] Could not load SparkTTS models: {ex.Message}");
-            }
-        }
-
-        private List<SparkTTS.Editor.ModelDeploymentTool.ModelConfig> GetSparkTTSModelConfigurations()
-        {
-            var configs = new List<SparkTTS.Editor.ModelDeploymentTool.ModelConfig>();
-            
-            // Get SparkTTS model configurations using the public API
-            configs.AddRange(SparkTTS.Editor.ModelDeploymentTool.GetModelConfigurations("SparkTTS"));
-            configs.AddRange(SparkTTS.Editor.ModelDeploymentTool.GetModelConfigurations("SparkTTS_LLM"));
-            
-            return configs;
-        }
-
-        private void UpdateSparkTTSModelInfo(ModelConfig model)
-        {
-            // Create a SparkTTS ModelConfig to use with the SparkTTS tool
-            var sparkTTSModel = new SparkTTS.Editor.ModelDeploymentTool.ModelConfig(
-                model.modelName,
-                model.relativePath,
-                model.precision,
-                model.isRequired
-            );
-            
-            // Use SparkTTS tool to update model info
-            sparkTTSModel = SparkTTS.Editor.ModelDeploymentTool.UpdateModelInfo(sparkTTSModel, sourceModelsPath);
-            
-            // Copy updated values back to our model
-            model.fullPath = sparkTTSModel.fullPath;
-            model.fileSize = sparkTTSModel.fileSize;
-            totalSelectedSize += model.fileSize;
         }
 
         private void UpdateModelInfo(ModelConfig model)
@@ -467,14 +378,13 @@ namespace LiveTalk.Editor
         private void DeployModels()
         {
             // Validate that at least one component is selected
-            if (!includeSparkTTS && !includeLivePortrait && !includeMuseTalk)
+            if (!includeLivePortrait && !includeMuseTalk)
             {
                 EditorUtility.DisplayDialog("No Models Selected", "Please select at least one model category to deploy.", "OK");
                 return;
             }
             
             bool liveTalkSuccess = true;
-            bool sparkTTSSuccess = true;
             int totalDeployed = 0;
 
             // Deploy LiveTalk models
@@ -505,26 +415,18 @@ namespace LiveTalk.Editor
                 }
             }
 
-            // Deploy SparkTTS models if selected
-            if (includeSparkTTS)
-            {
-                sparkTTSSuccess = DeploySparkTTSModels();
-            }
-
             // Show final result
-            if (!dryRun && (liveTalkSuccess || sparkTTSSuccess))
+            if (!dryRun && liveTalkSuccess)
             {
                 AssetDatabase.Refresh();
                 
                 string message = "Deployment completed:\n";
                 if (liveTalkSuccess && selectedModels?.Count > 0)
                     message += $"• LiveTalk: {selectedModels.Count} models deployed\n";
-                if (sparkTTSSuccess)
-                    message += $"• SparkTTS: Models deployed via SparkTTS package\n";
                 
                 EditorUtility.DisplayDialog("Deployment Complete", message, "OK");
             }
-            else if (!liveTalkSuccess || !sparkTTSSuccess)
+            else if (!liveTalkSuccess)
             {
                 EditorUtility.DisplayDialog("Deployment Error", "Some deployments failed. Check console for details.", "OK");
             }
@@ -566,47 +468,6 @@ namespace LiveTalk.Editor
                     EditorUtility.ClearProgressBar();
                 }
                 Debug.LogError($"[LiveTalk] Model deployment failed: {ex}");
-                return false;
-            }
-        }
-
-        private bool DeploySparkTTSModels()
-        {
-            try
-            {
-                // Create SparkTTS deployment options
-                var options = new SparkTTS.Editor.ModelDeploymentTool.DeploymentOptions
-                {
-                    OverwriteExisting = overwriteExisting,
-                    CreateBackup = createBackup,
-                    DryRun = dryRun,
-                    IncludeSparkTTS = true,
-                    IncludeLLM = true
-                };
-
-                // Call SparkTTS deployment
-                string sparkTTSSourcePath = Path.Combine(Application.dataPath, "Models");
-                string sparkTTSDestPath = Application.streamingAssetsPath;
-                
-                bool success = SparkTTS.Editor.ModelDeploymentTool.DeploySparkTTSModels(
-                    sparkTTSSourcePath, 
-                    sparkTTSDestPath, 
-                    options);
-                
-                if (success)
-                {
-                    Debug.Log("[LiveTalk] SparkTTS models deployed successfully via SparkTTS package.");
-                }
-                else
-                {
-                    Debug.LogError("[LiveTalk] SparkTTS deployment failed.");
-                }
-                
-                return success;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[LiveTalk] Failed to deploy SparkTTS models: {ex.Message}");
                 return false;
             }
         }
