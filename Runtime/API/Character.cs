@@ -915,8 +915,11 @@ namespace LiveTalk.API
                 bool framesFromCache = false;
                 if (!string.IsNullOrEmpty(framesCacheKey) && LiveTalkCache.IsEnabled)
                 {
+                    // Frames nest one level down per expression, so this must
+                    // be the recursive check — the flat one reports a fully
+                    // populated entry as missing.
                     var (cachedExists, cachedFrames) =
-                        LiveTalkCache.CheckFolderExists(framesCacheKey);
+                        LiveTalkCache.CheckFolderTreeExists(framesCacheKey, "*.png");
                     if (cachedExists)
                     {
                         Logger.Log("[Character] Reusing cached driving frames for this "

@@ -130,6 +130,36 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
+        /// Check if a cached folder exists, counting files at any depth.
+        ///
+        /// <see cref="CheckFolderExists"/> only counts files sitting directly
+        /// in the folder, which is right for a voice folder but wrong for
+        /// anything that nests. Driving frames live one level down in a
+        /// per-expression folder, so the flat check reports "missing" for a
+        /// fully populated entry and the cache can never hit.
+        /// </summary>
+        /// <param name="cacheKey">The unique cache key</param>
+        /// <param name="searchPattern">File pattern to require, e.g. "*.png"</param>
+        /// <returns>Tuple of (exists, folderPath)</returns>
+        public static (bool exists, string folderPath) CheckFolderTreeExists(
+            string cacheKey, string searchPattern = "*")
+        {
+            if (!IsEnabled || string.IsNullOrEmpty(cacheKey))
+                return (false, null);
+
+            string folderPath = GetFolderPath(cacheKey);
+            if (!Directory.Exists(folderPath))
+                return (false, folderPath);
+
+            var any = Directory.EnumerateFiles(
+                folderPath, searchPattern, SearchOption.AllDirectories).GetEnumerator();
+            using (any as IDisposable)
+            {
+                return (any.MoveNext(), folderPath);
+            }
+        }
+
+        /// <summary>
         /// Recursively copy all files and subdirectories from source folder to destination folder.
         /// </summary>
         /// <param name="sourceFolder">Source folder path</param>
