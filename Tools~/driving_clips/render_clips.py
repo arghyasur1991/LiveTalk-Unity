@@ -61,8 +61,12 @@ CHANNELS = {
     "nostrils": ("Expressions_nostrilsExpansion_max", None),
 }
 BONE_CHANNELS = ("pitch", "yaw", "roll", "spine_roll", "spine_pitch", "rise")
-OVERDRIVE = ("browL", "browR", "browMid")     # channels allowed above 1.0
-OVERDRIVE_MAX = 1.5
+# Channels allowed above 1.0 (both the _max and _min key). LivePortrait
+# transfers brows and mouth corners conservatively (measured 0.3-0.7x), and
+# MB-Lab's mouthSmile_min at 1.0 drops the corners by only ~5 px at 512, so
+# a legible frown needs the key over-driven.
+OVERDRIVE = ("browL", "browR", "browMid", "smile", "lowerOut", "wide")
+OVERDRIVE_MAX = 1.7
 GAZE_PER_DEG = 1.0 / 36.0       # eyesHoriz 1.0 ~ 36 deg (measured on the atlas)
 
 
@@ -287,7 +291,7 @@ def apply(body, arm, frames):
         for c, (kmax, kmin) in CHANNELS.items():
             v = ch[c]
             lim = OVERDRIVE_MAX if c in OVERDRIVE else 1.0
-            vmax = max(0.0, min(lim, v)); vmin = max(0.0, min(1.0, -v)) if kmin else 0.0
+            vmax = max(0.0, min(lim, v)); vmin = max(0.0, min(lim, -v)) if kmin else 0.0
             kb[kmax].value = vmax
             if kmin:
                 kb[kmin].value = vmin

@@ -40,7 +40,7 @@ HAIR_STRANDS = 16000   # short cut needs density for coverage
 HAIR_POINTS = 8
 HAIR_ROOT_RADIUS = 0.00048                  # fat enough to cover a pixel: thinner strands shimmer frame to frame
 HAIR_TIP_RADIUS = 0.00018
-BROW_STRANDS = 440                           # per brow
+BROW_STRANDS = 760                           # per brow
 BROW_ROOT_RADIUS = 0.00017
 LASH_UPPER_PER_ROOT = 1
 LASH_LOWER_PER_ROOT = 0
@@ -135,8 +135,8 @@ def tune_skin():
         src = bsdf.inputs["Base Color"].links[0].from_socket
         g.links.remove(bsdf.inputs["Base Color"].links[0])
         hsv = g.nodes.new("ShaderNodeHueSaturation")
-        hsv.inputs["Saturation"].default_value = 0.82
-        hsv.inputs["Value"].default_value = 0.96
+        hsv.inputs["Saturation"].default_value = 0.92
+        hsv.inputs["Value"].default_value = 0.94
         g.links.new(src, hsv.inputs["Color"])
         g.links.new(hsv.outputs["Color"], bsdf.inputs["Base Color"])
     # The material's Displacement output (fed by the 2048 displacement map)
@@ -223,7 +223,7 @@ def uv_at(poly_index, pos):
         err = max(0, -u) + max(0, -v) + max(0, -w)
         if best is None or err < best[0]:
             best = (err, uv_layer[li[0]].uv * u + uv_layer[li[k]].uv * v + uv_layer[li[k + 1]].uv * w)
-    return best[1]
+    return best[1] if best else None      # None: every fan triangle degenerate
 
 
 _bvh = None
@@ -240,7 +240,8 @@ def skin_hit(origin, direction):
     loc, nrm, idx, dist = _bvh.ray_cast(origin, direction)
     if loc is None:
         return None
-    return loc, nrm, uv_at(idx, loc)
+    uv = uv_at(idx, loc)
+    return None if uv is None else (loc, nrm, uv)
 
 
 def scalp_polys():
@@ -378,6 +379,14 @@ def head_hair_strands():
     return strands
 
 
+def brow_base_z(sign):
+    centre = getattr(hm, "brow_center", {}).get(sign)
+    if not centre:
+        return 0.0165
+    zs = sorted(c[1] - hm.eye_z for c in centre)
+    return zs[len(zs) // 2] + 0.0012            # median band height, a hair above it
+
+
 def brow_strands(sign):
     """One eyebrow as an arc of skin-hugging hairs. sign=+1 character's
     left (+X), -1 right. Landmarks are relative to the eye centre."""
@@ -388,7 +397,11 @@ def brow_strands(sign):
         s = rng.random() ** 0.9                    # denser toward the inner end
         x = sign * (0.014 + 0.040 * s)
         arch = math.sin(math.pi * min(1.0, s / 0.92) ** 0.85)
-        zc = hm.eye_z + 0.0165 + 0.0062 * arch
+        # One smooth arc, lowered onto the brow ridge the painted map defines
+        # (paint_albedo measures the painted band at 9-14.5 mm above the eye
+        # line; the old 16.5 mm left a gap the painted brow showed through).
+        # Per-column snapping to that band split the brow into two rows.
+        zc = hm.eye_z + brow_base_z(sign) + 0.0062 * arch
         half_h = 0.0026 * (1 - 0.6 * s) + 0.0006
         z = zc + rng.uniform(-half_h, half_h)
         hit = skin_hit(Vector((x, hm.face_front_y - 0.08, z)), Vector((0, 1, 0)))
@@ -547,9 +560,145 @@ def add_top():
     return top
 
 
+def skin_albedo_image():
+    """The image feeding the skin group's colour input (MB-Lab's painted map)."""
+    nt = bpy.data.materials["LP_MBLab_skin3"].node_tree
+    imgs = [n.image for n in nt.nodes if n.type == 'TEX_IMAGE' and n.image is not None]
+    for key in ("albedo", "diffuse", "color"):
+        for im in imgs:
+            if key in im.name.lower():
+                return im
+    return max(imgs, key=lambda im: im.size[0] * im.size[1]) if imgs else None
+
+
+def paint_albedo():
+    """Retouch MB-Lab's painted skin map in place, then pack it into the blend.
+
+    * Eyebrows. The map has eyebrows painted into it, ~4 mm below where the
+      hair-curve brows were placed, so a thin red-brown line showed under each
+      brow — a second 'edge' for the motion extractor to lock onto. Find that
+      painted band by luminance on a grid of skin hits, paint it out with the
+      skin colour just above it, and record its centreline so `brow_strands`
+      grows the hair brows *on* the ridge the map (and the mesh) define.
+    * Lips. The same map's lips are barely redder than the cheeks, and the
+      global desaturation in `tune_skin` flattens them further. Find them by
+      redness against the surrounding skin and push saturation and darkness
+      up inside that mask only, so the mouth reads as a distinct feature.
+    """
+    import numpy as np
+    img = skin_albedo_image()
+    if img is None:
+        print("[rich] paint_albedo: no skin image"); return
+    W, H = img.size
+    px = np.array(img.pixels[:], dtype=np.float32).reshape(H, W, 4)
+
+    def texel(uv):
+        return int(uv.x * W) % W, int(uv.y * H) % H
+
+    def lum(c):
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    # ---- eyebrows -------------------------------------------------------
+    hm.brow_center = {}
+    brow_mask = np.zeros((H, W), dtype=bool)
+    repl = {}
+    for sign in (+1, -1):
+        centre = []
+        for xi in range(8, 62):
+            x = sign * xi * 0.001
+            col = []
+            for zi in range(0, 60):
+                z = hm.eye_z + 0.003 + zi * 0.0005
+                hit = skin_hit(Vector((x, hm.face_front_y - 0.08, z)), Vector((0, 1, 0)))
+                if hit is None:
+                    continue
+                tx, ty = texel(hit[2])
+                col.append((z, tx, ty, lum(px[ty, tx])))
+            if len(col) < 10:
+                continue
+            med = float(np.median([c[3] for c in col]))
+            dark = [c for c in col if c[3] < 0.82 * med]
+            if len(dark) < 3:
+                continue
+            zc = sum(c[0] for c in dark) / len(dark)
+            centre.append((x, zc))
+            above = max(col, key=lambda c: c[0])            # skin well above the band
+            for z, tx, ty, _ in dark:
+                brow_mask[ty, tx] = True
+                repl[(ty, tx)] = px[above[2], above[1], :3].copy()
+        hm.brow_center[sign] = sorted(centre, key=lambda c: abs(c[0]))
+        if centre:
+            print("[rich] painted brow %s: z-eye = %.1f..%.1f mm over %d columns" % (
+                "L" if sign > 0 else "R", 1000 * (min(c[1] for c in centre) - hm.eye_z),
+                1000 * (max(c[1] for c in centre) - hm.eye_z), len(centre)))
+    if brow_mask.any():
+        # dilate the sampled texels into a solid band, fill from the nearest recorded skin colour
+        from collections import deque
+        ys, xs = np.nonzero(brow_mask)
+        q = deque(zip(ys.tolist(), xs.tolist()))
+        seen = set(q)
+        fill = {k: v for k, v in repl.items()}
+        steps = 0
+        while q and steps < 8 * len(seen):
+            y, x = q.popleft(); steps += 1
+            c = fill[(y, x)]
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if (ny, nx) in seen or not (0 <= ny < H and 0 <= nx < W):
+                    continue
+                # grow while the neighbour is still darker than its replacement (part of the band)
+                if lum(px[ny, nx]) < 0.9 * lum(c) or len(seen) < 4 * len(repl):
+                    seen.add((ny, nx)); fill[(ny, nx)] = c; q.append((ny, nx))
+        for (y, x), c in fill.items():
+            px[y, x, :3] = c
+        print("[rich] painted out %d brow texels" % len(fill))
+
+    # ---- lips -----------------------------------------------------------
+    lip_mask = np.zeros((H, W), dtype=bool)
+    samples = []
+    for xi in range(-36, 37):
+        for zi in range(0, 70):
+            x = xi * 0.001
+            z = hm.eye_z - 0.045 - zi * 0.0005
+            hit = skin_hit(Vector((x, hm.face_front_y - 0.08, z)), Vector((0, 1, 0)))
+            if hit is None:
+                continue
+            tx, ty = texel(hit[2])
+            c = px[ty, tx]
+            samples.append((tx, ty, c[0] / (c[1] + 1e-4)))
+    if samples:
+        red = np.array([s[2] for s in samples])
+        thr = float(np.median(red)) * 1.16
+        for tx, ty, r in samples:
+            if r > thr:
+                lip_mask[ty, tx] = True
+        ys, xs = np.nonzero(lip_mask)
+        if len(ys):
+            y0, y1, x0, x1 = ys.min() - 3, ys.max() + 4, xs.min() - 3, xs.max() + 4
+            region = px[y0:y1, x0:x1, :3]
+            rr = region[..., 0] / (region[..., 1] + 1e-4)
+            m = rr > thr
+            # saturate + darken inside the mask (HSV, vectorised)
+            mx = region.max(axis=-1); mn = region.min(axis=-1)
+            chroma = mx - mn
+            sat = np.where(mx > 1e-4, chroma / (mx + 1e-6), 0.0)
+            new_sat = np.clip(sat * 1.45, 0.0, 1.0)
+            new_mx = mx * 0.88
+            new_mn = new_mx * (1.0 - new_sat)
+            # keep hue: rescale each channel's offset from min over the old chroma
+            frac = np.where(chroma[..., None] > 1e-6, (region - mn[..., None]) / (chroma[..., None] + 1e-9), 0.0)
+            boosted = np.clip(new_mn[..., None] + frac * (new_mx - new_mn)[..., None], 0.0, 1.0)
+            region[m] = boosted[m]
+            print("[rich] lips: %d texels saturated (redness thr %.3f)" % (int(m.sum()), thr))
+    img.pixels.foreach_set(px.ravel())
+    img.pack()
+    print("[rich] albedo retouched and packed:", img.name, W, H)
+
+
 # ================================================================ build
 tune_skin(); tune_eyes(); tune_teeth()
 ensure_rest_position()
+paint_albedo()
 
 brow_mat = hair_material("LP_hair_brow", (0.055, 0.033, 0.019, 1.0), roughness=0.45, tip_lighten=0.2)
 lash_mat = hair_material("LP_hair_lash", (0.016, 0.010, 0.008, 1.0), roughness=0.45, tip_lighten=0.0, random_dark=0.8)

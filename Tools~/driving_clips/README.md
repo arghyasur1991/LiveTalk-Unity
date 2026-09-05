@@ -115,31 +115,73 @@ identical rest pose** — across all seven clips.
   *encoded* clip. Check the mp4, not the PNGs.
 - **Emotions need to be over-driven, not just brows.** LivePortrait is
   conservative on everything subtle: sad reads only with inner brows at 1.5,
-  outer brows down ~0.6, mouth corners at -0.95, gaze -0.45 and ~7° of pitch,
-  held for 2–3 s. The first authored pass (browMid 1.35, smile -0.7, pitch
-  4.5) transferred as a faint frown.
+  outer brows down ~0.9, mouth corners over-driven to -1.6 with the mouth
+  narrowed (`wide` -0.55) and the lower lip out 0.75, gaze -0.45 and ~7° of
+  pitch, held for 2–3 s. The first two passes (smile -0.7 then -0.95)
+  measured a mouth-corner drop of 0.05 IOD on the *driver* — invisible after
+  transfer. `smile`, `lowerOut` and `wide` may exceed 1.0 (`OVERDRIVE`).
 - Eyes stay on the camera: the renderer counter-rotates the gaze against
   head yaw/pitch (`saccades.vor`), so a nod or turn does not read as
   looking away.
 
-## Validating
+## Validating (numbers, not contact sheets)
 
-Drive a portrait through
-`LiveTalkAPI.GenerateAnimatedTexturesAsync(image, framesFolder)` (the
-directory overload is the raw path: no resample, no loop blend) and run
-`analyze.py` on the output: hold frames ~0.0 apart, first-vs-last ~0.0,
-border-band MAD at the expression peak ≤ 0.1. Then read the contact sheet:
-does the portrait do what the driver does, no jaw stretch, no eye wander,
-no identity drift, hair not flickering.
+Contact sheets and pixel-difference proxies missed an 11 % head swell and
+a 0.4x expression transfer for a whole pass, so transfer is now measured
+with the model's own reading of both sequences:
+
+1. In Play, render the clip onto the portrait **through the options
+   overload** (`GenerateAnimatedTexturesAsync(image, framesFolder, options)`
+   with `TargetFps 0`, `LoopBlendSeconds 0` so frames align 1:1 with the
+   driver, and the shipped `ExpressionGain` / `ScaleTransfer`). The
+   directory overload without options is the raw path and skips
+   `EditMotion` entirely — it does not exercise gain or scale handling.
+2. `LiveTalkAPI.MeasureMotionAsync(framesDir, csv)` on the driver frames
+   and on the output frames. One CSV row per frame: pitch/yaw/roll,
+   extractor scale, translation, 63 expression dims, 203 landmarks.
+3. `python compare_motion.py driver.csv output.csv`:
+   - **Head size** — the output's extractor-scale range may not exceed the
+     driver's own (the extractor reads a jaw drop as a 5–8 % bigger head
+     even with a fixed camera; that leakage is the floor, anything above
+     it is the render adding size). Landmark spans and feature-match
+     similarity were both tried as size gates and wobble 2–4 % around
+     blinks and pitch — do not reintroduce them.
+   - **Transfer** — per geometric feature (eye openness, lip openness,
+     mouth width, mouth-corner drop, inner/outer brow height,
+     pitch/yaw/roll): Pearson correlation of the delta-from-frame-0 series
+     and amplitude ratio std(out)/std(driver). Pose should read ~1.0;
+     expression features at gain 2.0 read 0.75–1.1. A feature the driver
+     holds still must stay still in the output.
+   - A driver feature reported *still* means the clip itself is too
+     weak on that channel (the first sad clip's mouth-corner drop was
+     0.05 IOD ≈ 5 px); fix the clip, not the gain.
+
+`PocketHamlet/tools/livetalk/driver_test/gen_measure_matrix.cs` is a
+Play-mode job-queue runner for steps 1–2. `analyze.py` (hold / wrap /
+border MAD, flicker) is still the check for loop seams and hair shimmer.
 
 ## Character notes (what `mblab_rich.py` fixes and why)
 
-- **Render with Cycles** (`lp_scene.setup_render` default): random-walk
-  subsurface skin, physically shaded hair, a bundled studio-light HDR for
-  ambient and eye catch lights, f/4 depth of field, noise-driven skin
-  roughness and pore bump. ~3–4.5 s/frame on Apple Silicon (Metal, OIDN).
-  Eevee is 4x faster and reads as plastic. Do not run a Unity LivePortrait
-  pass at the same time: Metal contention silently killed a render at frame 0.
+- **Render with Eevee Next** (`lp_scene.setup_render` default), ray-traced
+  AO/contact shading on, `AgX - High Contrast`, a saturated **green**
+  backdrop and a small hard key high on the key side (80 W, 0.45 m) with a
+  ~5:1 fill and a top light — the driver is read by a motion extractor,
+  not a person, so what matters is separable features: nose and
+  nasolabial shadows, defined lips, brows and lashes against skin, skin
+  against background. Cycles (`engine="CYCLES"`: random-walk SSS, HDR
+  reflections, DOF) is kept as an option; its extra realism did not
+  change what the extractor read and it is ~4x slower. ~3 s/frame at 16
+  TAA samples on Apple Silicon. Do not run a Unity LivePortrait pass at the
+  same time: Metal contention silently killed a render at frame 0.
+- **The painted brows are retouched out of the skin map** (`paint_albedo`).
+  MB-Lab's albedo has eyebrows painted 9–14.5 mm above the eye line; the
+  hair brows sat at 16.5 mm, so a thin red-brown line showed under each
+  brow — a second edge for the extractor. The band is found by luminance on
+  a grid of skin hits, filled with the skin colour above it, and the hair
+  brows are grown as one smooth arc on the measured ridge (per-column
+  snapping to the band split each brow into two rows). The same pass
+  saturates and darkens the lips (found by redness against the cheeks) so
+  the mouth reads as a feature; the retouched map is packed into the blend.
 - **Hair is a short combed-back cut**, not long strands. Long procedural
   hair read as straw and swung past the face edges — the extractor then sees
   hair, not face, changing frame to frame. The head-hair material is matte
@@ -169,7 +211,7 @@ no identity drift, hair not flickering.
 - **Eyelash cards stay `BLENDED`.** Hashed alpha leaves pink speckle under
   the eyes.
 - **Brows are hairs on the skin**, placed by ray cast relative to the eye
-  centres (the albedo's painted brows are too faint to locate), so they
-  rise and knit with the brow shape keys.
+  centres at the height `paint_albedo` measures for the painted brow, so
+  they rise and knit with the brow shape keys.
 - The body's own displacement moves skin ±5 mm; the top sits 11 mm out or
   the skin pokes through in blobs.

@@ -41,6 +41,12 @@ namespace LiveTalk.Core
         /// the clip; per-frame re-cropping would add crop jitter on top.
         /// </summary>
         public CropInfo DrivingCrop { get; set; }
+
+        /// <summary>Accumulated cost of the fixed face crop (affine warp + 256 resize) across the clip, ms.</summary>
+        public double CropMillis;
+        /// <summary>Accumulated landmark-track + motion-extractor cost across the clip, ms.</summary>
+        public double ExtractMillis;
+        public int ExtractedFrames;
     }
 
     /// <summary>
@@ -60,12 +66,6 @@ namespace LiveTalk.Core
         private Model _warpingSpade;               // neural warping and rendering
         private FaceAnalysis _faceAnalysis;        // face detection and analysis
 
-        /// <summary>
-        /// Bound on the driving clip's relative scale (driving / first frame)
-        /// applied to the source. See the clamp in <see cref="RenderMotion"/>.
-        /// </summary>
-        internal const float MaxRelativeScaleChange = 0.08f;
-        
         // Configuration and State
         private readonly LiveTalkConfig _config;
         private bool _initialized = false;
@@ -276,7 +276,9 @@ namespace LiveTalk.Core
                     var edited = EditMotion(motions, motion, out float outputFps, out int blendFrames);
                     outputStream.TotalExpectedFrames = edited.Count;
                     Logger.Log($"[LivePortraitInference] Motion edited: {motions.Count} frames @ {motion.SourceFps:F2} fps → " +
-                               $"{edited.Count} frames @ {outputFps:F2} fps (loop blend {blendFrames} frames)");
+                               $"{edited.Count} frames @ {outputFps:F2} fps (loop blend {blendFrames} frames); " +
+                               $"per driving frame: face crop {predInfo.CropMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms, " +
+                               $"motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
 
                     for (int i = 0; i < edited.Count; i++)
                     {
@@ -859,6 +861,25 @@ namespace LiveTalk.Core
                 }
             }
 
+            // Scale transfer: the extractor's scale channel leaks expression
+            // (jaw drop, brow raise read as a bigger head), so by default the
+            // clip's scale is pinned to its first frame and the render keeps
+            // the source's head size. See DrivingMotionOptions.ScaleTransfer.
+            if (edited.Count > 0 && options.ScaleTransfer < 1f - 1e-4f)
+            {
+                var scale0 = edited[0].Scale;
+                float s = Mathf.Max(0f, options.ScaleTransfer);
+                for (int i = 0; i < edited.Count; i++)
+                {
+                    var sc = edited[i].Scale;
+                    if (sc == null || scale0 == null || sc.Length != scale0.Length) continue;
+                    var held = new float[sc.Length];
+                    for (int k = 0; k < sc.Length; k++)
+                        held[k] = scale0[k] * (1f + s * (sc[k] / scale0[k] - 1f));
+                    edited[i].Scale = held;
+                }
+            }
+
             blendFrames = options.LoopBlendFrames(outputFps);
             if (blendFrames > 0)
             {
@@ -907,6 +928,10 @@ namespace LiveTalk.Core
             // Crop the driving frame around the face exactly as the source is
             // cropped (same 2.3 / -0.125 framing), so the extractor sees the
             // distribution it was trained on. The crop is fixed from frame 0.
+            // Cost is one 512x512 affine warp per driving frame at avatar-build
+            // time only (nothing per frame at playback); timed into
+            // predInfo.CropMillis and reported by the caller.
+            var swCrop = System.Diagnostics.Stopwatch.StartNew();
             Frame faceCrop;
             if (frame0 || predInfo.DrivingCrop == null)
             {
@@ -925,8 +950,12 @@ namespace LiveTalk.Core
             }
 
             var img256 = FrameUtils.ResizeFrame(faceCrop, 256, 256, SamplingMode.Bilinear);
+            predInfo.CropMillis += swCrop.Elapsed.TotalMilliseconds;
+            var swExtract = System.Diagnostics.Stopwatch.StartNew();
             var Id = NormalizeFrame(img256);
             var xDInfo = await GetKpInfo(Id);
+            predInfo.ExtractMillis += swExtract.Elapsed.TotalMilliseconds;
+            predInfo.ExtractedFrames++;
             var Rd = MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
             xDInfo.RotationMatrix = Rd;
             
@@ -935,6 +964,47 @@ namespace LiveTalk.Core
                 predInfo.InitialMotionInfo = xDInfo;
             }
             return xDInfo;
+        }
+
+        /// <summary>
+        /// One row of <see cref="MeasureMotion"/>: what the motion extractor reads off a
+        /// frame, plus the face's landmark box in that frame's own pixels. Used by the
+        /// analytical validator to compare a driving clip against what was rendered
+        /// from it; no rendering happens here.
+        /// </summary>
+        internal struct MotionMeasurement
+        {
+            public float Pitch, Yaw, Roll, Scale, Tx, Ty;
+            public float[] Expression;
+            public float LandmarkBoxWidth, LandmarkBoxHeight, LandmarkCenterX, LandmarkCenterY;
+            /// <summary>The tracked 203-point landmarks in the frame's own pixels (LivePortrait <c>landmark.onnx</c> layout).</summary>
+            public Vector2[] Landmarks;
+        }
+
+        /// <summary>
+        /// Measures a frame through the same landmark-track → fixed-crop → motion
+        /// extractor path <see cref="ExtractDrivingMotion"/> uses for a driving clip.
+        /// Pass the same <paramref name="predInfo"/> for every frame of one sequence.
+        /// </summary>
+        internal async Task<MotionMeasurement> MeasureMotion(Frame img, LivePortraitPredInfo predInfo)
+        {
+            var info = await ExtractDrivingMotion(img, predInfo);
+            var lmk = predInfo.Landmarks;
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            foreach (var p in lmk)
+            {
+                if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+            }
+            return new MotionMeasurement
+            {
+                Pitch = info.Pitch[0], Yaw = info.Yaw[0], Roll = info.Roll[0], Scale = info.Scale[0],
+                Tx = info.Translation[0], Ty = info.Translation[1],
+                Expression = info.Expression,
+                LandmarkBoxWidth = maxX - minX, LandmarkBoxHeight = maxY - minY,
+                LandmarkCenterX = 0.5f * (minX + maxX), LandmarkCenterY = 0.5f * (minY + maxY),
+                Landmarks = lmk,
+            };
         }
 
         /// <summary>
@@ -958,13 +1028,9 @@ namespace LiveTalk.Core
             var expDiff = MathUtils.SubtractArrays(xDInfo.Expression, xD0Info.Expression);
             var deltaNew = MathUtils.AddArrays(xSInfo.Expression, expDiff);
             
+            // Upstream relative mode. How much driving scale reaches here is
+            // decided in EditMotion (DrivingMotionOptions.ScaleTransfer).
             var scaleDiff = MathUtils.DivideArrays(xDInfo.Scale, xD0Info.Scale);
-            // A talking head does not change distance by more than a few
-            // percent within a clip; anything larger is the extractor reading
-            // an open mouth or a pitched-back head as a bigger face. The crop
-            // above removes most of that; this bounds what remains.
-            for (int i = 0; i < scaleDiff.Length; i++)
-                scaleDiff[i] = Mathf.Clamp(scaleDiff[i], 1f - MaxRelativeScaleChange, 1f + MaxRelativeScaleChange);
             var scaleNew = MathUtils.MultiplyArrays(xSInfo.Scale, scaleDiff);
             
             var tDiff = MathUtils.SubtractArrays(xDInfo.Translation, xD0Info.Translation);

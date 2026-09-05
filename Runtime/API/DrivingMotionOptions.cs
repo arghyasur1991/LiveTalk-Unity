@@ -46,6 +46,20 @@ namespace LiveTalk.API
         /// </summary>
         public float ExpressionGain { get; set; } = 1f;
 
+        /// <summary>
+        /// How much of the driving clip's <em>scale</em> change (head size, as
+        /// the motion extractor reads it, relative to the first frame) reaches
+        /// the render. 1 is upstream LivePortrait's relative mode; 0 holds the
+        /// source's head size for the whole clip. Default 0. The extractor's
+        /// scale channel is not a clean camera-distance signal: a jaw drop or
+        /// raised brows read as a 5–8 % larger head, which in relative mode
+        /// makes the rendered head visibly swell during a surprise or a laugh.
+        /// A clip shot with a fixed camera — every bundled clip — carries no
+        /// real size change, so passing none through is the faithful choice.
+        /// Set towards 1 only for footage where the subject really leans in.
+        /// </summary>
+        public float ScaleTransfer { get; set; } = 0f;
+
         /// <summary>Frames in the loop blend window at the effective output rate.</summary>
         internal int LoopBlendFrames(float outputFps) =>
             LoopBlendSeconds > 0f && outputFps > 0f ? UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(LoopBlendSeconds * outputFps)) : 0;

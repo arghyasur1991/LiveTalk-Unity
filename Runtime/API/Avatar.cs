@@ -226,7 +226,7 @@ namespace LiveTalk.API
         /// <item>3: driving frames are face-cropped (fixed from frame 0) before motion extraction and relative scale is bounded, so the head no longer jumps in size and expressions transfer at full strength.</item>
         /// </list>
         /// </summary>
-        internal const int MotionPipelineVersion = 3;
+        internal const int MotionPipelineVersion = 4;   // 4: ScaleTransfer=0 (head size pinned), gain 2.0
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -248,20 +248,15 @@ namespace LiveTalk.API
 
         /// <summary>
         /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/>.
-        /// LivePortrait transfers expression conservatively, and the negative
-        /// emotions suffer most: a sad driver with knitted inner brows and a
-        /// downturned mouth arrived on a smiling portrait as a faint frown,
-        /// because the delta only partly cancels the smile it starts from.
-        /// Positive and pose-led expressions (smile, approve, surprised) read
-        /// at 1. Part of <see cref="Signature"/>: changing a value rebuilds.
+        /// Measured with <c>Tools~/driving_clips/compare_motion.py</c> on the
+        /// bundled clips: at gain 1 LivePortrait passes 0.35-0.75 of the
+        /// driver's eye-opening, brow-height and lip-opening change onto a
+        /// different identity (pose passes at ~1.0). At 2.0 those land at
+        /// 0.75-1.1 with no tearing; 2.5 overshoots the brows (1.25) and
+        /// the eye correlation starts to drop. Part of <see cref="Signature"/>:
+        /// changing a value rebuilds.
         /// </summary>
-        internal static float ExpressionGainFor(string expression) => expression switch
-        {
-            "sad" => 1.7f,
-            "confused" => 1.35f,
-            "disapprove" => 1.35f,
-            _ => 1f,
-        };
+        internal static float ExpressionGainFor(string expression) => 2f;
 
         private static string ExpressionGainSignature(CreationMode mode) =>
             string.Join(",", ExpressionsFor(mode).Select(e => e + "=" + ExpressionGainFor(e).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));

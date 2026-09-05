@@ -28,7 +28,10 @@ BG_WORLD_STRENGTH = 0.35
 WORLD_HDR = "interior.exr"      # ships with Blender; soft indoor skylight
 WORLD_HDR_YAW_DEG = 35.0        # turn the HDR so its brighter side is the key side
 DOF_FSTOP = 4.0
-BG_PLANE = (0.36, 0.36, 0.37, 1.0)
+# Saturated green: maximal separation from skin, hair and lips for the
+# extractor's landmark tracker, and no grey-on-grey with the shadow side.
+BG_PLANE = (0.05, 0.42, 0.12, 1.0)
+LOOK = 'AgX - High Contrast'
 
 
 def open_character(path):
@@ -131,8 +134,14 @@ def _area(scn, name, loc, target, energy, size, color=(1, 1, 1)):
 
 def setup_lights(scn, hm):
     fc = hm.face_center
-    _area(scn, "Key",  (fc.x + 0.9, fc.y - 1.1, fc.z + 0.7), fc, 60, 1.0, (1.0, 0.96, 0.92))
-    _area(scn, "Fill", (fc.x - 1.1, fc.y - 1.0, fc.z + 0.2), fc, 25, 1.5, (0.92, 0.95, 1.0))
+    # Brighter and harder than a beauty setup on purpose: the driver is
+    # read by a motion extractor, not a person. A small key high on the
+    # key side carves the nose, the nasolabial folds and the brow ridge
+    # into real shadows; the fill is kept ~5:1 under it so those creases
+    # survive; a top light lifts the forehead and cheekbones.
+    _area(scn, "Key",  (fc.x + 0.75, fc.y - 1.0, fc.z + 0.95), fc, 80, 0.45, (1.0, 0.96, 0.92))
+    _area(scn, "Fill", (fc.x - 1.1, fc.y - 1.0, fc.z + 0.2), fc, 26, 1.5, (0.92, 0.95, 1.0))
+    _area(scn, "Top",  (fc.x + 0.1, fc.y - 0.5, fc.z + 1.3), fc, 20, 0.6)
     _area(scn, "Rim",  (fc.x - 0.4, fc.y + 0.9, fc.z + 0.8), fc, 30, 0.6)
     # a small frontal catch light so the eyes carry a wet highlight
     _area(scn, "Catch", (fc.x + 0.15, fc.y - 1.6, fc.z + 0.25), fc, 6, 0.25, (1.0, 0.98, 0.95))
@@ -176,10 +185,11 @@ def setup_backdrop(scn, hm):
     return plane
 
 
-def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="CYCLES"):
-    """`engine` is CYCLES (default — random-walk subsurface skin, physically
-    shaded hair, real reflections in the eyes; GPU Metal, adaptive sampling,
-    OpenImageDenoise) or BLENDER_EEVEE_NEXT (~4x faster, flatter skin)."""
+def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="EEVEE"):
+    """`engine` is EEVEE (default — BLENDER_EEVEE_NEXT with shadows and
+    ray-traced AO/contact shading; the extractor does not reward Cycles'
+    extra realism and Eevee renders the seven clips in minutes) or CYCLES
+    (random-walk SSS, physically shaded hair, HDR reflections; ~4x slower)."""
     if engine == "CYCLES":
         scn.render.engine = 'CYCLES'
         prefs = bpy.context.preferences.addons.get("cycles")
@@ -210,6 +220,12 @@ def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="CYCLES"):
         scn.cycles.blur_glossy = 1.0
     else:
         scn.render.engine = 'BLENDER_EEVEE_NEXT'
+        # Ray-traced screen-space AO / reflections: contact darkening in the
+        # nostrils, eye sockets and lip line the extractor can read.
+        scn.eevee.use_raytracing = True
+        scn.eevee.ray_tracing_options.resolution_scale = '2'
+        scn.eevee.shadow_ray_count = 2
+        scn.eevee.shadow_step_count = 8
     scn.render.resolution_x = RES
     scn.render.resolution_y = RES
     scn.render.resolution_percentage = 100
@@ -222,12 +238,11 @@ def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="CYCLES"):
     scn.eevee.taa_render_samples = samples
     scn.render.filter_size = 1.8      # softer pixel filter: thin strands alias less between frames
     scn.eevee.use_shadows = True
-    scn.eevee.use_raytracing = False
     # hair as strands, a few subdivisions so curved strands stay smooth
     scn.render.hair_type = 'STRAND'
     scn.render.hair_subdiv = 1
     scn.view_settings.view_transform = 'AgX'
-    scn.view_settings.look = 'AgX - Medium High Contrast'
+    scn.view_settings.look = LOOK
 
 
 def render_frames(scn, out_dir, frames):
