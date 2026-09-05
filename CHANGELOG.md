@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.2.0] - 2026-09-05
+
+LivePortrait crops are upright (they were rotated ~40°), the bundled driving clips are new authored 25 fps rest-to-rest footage, idle loops forward, and speech continues from the idle frame. Existing avatar folders rebuild once.
+
+### Added
+- **Authored driving clips** (`Resources/driving/*.mp4`, pipeline in `Tools~/driving_clips/`). A rendered face, 512×512, 25 fps, rest-to-rest: a 27 s idle and six expression takes (approve, disapprove, smile, sad, surprised, confused).
+- **`Avatar.Version` in the avatar id.** Bump it when the driving recipe or clips change so folders rebuild.
+- **`Character.SpeakAsync(..., startFrameIndex:)`** — the avatar frame the first lip-sync frame is rendered onto. `CharacterPlayer.SpeechContinuity` (on by default) starts speech from the idle frame that will be showing when generation finishes, and resumes idle from where speech ended.
+
+### Fixed
+- **Face crops were rotated ~40°.** `FaceAnalysis.ParsePt2FromPtX` used 106-point eye/lip indices on the 203-point `LandmarkRunner` output. The crop went in tilted and ~14 % small: weak expressions, blinks that overshot, features drifting sideways, extractor `scale` swinging with the jaw. Dispatch on landmark count (`ParsePt2FromPt203`). Frame-0 roll −40.6° → −0.23° (Python reference −0.18°).
+- Motion extractor pitch was read from the yaw output; nods were lost and turns tilted.
+- `CharacterPlayer` reported the previous frame's index from `OnFrameUpdate`.
+- Dropped `Resources/00000000.png`, an unreferenced 853 KB sample that shipped in every consumer build.
+
+### Changed
+- **Idle is a forward loop** at the clip's 25 fps. Speech does not restart the clip.
+
 ## [2.0.0] - 2026-09-04
 
 A breaking release. The TTS backend moved from Spark-TTS to Qwen3-TTS, which changes the dependency and invalidates 1.x voice folders; the character folder format changed from copies to references; and the speech/frames cache keys changed. The `IEnumerator` + `onComplete` / `onError` API style is unchanged and is the primary style going forward. See **Migration** at the end of this section.

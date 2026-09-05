@@ -6,6 +6,8 @@
 # backup files) would silently drop them; re-include explicitly.
 !Samples~/
 !Samples~/**
+!Tools~/
+!Tools~/**
 
 # OS
 .DS_Store

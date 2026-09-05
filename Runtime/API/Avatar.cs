@@ -174,6 +174,13 @@ namespace LiveTalk.API
 
         internal const string ImageFileName = "image.png";
         internal const string DrivingFramesFolderName = "drivingFrames";
+        internal const float DefaultFrameRate = 25f;
+
+        /// <summary>
+        /// Bumped when the driving-frame recipe or bundled clips change, so
+        /// existing folders rebuild instead of serving stale frames.
+        /// </summary>
+        internal const int Version = 1;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -195,8 +202,13 @@ namespace LiveTalk.API
             _ => AllExpressionNames,
         };
 
+        /// <summary>
+        /// The expression-set half of the avatar id. Carries <see cref="Version"/>,
+        /// so a recipe or clip change gives every avatar a new id: an old
+        /// folder is neither reused nor half-matched.
+        /// </summary>
         internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode));
+            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";v" + Version;
 
         /// <summary>Human name of an expression index, for logs.</summary>
         internal static string GetExpressionName(int index) =>

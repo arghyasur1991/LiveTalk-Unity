@@ -512,7 +512,8 @@ namespace LiveTalk.Core
 
             var results = await _motionExtractor.Run(inputs);
             
-            var pitchTensor = results[1].AsTensor<float>();
+            // Output order: pitch, yaw, roll, t, exp, scale, kp.
+            var pitchTensor = results[0].AsTensor<float>();
             var yawTensor = results[1].AsTensor<float>();
             var rollTensor = results[2].AsTensor<float>();
             var tTensor = results[3].AsTensor<float>();
