@@ -29,21 +29,6 @@ namespace LiveTalk.Core
         /// </summary>
         public MotionInfo InitialMotionInfo { get; set; }  // x_d_0_info
 
-        /// <summary>
-        /// Face crop computed from the first driving frame and held for the
-        /// whole clip. Driving frames used to go into the motion extractor
-        /// whole, resized to 256; the model was trained on tight face crops,
-        /// so with the face at ~60 % of the frame its <c>scale</c> output
-        /// tracked the apparent face box instead of head distance — an open
-        /// mouth or a pitch back made the box grow and the rendered head
-        /// jump larger — and expressions arrived at ~150 px and transferred
-        /// weakly. A fixed crop keeps <c>scale</c> meaning one thing across
-        /// the clip; per-frame re-cropping would add crop jitter on top.
-        /// </summary>
-        public CropInfo DrivingCrop { get; set; }
-
-        /// <summary>Accumulated cost of the fixed face crop (affine warp + 256 resize) across the clip, ms.</summary>
-        public double CropMillis;
         /// <summary>Accumulated landmark-track + motion-extractor cost across the clip, ms.</summary>
         public double ExtractMillis;
         public int ExtractedFrames;
@@ -232,8 +217,7 @@ namespace LiveTalk.Core
                 }
 
                 Logger.Log($"[LivePortraitInference] Processed {processedFrames} frames; " +
-                           $"per driving frame: face crop {predInfo.CropMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms, " +
-                           $"motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
+                           $"per driving frame: motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
             }
             finally
             {
@@ -783,33 +767,12 @@ namespace LiveTalk.Core
             
             predInfo.Landmarks = lmk;
 
-            // Crop the driving frame around the face exactly as the source is
-            // cropped (same 2.3 / -0.125 framing), so the extractor sees the
-            // distribution it was trained on. The crop is fixed from frame 0.
-            // Cost is one 512x512 affine warp per driving frame at avatar-build
-            // time only (nothing per frame at playback); timed into
-            // predInfo.CropMillis and reported by the caller.
-            var swCrop = System.Diagnostics.Stopwatch.StartNew();
-            Frame faceCrop;
-            if (frame0 || predInfo.DrivingCrop == null)
-            {
-                predInfo.DrivingCrop = _faceAnalysis.GetCropInfo(img, lmk, 512, 2.3f, -0.125f);
-                faceCrop = predInfo.DrivingCrop.ImageCrop;
-            }
-            else
-            {
-                var o2c = predInfo.DrivingCrop.InverseTransform;
-                var M = new float[,]
-                {
-                    { o2c.m00, o2c.m01, o2c.m03 },
-                    { o2c.m10, o2c.m11, o2c.m13 },
-                };
-                faceCrop = FrameUtils.AffineTransformFrame(img, M, 512, 512);
-            }
-
-            var img256 = FrameUtils.ResizeFrame(faceCrop, 256, 256, SamplingMode.Bilinear);
-            predInfo.CropMillis += swCrop.Elapsed.TotalMilliseconds;
+            // Bundled driving clips are already 512×512 face plates. A second
+            // GetCropInfo warp (locked from frame 0) shifted the authored
+            // framing and was the wrong lever for extractor scale — the source
+            // portrait crop in CropSrcImage is the one LivePortrait needs.
             var swExtract = System.Diagnostics.Stopwatch.StartNew();
+            var img256 = FrameUtils.ResizeFrame(img, 256, 256, SamplingMode.Bilinear);
             var Id = NormalizeFrame(img256);
             var xDInfo = await GetKpInfo(Id);
             predInfo.ExtractMillis += swExtract.Elapsed.TotalMilliseconds;
@@ -840,7 +803,7 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Measures a frame through the same landmark-track → fixed-crop → motion
+        /// Measures a frame through the same landmark-track → resize-256 → motion
         /// extractor path <see cref="ExtractDrivingMotion"/> uses for a driving clip.
         /// Pass the same <paramref name="predInfo"/> for every frame of one sequence.
         /// </summary>

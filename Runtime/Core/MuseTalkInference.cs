@@ -848,8 +848,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Formats one avatar frame's latent as the [1, 8, 32, 32] UNet input.
         /// Which frame is chosen is <see cref="AvatarData.AvatarFrameIndex"/>'s
-        /// business — forward with wrap for a loopable avatar, ping-pong for a
-        /// legacy one — and the same index picks the face region in
+        /// business (forward with wrap) and the same index picks the face region in
         /// <see cref="DecodeLatents"/>, so the two cannot drift apart.
         /// </summary>
         /// <param name="latent">The latent array of the chosen avatar frame</param>
