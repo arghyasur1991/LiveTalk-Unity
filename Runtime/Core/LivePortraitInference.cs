@@ -28,10 +28,6 @@ namespace LiveTalk.Core
         /// Initial motion information from the first driving frame for reference
         /// </summary>
         public MotionInfo InitialMotionInfo { get; set; }  // x_d_0_info
-
-        /// <summary>Accumulated landmark-track + motion-extractor cost across the clip, ms.</summary>
-        public double ExtractMillis;
-        public int ExtractedFrames;
     }
 
     /// <summary>
@@ -50,7 +46,7 @@ namespace LiveTalk.Core
         private Model _stitching;                   // keypoint stitching refinement
         private Model _warpingSpade;               // neural warping and rendering
         private FaceAnalysis _faceAnalysis;        // face detection and analysis
-
+        
         // Configuration and State
         private readonly LiveTalkConfig _config;
         private bool _initialized = false;
@@ -143,6 +139,7 @@ namespace LiveTalk.Core
             FrameStream outputStream,
             FrameStream drivingStream)
         {
+            // Validate parameters
             if (sourceImage == null)
                 throw new ArgumentNullException(nameof(sourceImage));
             if (outputStream == null)
@@ -163,12 +160,15 @@ namespace LiveTalk.Core
                     LoadMaskTemplate();
                 }
 
+                // Convert source image to RGB24 format and process
                 sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
                 var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
 
+                // Start session
                 Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
                 yield return TaskYield.Wait(StartSession(), "LivePortraitInference.StartSession");
 
+                // Process source image
                 Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
                 ProcessSourceImageResult processResult = null;
                 yield return TaskYield.Wait(ProcessSourceImageAsync(srcImg), r => processResult = r,
@@ -209,6 +209,9 @@ namespace LiveTalk.Core
                     }
                 }
 
+                // The driving loader finishing early because it failed is a
+                // failure of this animation too — a short, silently truncated
+                // clip is worse than an error that names the cause.
                 if (drivingStream.Error != null)
                 {
                     throw new InvalidOperationException(
@@ -216,8 +219,7 @@ namespace LiveTalk.Core
                         drivingStream.Error);
                 }
 
-                Logger.Log($"[LivePortraitInference] Processed {processedFrames} frames; " +
-                           $"per driving frame: motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
+                Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
             }
             finally
             {
@@ -260,10 +262,9 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Starts the session for all models. Internal so <see cref="MeasureMotion"/>'s
-        /// caller can bracket a measurement the way a generate call is.
+        /// Starts the session for all models
         /// </summary>
-        internal async Task StartSession()
+        private async Task StartSession()
         {
             await _appearanceFeatureExtractor.StartSession();
             await _motionExtractor.StartSession();
@@ -275,7 +276,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Ends the session for all models
         /// </summary>
-        internal void EndSession()
+        private void EndSession()
         {
             _appearanceFeatureExtractor.EndSession();
             _motionExtractor.EndSession();
@@ -511,9 +512,7 @@ namespace LiveTalk.Core
 
             var results = await _motionExtractor.Run(inputs);
             
-            // Motion extractor output order: pitch, yaw, roll, t, exp, scale, kp.
-            // Pitch used to be read from results[1] (the yaw logits), which
-            // dropped head nods and turned yaw into a diagonal tilt.
+            // Output order: pitch, yaw, roll, t, exp, scale, kp.
             var pitchTensor = results[0].AsTensor<float>();
             var yawTensor = results[1].AsTensor<float>();
             var rollTensor = results[2].AsTensor<float>();
@@ -727,20 +726,6 @@ namespace LiveTalk.Core
             MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs, 
             Frame img, LivePortraitPredInfo predInfo)
         {
-            var xDInfo = await ExtractDrivingMotion(img, predInfo);
-            var resultTexture = await RenderMotion(xSInfo, Rs, fs, xs, predInfo.InitialMotionInfo, xDInfo);
-            return (resultTexture, predInfo);
-        }
-
-        /// <summary>
-        /// Tracks the face through <paramref name="img"/> and extracts its
-        /// motion (pose, translation, scale, expression, canonical keypoints)
-        /// with the rotation matrix filled in. The first frame seen becomes
-        /// <see cref="LivePortraitPredInfo.InitialMotionInfo"/> — the reference
-        /// every later frame is retargeted relative to.
-        /// </summary>
-        private async Task<MotionInfo> ExtractDrivingMotion(Frame img, LivePortraitPredInfo predInfo)
-        {
             bool frame0 = predInfo.Landmarks == null;
             Vector2[] lmk;
             if (frame0)
@@ -766,17 +751,9 @@ namespace LiveTalk.Core
             }
             
             predInfo.Landmarks = lmk;
-
-            // Bundled driving clips are already 512×512 face plates. A second
-            // GetCropInfo warp (locked from frame 0) shifted the authored
-            // framing and was the wrong lever for extractor scale — the source
-            // portrait crop in CropSrcImage is the one LivePortrait needs.
-            var swExtract = System.Diagnostics.Stopwatch.StartNew();
             var img256 = FrameUtils.ResizeFrame(img, 256, 256, SamplingMode.Bilinear);
             var Id = NormalizeFrame(img256);
             var xDInfo = await GetKpInfo(Id);
-            predInfo.ExtractMillis += swExtract.Elapsed.TotalMilliseconds;
-            predInfo.ExtractedFrames++;
             var Rd = MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
             xDInfo.RotationMatrix = Rd;
             
@@ -784,63 +761,9 @@ namespace LiveTalk.Core
             {
                 predInfo.InitialMotionInfo = xDInfo;
             }
-            return xDInfo;
-        }
-
-        /// <summary>
-        /// One row of <see cref="MeasureMotion"/>: what the motion extractor reads off a
-        /// frame, plus the face's landmark box in that frame's own pixels. Used by the
-        /// analytical validator to compare a driving clip against what was rendered
-        /// from it; no rendering happens here.
-        /// </summary>
-        internal struct MotionMeasurement
-        {
-            public float Pitch, Yaw, Roll, Scale, Tx, Ty;
-            public float[] Expression;
-            public float LandmarkBoxWidth, LandmarkBoxHeight, LandmarkCenterX, LandmarkCenterY;
-            /// <summary>The tracked 203-point landmarks in the frame's own pixels (LivePortrait <c>landmark.onnx</c> layout).</summary>
-            public Vector2[] Landmarks;
-        }
-
-        /// <summary>
-        /// Measures a frame through the same landmark-track → resize-256 → motion
-        /// extractor path <see cref="ExtractDrivingMotion"/> uses for a driving clip.
-        /// Pass the same <paramref name="predInfo"/> for every frame of one sequence.
-        /// </summary>
-        internal async Task<MotionMeasurement> MeasureMotion(Frame img, LivePortraitPredInfo predInfo)
-        {
-            var info = await ExtractDrivingMotion(img, predInfo);
-            var lmk = predInfo.Landmarks;
-            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
-            foreach (var p in lmk)
-            {
-                if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-                if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-            }
-            return new MotionMeasurement
-            {
-                Pitch = info.Pitch[0], Yaw = info.Yaw[0], Roll = info.Roll[0], Scale = info.Scale[0],
-                Tx = info.Translation[0], Ty = info.Translation[1],
-                Expression = info.Expression,
-                LandmarkBoxWidth = maxX - minX, LandmarkBoxHeight = maxY - minY,
-                LandmarkCenterX = 0.5f * (minX + maxX), LandmarkCenterY = 0.5f * (minY + maxY),
-                Landmarks = lmk,
-            };
-        }
-
-        /// <summary>
-        /// Renders the source face under driving motion <paramref name="xDInfo"/>,
-        /// expressed relative to the reference motion <paramref name="xD0Info"/>
-        /// (the clip's first frame): pose <c>R_d R_d0^T R_s</c>, expression,
-        /// scale and translation as deltas from the reference added to the
-        /// source's own. The returned frame is the 512x512 crop, not yet pasted back.
-        /// </summary>
-        private async Task<Frame> RenderMotion(
-            MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs,
-            MotionInfo xD0Info, MotionInfo xDInfo)
-        {
-            var Rd = xDInfo.RotationMatrix ?? MathUtils.GetRotationMatrix(xDInfo.Pitch, xDInfo.Yaw, xDInfo.Roll);
-            var Rd0 = xD0Info.RotationMatrix ?? MathUtils.GetRotationMatrix(xD0Info.Pitch, xD0Info.Yaw, xD0Info.Roll);
+            
+            var xD0Info = predInfo.InitialMotionInfo;
+            var Rd0 = xD0Info.RotationMatrix;
             
             var Rd0Transposed = MathUtils.TransposeMatrix(Rd0);
             var RdTimesRd0T = MathUtils.MatrixMultiply(Rd, Rd0Transposed);
@@ -862,7 +785,8 @@ namespace LiveTalk.Core
             var xDNew = CalculateNewKeypoints(xCs, RNew, deltaNew, scaleNew, tNew);
             xDNew = await Stitching(xs, xDNew);
             var output = await WarpingSpade(fs, xs, xDNew);
-            return FrameUtils.TensorToFrame(output, 0, 1);
+            var resultTexture = FrameUtils.TensorToFrame(output, 0, 1);
+            return (resultTexture, predInfo);
         }
         
         /// <summary>

@@ -11,7 +11,7 @@ a rendered face is the cleaner driver: output frames are bit-identical
 while the face holds still, the clip returns exactly to its rest pose so
 it loops, and 10° of yaw transfers with pitch and roll flat.
 
-The shipped clips (since the 2.1 → next release) come from exactly this
+The shipped clips come from exactly this
 pipeline: `mblab_build.py` → `mblab_rich.py` → `render_clips.py` with the
 table in `clips.py`.
 
@@ -44,9 +44,8 @@ table in `clips.py`.
 | `sk_atlas.py` | One still per shape key / head axis so a key's meaning and sign can be read before authoring |
 | `clips.py` | **The seven clips as data** — every timing, angle and amplitude |
 | `render_clips.py` | Bake a clip from the table (procedural layers + gesture curves), render the PNG sequence, encode the mp4 |
-| `analyze.py` | Consecutive-frame MAD, first-vs-last MAD, background MAD at the expression peak, contact sheet — for a driver folder or a LivePortrait output folder |
+| `analyze.py` | Consecutive-frame MAD, first-vs-last MAD, background MAD at the expression peak, contact sheet |
 | `sheet.py` | Contact sheet of PNGs with optional crop / scale / labels |
-| `inspect_char.py`, `inspect_mats.py`, `mblab_anim.py` | Diagnostics and the original feasibility clip |
 
 ## Building the clips
 
@@ -124,46 +123,10 @@ identical rest pose** — across all seven clips.
   head yaw/pitch (`saccades.vor`), so a nod or turn does not read as
   looking away.
 
-## Validating (numbers, not contact sheets)
+## Validating a clip
 
-Contact sheets and pixel-difference proxies missed an 11 % head swell and
-a 0.4x expression transfer for a whole pass, so transfer is now measured
-with the model's own reading of both sequences:
-
-1. In Play, render the clip onto the portrait with
-   `GenerateAnimatedTexturesAsync(image, framesFolder)` so frames align 1:1
-   with the driver.
-2. `LiveTalkAPI.MeasureMotionAsync(framesDir, csv)` on the driver frames
-   and on the output frames. One CSV row per frame: pitch/yaw/roll,
-   extractor scale, translation, 63 expression dims, 203 landmarks.
-3. `python compare_motion.py driver.csv output.csv`:
-   - **Head size** — the output's extractor-scale range may not exceed the
-     driver's own (the extractor reads a jaw drop as a 5–8 % bigger head
-     even with a fixed camera; that leakage is the floor, anything above
-     it is the render adding size). Landmark spans and feature-match
-     similarity were both tried as size gates and wobble 2–4 % around
-     blinks and pitch — do not reintroduce them.
-   - **Transfer** — per geometric feature (eye openness, lip openness,
-     mouth width, mouth-corner drop, inner/outer brow height,
-     pitch/yaw/roll): Pearson correlation of the delta-from-frame-0 series
-     and amplitude ratio std(out)/std(driver). Pose should read ~1.0;
-     expression features on an upright crop read close to 1.0. A feature the
-     driver holds still must stay still in the output.
-   - A driver feature reported *still* means the clip itself is too
-     weak on that channel (the first sad clip's mouth-corner drop was
-     0.05 IOD ≈ 5 px); fix the clip.
-
-A host project can drive steps 1–2 from a Play-mode job runner that calls
-`GenerateAnimatedTexturesAsync(portrait, framesDir)` followed by
-`MeasureMotionAsync` on both folders. `analyze.py` (hold / wrap /
-border MAD, flicker) is still the check for loop seams and hair shimmer.
-
-Before trusting any of these numbers, check the extractor's read of the
-**driver's frame 0** against an independent LivePortrait implementation
-(pose within ~0.3°, roll especially): `MeasureMotionAsync` runs the same
-crop on driver and output, so a preprocessing bug in the crop is invisible
-to its correlations. A 40° roll on a level driver was exactly such a bug
-(fixed in 2.2.0); every gain figure measured before it is void.
+`analyze.py` checks hold / wrap / border MAD (loop seams and hair shimmer).
+First and last frames of a clip should match so idle wraps.
 
 ## Character notes (what `mblab_rich.py` fixes and why)
 

@@ -893,10 +893,6 @@ namespace LiveTalk.Core
         /// <returns>An array of two transformed reference points for face alignment calculations</returns>
         private Vector2[] ParsePt2FromPtX(Vector2[] pts, bool useLip)
         {
-            // Dispatch on the landmark layout, as upstream parse_pt2_from_pt_x does.
-            // The 106-point indices applied to the 203-point LandmarkRunner output
-            // land on contour points, which put the eye→lip axis ~40° off and
-            // rotated the source crop by that much (fixed 2026-09-05).
             var pt2 = pts.Length switch
             {
                 203 => ParsePt2FromPt203(pts, useLip),

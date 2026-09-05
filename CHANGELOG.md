@@ -13,8 +13,7 @@ LivePortrait crops are upright (they were rotated ~40°), the bundled driving cl
 
 ### Added
 - **Authored driving clips** (`Resources/driving/*.mp4`, pipeline in `Tools~/driving_clips/`). A rendered face, 512×512, 25 fps, rest-to-rest: a 27 s idle and six expression takes (approve, disapprove, smile, sad, surprised, confused).
-- **`LiveTalkAPI.MeasureMotionAsync(framesDir, csvPath)`** — writes per-frame pose, scale, expression and landmarks so a driver can be compared to what was rendered from it (`Tools~/driving_clips/compare_motion.py`).
-- **`avatar.json` records `fps` and `recipeVersion`.** `Avatar.FrameRate` exposes the clip clock. Avatar id includes `Avatar.Version`; bump it to rebuild.
+- **`Avatar.Version` in the avatar id.** Bump it when the driving recipe or clips change so folders rebuild.
 - **`Character.SpeakAsync(..., startFrameIndex:)`** — the avatar frame the first lip-sync frame is rendered onto. `CharacterPlayer.SpeechContinuity` (on by default) starts speech from the idle frame that will be showing when generation finishes, and resumes idle from where speech ended.
 
 ### Fixed

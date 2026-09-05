@@ -158,8 +158,8 @@ namespace LiveTalk.API
         /// <summary>Where the idle frames are (expression 0), or null without an animatable avatar.</summary>
         internal string IdleFramesFolder => Avatar != null && Avatar.CanAnimate ? Avatar.ExpressionFolder(0) : null;
 
-        /// <summary>The rate the idle frames play at. See <see cref="Avatar.FrameRate"/>.</summary>
-        public float IdleFrameRate => Avatar != null ? Avatar.FrameRate : Avatar.DefaultFrameRate;
+        /// <summary>The rate the idle frames play at.</summary>
+        public float IdleFrameRate => Avatar.DefaultFrameRate;
 
         // Ids read from character.json before the halves are loaded
         // (metadata load), and the legacy file for the inline path.

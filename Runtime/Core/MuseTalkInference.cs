@@ -1050,10 +1050,6 @@ namespace LiveTalk.Core
                 // Step 2: Resize to face crop dimensions
                 if (avatarData != null && avatarData.FaceRegions.Count > 0)
                 {
-                    // The face region of the very frame the latent came from.
-                    // (This used to re-derive the index with a 2n period while
-                    // the latents cycled with 2n-2, so past the first turn the
-                    // mouth was blended into a neighbouring frame's face.)
                     var faceData = avatarData.FaceRegions[Mathf.Clamp(avatarIndex, 0, avatarData.FaceRegions.Count - 1)];
                     var bbox = faceData.BoundingBox;
                     

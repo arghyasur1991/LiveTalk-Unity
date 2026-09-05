@@ -1205,7 +1205,7 @@ namespace LiveTalk.API
             if (chainedEnd >= 0)
             {
                 start = chainedEnd;
-                Logger.Log($"[CharacterPlayer] Continuity: line follows the previous one, start frame {start}");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: line follows the previous one, start frame {start}");
             }
             else
             {
@@ -1215,7 +1215,7 @@ namespace LiveTalk.API
                 lead += ContinuityLeadSeconds;
                 int leadFrames = Mathf.RoundToInt(lead * IdleFps);
                 start = Mod(_idleFrameIndex + leadFrames, count);
-                Logger.Log($"[CharacterPlayer] Continuity: idle cursor {_idleFrameIndex}, predicted {lead:F2}s ({leadFrames} frames) to ready → start frame {start}");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: idle cursor {_idleFrameIndex}, predicted {lead:F2}s ({leadFrames} frames) to ready → start frame {start}");
             }
 
             item.PredictedStart = start;
@@ -1237,12 +1237,12 @@ namespace LiveTalk.API
             {
                 float perFrame = elapsed / item.GenerationFrames;
                 _batchSecondsPerFrame = Mathf.Lerp(_batchSecondsPerFrame, perFrame, EstimatorGain);
-                Logger.Log($"[CharacterPlayer] Continuity: batch line ready {elapsed:F2}s after start chosen ({perFrame * 1000f:F0} ms/frame; estimate now {_batchSecondsPerFrame * 1000f:F0} ms/frame)");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: batch line ready {elapsed:F2}s after start chosen ({perFrame * 1000f:F0} ms/frame; estimate now {_batchSecondsPerFrame * 1000f:F0} ms/frame)");
             }
             else
             {
                 _streamLeadSeconds = Mathf.Lerp(_streamLeadSeconds, elapsed, EstimatorGain);
-                Logger.Log($"[CharacterPlayer] Continuity: streamed line ready {elapsed:F2}s after start chosen (estimate now {_streamLeadSeconds:F2}s)");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: streamed line ready {elapsed:F2}s after start chosen (estimate now {_streamLeadSeconds:F2}s)");
             }
         }
 
@@ -1271,7 +1271,7 @@ namespace LiveTalk.API
 
             if (distance == 0)
             {
-                Logger.Log($"[CharacterPlayer] Continuity: idle cursor {cursor} == speech start {target}; seamless");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: idle cursor {cursor} == speech start {target}; seamless");
             }
             else if (distance <= maxWaitFrames)
             {
@@ -1285,7 +1285,7 @@ namespace LiveTalk.API
                         break;
                     yield return null;
                 }
-                Logger.Log($"[CharacterPlayer] Continuity: idle run on {cursor} → {target} ({distance} frames, {Time.realtimeSinceStartup - waitStart:F2}s) ; seamless");
+                Logger.LogVerbose($"[CharacterPlayer] Continuity: idle run on {cursor} → {target} ({distance} frames, {Time.realtimeSinceStartup - waitStart:F2}s) ; seamless");
             }
             else
             {
@@ -1513,12 +1513,12 @@ namespace LiveTalk.API
                     
                     if (streamed)
                     {
-                        Logger.Log($"[CharacterPlayer] Playing streamed segment: {item.Frames.Count} frames and {item.Stream.SecondsAvailable:F2}s of audio so far (avatar frame {item.StartFrameIndex})");
+                        Logger.Log($"[CharacterPlayer] Playing streamed segment: {item.Frames.Count} frames and {item.Stream.SecondsAvailable:F2}s of audio so far");
                         yield return PlayStreamingSegment(item);
                     }
                     else
                     {
-                        Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s (avatar frame {item.StartFrameIndex})");
+                        Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
                         
                         // Play this segment with its audio
                         yield return PlayFramesSynchronized(item.Frames, item.AudioClip, item.StartFrameIndex);
