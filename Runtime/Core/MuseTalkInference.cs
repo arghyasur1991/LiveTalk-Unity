@@ -198,12 +198,19 @@ namespace LiveTalk.Core
         /// <param name="audioClip">The audio clip to synchronize with the generated video</param>
         /// <param name="avatarData">The preloaded avatar data containing face regions and latents</param>
         /// <param name="stream">The output stream to receive generated video frames</param>
+        /// <param name="startFrameIndex">
+        /// Avatar frame the first output frame is rendered onto; later frames
+        /// walk on from it (<see cref="AvatarData.AvatarFrameIndex"/>). A
+        /// player passes the frame its idle loop will be on when the line
+        /// starts, so the head does not jump when speech begins.
+        /// </param>
         /// <returns>An enumerator for Unity coroutine execution</returns>
         /// <exception cref="ArgumentNullException">Thrown when any parameter is null</exception>
         public IEnumerator GenerateWithPreloadedDataAsync(
             AudioClip audioClip, 
             AvatarData avatarData, 
-            FrameStream stream)
+            FrameStream stream,
+            int startFrameIndex = 0)
         {
             if (audioClip == null)
                 throw new ArgumentNullException(nameof(audioClip));
@@ -224,9 +231,10 @@ namespace LiveTalk.Core
                 yield return TaskYield.Wait(ProcessAudio(audioClip), r => audioFeatures = r,
                     "MuseTalkInference.ProcessAudio");
                 stream.TotalExpectedFrames = audioFeatures.FeatureChunks.Count;
+                stream.StartFrameIndex = startFrameIndex;
 
                 // Step 2: Generate and stream video frames
-                yield return GenerateFramesStreaming(avatarData, audioFeatures, stream);
+                yield return GenerateFramesStreaming(avatarData, audioFeatures, stream, startFrameIndex);
             }
             finally
             {
@@ -255,7 +263,9 @@ namespace LiveTalk.Core
         /// <param name="avatarData">Preloaded avatar data (face regions, latents).</param>
         /// <param name="features">The extractor the audio producer is feeding.</param>
         /// <param name="stream">Receives the frames; <see cref="FrameStream.TotalExpectedFrames"/> is set once the utterance length is known.</param>
-        public IEnumerator GenerateFramesIncremental(AvatarData avatarData, StreamingAudioFeatures features, FrameStream stream)
+        /// <param name="startFrameIndex">Avatar frame the first output frame is rendered onto; see <see cref="GenerateWithPreloadedDataAsync"/>.</param>
+        public IEnumerator GenerateFramesIncremental(
+            AvatarData avatarData, StreamingAudioFeatures features, FrameStream stream, int startFrameIndex = 0)
         {
             if (avatarData == null)
                 throw new ArgumentNullException(nameof(avatarData));
@@ -276,7 +286,7 @@ namespace LiveTalk.Core
                 yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
                 yield return TaskYield.Wait(features.StartSessionAsync(), "MuseTalkInference.Whisper.StartSession");
 
-                var cycleDLatents = BuildCycledLatents(avatarData);
+                stream.StartFrameIndex = startFrameIndex;
                 int emitted = 0;
                 var watch = System.Diagnostics.Stopwatch.StartNew();
 
@@ -303,7 +313,8 @@ namespace LiveTalk.Core
 
                     for (int idx = emitted; idx < safe; idx++)
                     {
-                        var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
+                        int avatarIndex = avatarData.AvatarFrameIndex(idx, startFrameIndex);
+                        var latentBatch = PrepareLatentBatch(avatarData.Latents[avatarIndex]);
                         var audioBatch = PrepareAudioBatch(features.GetFrameChunk(idx));
 
                         DenseTensor<float> audioWithPE = null;
@@ -315,7 +326,7 @@ namespace LiveTalk.Core
                             "MuseTalkInference.RunUNet");
 
                         Frame frame = default;
-                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, idx, avatarData), r => frame = r,
+                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
                             "MuseTalkInference.DecodeLatents");
 
                         stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
@@ -623,9 +634,11 @@ namespace LiveTalk.Core
         /// <param name="avatarData">The processed avatar data containing face regions and latents</param>
         /// <param name="audioFeatures">The extracted audio features for synchronization</param>
         /// <param name="stream">The output stream to receive generated frames</param>
+        /// <param name="startFrameIndex">Avatar frame the first output frame is rendered onto</param>
         /// <returns>An enumerator for Unity coroutine execution</returns>
         /// <exception cref="InvalidOperationException">Thrown when no avatar latents are available</exception>
-        private IEnumerator GenerateFramesStreaming(AvatarData avatarData, AudioFeatures audioFeatures, FrameStream stream)
+        private IEnumerator GenerateFramesStreaming(
+            AvatarData avatarData, AudioFeatures audioFeatures, FrameStream stream, int startFrameIndex)
         {
             // Use audio length to determine frame count
             int numFrames = audioFeatures.FeatureChunks.Count;
@@ -649,12 +662,12 @@ namespace LiveTalk.Core
                 // The bridge logs the original fault and rethrows it.
                 yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
 
-                var cycleDLatents = BuildCycledLatents(avatarData);
-
                 for (int idx = 0; idx < numFrames; idx++)
                 {
-                    // Prepare batch data using the frame index to cycle through latents
-                    var latentBatch = PrepareLatentBatchWithCycling(cycleDLatents, idx);
+                    // The avatar frame this output frame is rendered onto:
+                    // one walk shared with the face-region lookup in DecodeLatents.
+                    int avatarIndex = avatarData.AvatarFrameIndex(idx, startFrameIndex);
+                    var latentBatch = PrepareLatentBatch(avatarData.Latents[avatarIndex]);
                     var audioBatch = PrepareAudioBatch(audioFeatures.FeatureChunks, idx);
 
                     // Add positional encoding to audio (async)
@@ -669,7 +682,7 @@ namespace LiveTalk.Core
 
                     // Decode latents to images (async)
                     Frame frame = default;
-                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, idx, avatarData), r => frame = r,
+                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
                         "MuseTalkInference.DecodeLatents");
 
                     // Stream frames to output as they're generated
@@ -833,45 +846,20 @@ namespace LiveTalk.Core
         }
         
         /// <summary>
-        /// Cycled latent list for smooth ping-pong animation:
-        /// [0,1,2,3,2,1] rather than [0,1,2,3,3,2,1,0], so no frame repeats at
-        /// the turn. Shared by the batch and streaming generators so both walk
-        /// the avatar's frames identically.
+        /// Formats one avatar frame's latent as the [1, 8, 32, 32] UNet input.
+        /// Which frame is chosen is <see cref="AvatarData.AvatarFrameIndex"/>'s
+        /// business — forward with wrap for a loopable avatar, ping-pong for a
+        /// legacy one — and the same index picks the face region in
+        /// <see cref="DecodeLatents"/>, so the two cannot drift apart.
         /// </summary>
-        private static List<float[]> BuildCycledLatents(AvatarData avatarData)
-        {
-            var cycleDLatents = new List<float[]>(avatarData.Latents);
-            var reversedLatents = new List<float[]>(avatarData.Latents);
-            reversedLatents.Reverse();
-
-            // Remove first element of reversed (duplicate of last forward frame)
-            if (reversedLatents.Count > 0)
-                reversedLatents.RemoveAt(0);
-
-            cycleDLatents.AddRange(reversedLatents);
-
-            // Remove last element (duplicate of first forward frame) to complete the cycle
-            if (cycleDLatents.Count > avatarData.Latents.Count && cycleDLatents.Count > 0)
-                cycleDLatents.RemoveAt(cycleDLatents.Count - 1);
-
-            return cycleDLatents;
-        }
-
-        /// <summary>
-        /// Prepares a latent batch with proper cycling for smooth frame-based animation.
-        /// </summary>
-        /// <param name="cycleDLatents">The cycled latent arrays for animation smoothness</param>
-        /// <param name="startIdx">The starting frame index for latent selection</param>
+        /// <param name="latent">The latent array of the chosen avatar frame</param>
         /// <returns>A properly formatted tensor batch for UNet processing with dimensions [1, 8, 32, 32]</returns>
         /// <exception cref="InvalidOperationException">Thrown when latent size doesn't match expected dimensions</exception>
-        private DenseTensor<float> PrepareLatentBatchWithCycling(List<float[]> cycleDLatents, int startIdx)
+        private DenseTensor<float> PrepareLatentBatch(float[] latent)
         {
             const int channels = 8, height = 32, width = 32;
             int totalSize = channels * height * width;
             var flatBatch = new float[totalSize];
-            int globalFrameIdx = startIdx;
-            var latentIdx = globalFrameIdx % cycleDLatents.Count;
-            var latent = cycleDLatents[latentIdx];
             
             // Verify latent size
             const int expectedLatentSize = 1 * channels * height * width;
@@ -997,11 +985,11 @@ namespace LiveTalk.Core
         /// segmentation masks for natural-looking results. Optimized with reusable arrays and zero-copy tensor operations.
         /// </summary>
         /// <param name="unetOutputBatch">The predicted latent tensor from UNet inference</param>
-        /// <param name="globalStartIdx">The global frame index for proper avatar cycling</param>
+        /// <param name="avatarIndex">The avatar frame the latent came from (<see cref="AvatarData.AvatarFrameIndex"/>); its face region is what the mouth is blended into</param>
         /// <param name="avatarData">The avatar data containing original images and precomputed blending masks</param>
         /// <returns>A task containing the final blended texture ready for display</returns>
         /// <exception cref="InvalidOperationException">Thrown when VAE decoding or blending fails</exception>
-        private async Task<Frame> DecodeLatents(Tensor<float> unetOutputBatch, int globalStartIdx, AvatarData avatarData)
+        private async Task<Frame> DecodeLatents(Tensor<float> unetOutputBatch, int avatarIndex, AvatarData avatarData)
         {      
             return await Task.Run(async () =>
             {
@@ -1057,22 +1045,17 @@ namespace LiveTalk.Core
                 }
                 var tensor = tensors[0];
                 
-                // Calculate global frame index for proper numbering
-                int globalFrameIdx = globalStartIdx;
-                
                 // Step 1: Convert tensor to raw decoded texture
                 var rawDecodedTexture = FrameUtils.TensorToFrame(tensor);
                 
                 // Step 2: Resize to face crop dimensions
                 if (avatarData != null && avatarData.FaceRegions.Count > 0)
                 {
-                    // Get corresponding face bbox for sizing
-                    int avatarIndex = globalFrameIdx % (2 * avatarData.FaceRegions.Count); // cycled latents
-                    if (avatarIndex >= avatarData.FaceRegions.Count)
-                    {
-                        avatarIndex = (2 * avatarData.FaceRegions.Count) - 1 - avatarIndex;
-                    }
-                    var faceData = avatarData.FaceRegions[avatarIndex];
+                    // The face region of the very frame the latent came from.
+                    // (This used to re-derive the index with a 2n period while
+                    // the latents cycled with 2n-2, so past the first turn the
+                    // mouth was blended into a neighbouring frame's face.)
+                    var faceData = avatarData.FaceRegions[Mathf.Clamp(avatarIndex, 0, avatarData.FaceRegions.Count - 1)];
                     var bbox = faceData.BoundingBox;
                     
                     int targetWidth = Mathf.RoundToInt(bbox.width);

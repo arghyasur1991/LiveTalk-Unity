@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -166,6 +167,16 @@ namespace LiveTalk.API
         /// Gets or sets the total number of frames expected to be processed through this stream.
         /// </summary>
         public int TotalExpectedFrames { get; set; }
+
+        /// <summary>
+        /// For lip-sync frames: the avatar frame (index into the expression's
+        /// driving frames) the first frame of this stream was rendered onto;
+        /// frame <c>i</c> is on avatar frame <c>StartFrameIndex + i</c>, wrapped.
+        /// Set by the generator (the requested start) or by a frames-cache
+        /// hit (the start the cached frames were rendered from). -1 when
+        /// unknown or not applicable.
+        /// </summary>
+        public int StartFrameIndex { get; internal set; } = -1;
         
         /// <summary>
         /// Gets a value indicating whether more frames are available for processing.
@@ -760,13 +771,13 @@ namespace LiveTalk.API
 
             int frameCount = CalculateFrameCount(videoPlayer, maxFrames);
             Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
-            
+
             var outputStream = new FrameStream(frameCount);
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
             _controller.StartCoroutine(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(video)"));
-            
+
             return outputStream;
         }
 
@@ -789,13 +800,13 @@ namespace LiveTalk.API
 
             var frameFiles = GetFrameFiles(drivingFramesPath, maxFrames);
             Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameFiles.Length} driving frames from directory");
-            
+
             var outputStream = new FrameStream(frameFiles.Length);
             _controller.LoadDrivingFrames(frameFiles);
             _controller.StartCoroutine(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(directory)"));
-            
+
             return outputStream;
         }
 
@@ -844,18 +855,18 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated talking head frames</returns>
         /// <exception cref="ArgumentException">Thrown when audio clip is null</exception>
         /// <exception cref="InvalidOperationException">Thrown when the controller is not available</exception>
-        internal FrameStream GenerateTalkingHeadWithPreloadedData(AvatarData avatarData, AudioClip audioClip)
+        internal FrameStream GenerateTalkingHeadWithPreloadedData(AvatarData avatarData, AudioClip audioClip, int startFrameIndex = 0)
         {
             ValidateControllerAvailability();
             ValidateTalkingHeadInputs(null, audioClip);
             
-            Logger.Log($"[LiveTalkAPI] Generating talking head: {audioClip.name} ({audioClip.length:F2}s)");
+            Logger.Log($"[LiveTalkAPI] Generating talking head: {audioClip.name} ({audioClip.length:F2}s) from avatar frame {startFrameIndex}");
             
             int estimatedFrames = EstimateFrameCount(audioClip);
-            var outputStream = new FrameStream(estimatedFrames);
+            var outputStream = new FrameStream(estimatedFrames) { StartFrameIndex = startFrameIndex };
             
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream), outputStream,
+                _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadWithPreloadedData"));
             return outputStream;
         }
@@ -867,7 +878,7 @@ namespace LiveTalk.API
         /// the extractor's lifetime (feed, complete or fail it) and the
         /// MuseTalk lease.
         /// </summary>
-        internal FrameStream GenerateTalkingHeadIncremental(AvatarData avatarData, StreamingAudioFeatures features)
+        internal FrameStream GenerateTalkingHeadIncremental(AvatarData avatarData, StreamingAudioFeatures features, int startFrameIndex = 0)
         {
             ValidateControllerAvailability();
             if (avatarData == null)
@@ -875,11 +886,11 @@ namespace LiveTalk.API
             if (features == null)
                 throw new ArgumentNullException(nameof(features));
 
-            Logger.Log("[LiveTalkAPI] Generating talking head (streaming)");
+            Logger.Log($"[LiveTalkAPI] Generating talking head (streaming) from avatar frame {startFrameIndex}");
 
-            var outputStream = new FrameStream(0);
+            var outputStream = new FrameStream(0) { StartFrameIndex = startFrameIndex };
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _museTalk.GenerateFramesIncremental(avatarData, features, outputStream), outputStream,
+                _museTalk.GenerateFramesIncremental(avatarData, features, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadIncremental"));
             return outputStream;
         }
@@ -920,6 +931,84 @@ namespace LiveTalk.API
             Avatar avatar = null;
             yield return Avatar.CreateOrLoadCore(image, mode, a => avatar = a);
             onComplete?.Invoke(avatar);
+        }
+
+        /// <summary>
+        /// Analytical validator for driving clips and rendered results. Runs every
+        /// PNG/JPG in <paramref name="framesDir"/> (sorted by name) through the same
+        /// landmark-track → fixed-face-crop → motion-extractor path a driving clip
+        /// takes, and writes one CSV row per frame: <c>frame, pitch, yaw, roll,
+        /// scale, tx, ty, lmkW, lmkH, lmkCx, lmkCy, exp0..exp62</c>. <c>lmkW/lmkH</c>
+        /// are the face's landmark box in that image's own pixels — the direct
+        /// head-size signal — and <c>scale</c> is what the extractor reads. Run it on
+        /// a clip's frames and on the frames rendered from that clip, then compare
+        /// with <c>Tools~/driving_clips/compare_motion.py</c>. Requires the
+        /// LivePortrait models to be loaded. No rendering, no cache.
+        /// </summary>
+        public IEnumerator MeasureMotionAsync(string framesDir, string csvPath, Action<Exception> onError)
+        {
+            return TaskYield.Guard(MeasureMotionCore(framesDir, csvPath), onError, "LiveTalkAPI.MeasureMotionAsync");
+        }
+
+        private IEnumerator MeasureMotionCore(string framesDir, string csvPath)
+        {
+            RequireInitialized();
+            if (_livePortrait == null)
+                throw new InvalidOperationException("LivePortrait models are not loaded");
+            yield return TaskYield.Wait(_livePortrait.WaitForAllModelsAsync(), "MeasureMotion.WaitForModels");
+
+            var files = Directory.GetFiles(framesDir)
+                .Where(f => f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .ToList();
+            if (files.Count == 0)
+                throw new FileNotFoundException($"No frames in {framesDir}");
+
+            var predInfo = new LivePortraitPredInfo();
+            var sb = new System.Text.StringBuilder();
+            sb.Append("frame,pitch,yaw,roll,scale,tx,ty,lmkW,lmkH,lmkCx,lmkCy");
+            for (int i = 0; i < 63; i++) sb.Append(",exp").Append(i);
+            for (int i = 0; i < 203; i++) sb.Append(",lm").Append(i).Append("x,lm").Append(i).Append('y');
+            sb.Append('\n');
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            yield return TaskYield.Wait(_livePortrait.StartSession(), "MeasureMotion.StartSession");
+            try
+            {
+            foreach (var file in files)
+            {
+                var tex = FileUtils.LoadFrame(file);
+                var frame = TextureUtils.Texture2DToFrame(tex);
+                UnityEngine.Object.Destroy(tex);
+
+                LivePortraitInference.MotionMeasurement m = default;
+                yield return TaskYield.Wait(_livePortrait.MeasureMotion(frame, predInfo), r => m = r, "MeasureMotion");
+
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                sb.Append(Path.GetFileName(file))
+                  .Append(',').Append(m.Pitch.ToString("F4", ci)).Append(',').Append(m.Yaw.ToString("F4", ci)).Append(',').Append(m.Roll.ToString("F4", ci))
+                  .Append(',').Append(m.Scale.ToString("F6", ci)).Append(',').Append(m.Tx.ToString("F5", ci)).Append(',').Append(m.Ty.ToString("F5", ci))
+                  .Append(',').Append(m.LandmarkBoxWidth.ToString("F2", ci)).Append(',').Append(m.LandmarkBoxHeight.ToString("F2", ci))
+                  .Append(',').Append(m.LandmarkCenterX.ToString("F2", ci)).Append(',').Append(m.LandmarkCenterY.ToString("F2", ci));
+                for (int i = 0; i < 63; i++)
+                    sb.Append(',').Append((i < m.Expression.Length ? m.Expression[i] : 0f).ToString("F6", ci));
+                for (int i = 0; i < 203; i++)
+                {
+                    var p = i < m.Landmarks.Length ? m.Landmarks[i] : Vector2.zero;
+                    sb.Append(',').Append(p.x.ToString("F2", ci)).Append(',').Append(p.y.ToString("F2", ci));
+                }
+                sb.Append('\n');
+            }
+            }
+            finally
+            {
+                _livePortrait.EndSession();
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(csvPath));
+            File.WriteAllText(csvPath, sb.ToString());
+            Logger.Log($"[LiveTalkAPI] MeasureMotion: {files.Count} frames from {framesDir} → {csvPath} " +
+                       $"({sw.ElapsedMilliseconds / (float)files.Count:F1} ms/frame incl. landmark track + crop)");
         }
 
         /// <summary>

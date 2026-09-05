@@ -6,6 +6,8 @@
 # backup files) would silently drop them; re-include explicitly.
 !Samples~/
 !Samples~/**
+!Tools~/
+!Tools~/**
 
 # OS
 .DS_Store
@@ -37,3 +39,6 @@ __pycache__/
 *.onnx
 *.onnx.data
 *.onnx_data
+
+# FasterLivePortrait writes <clip>.pkl next to a driving video it is run on
+*.pkl

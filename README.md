@@ -225,6 +225,17 @@ them (`Avatar.ExpressionIndices`, `Avatar.CanAnimate`):
 Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 `GetAvailableAvatarIds()`, `DeleteAvatar(avatarId)`.
 
+### How the driving clips are applied
+
+Each expression is a bundled 25 fps clip of a rendered face
+(`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
+already return to rest and share the lip-sync clock. Avatar creation renders
+one frame per driving frame with LivePortrait's relative transfer — no
+resample, loop blend, expression gain or scale pin. Those edits existed in
+2.1.0 to paper over a ~40° crop rotation (fixed in 2.2.0) and are gone.
+A change to the driving-frame recipe bumps `Avatar.MotionPipelineVersion`
+and rebuilds.
+
 ## Design a voice (roll the dice)
 
 ```csharp
