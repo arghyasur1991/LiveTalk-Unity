@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`Tools~/driving_clips/build.py`** — one command to generate
+  `Resources/driving/*.mp4` from scratch. Look, character, framing and
+  encode knobs live in the SETTINGS block at the top of that file;
+  `python3 build.py` installs MB-Lab, dresses the character, renders and
+  encodes. See `Tools~/driving_clips/README.md`.
+
 ## [2.2.0] - 2026-09-05
 
 LivePortrait crops are upright (they were rotated ~40°), the bundled driving clips are new authored 25 fps rest-to-rest footage, idle loops forward, and speech continues from the idle frame. Existing avatar folders rebuild once.
