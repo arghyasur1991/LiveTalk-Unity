@@ -225,6 +225,14 @@ them (`Avatar.ExpressionIndices`, `Avatar.CanAnimate`):
 Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 `GetAvailableAvatarIds()`, `DeleteAvatar(avatarId)`.
 
+### How the driving clips are applied
+
+Each expression is a bundled 25 fps clip of a rendered face
+(`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
+return to rest and share the lip-sync clock. Avatar creation renders one
+LivePortrait frame per driving frame. A change to the clips or the crop
+recipe bumps `Avatar.MotionPipelineVersion` and rebuilds.
+
 ## Design a voice (roll the dice)
 
 ```csharp
