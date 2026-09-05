@@ -106,26 +106,14 @@ namespace LiveTalk.API
         public DateTime createdUtc;
         public string version = "2.0";
 
-        /// <summary>Frame rate the driving frames were rendered at. Absent in folders built before motion editing (played at 25).</summary>
+        /// <summary>Frame rate the driving frames were rendered at. Absent in older folders (played at 25).</summary>
         public float? fps;
 
-        /// <summary>True when each expression's frames run seamlessly from last back to first. Absent / false: ping-pong.</summary>
-        public bool? loopable;
-
         /// <summary>
-        /// Version of the driving-motion pipeline that built the frames. Part
-        /// of the avatar id, so a pipeline change rebuilds every avatar rather
-        /// than half-matching an old folder. See <see cref="Avatar.MotionPipelineVersion"/>.
+        /// Recipe that built the frames (<see cref="Avatar.Version"/>). Stored
+        /// for logs; the avatar id already includes it, so a bump rebuilds.
         /// </summary>
-        public int? motionPipelineVersion;
-
-        /// <summary>
-        /// Fingerprint of the bundled driving clips the frames were rendered
-        /// from (<see cref="Avatar.DrivingClipsHash"/>). Part of the avatar
-        /// id, so replacing a clip rebuilds every avatar instead of serving
-        /// frames driven by the old footage. Absent in folders built before it.
-        /// </summary>
-        public string drivingClipsHash;
+        public int? recipeVersion;
 
         public const string FileName = "avatar.json";
     }
@@ -194,14 +182,6 @@ namespace LiveTalk.API
         /// </summary>
         public float FrameRate { get; private set; } = DefaultFrameRate;
 
-        /// <summary>
-        /// True when every expression's frames run last→first without a cut.
-        /// Bundled clips are authored rest-to-rest, so this is true for folders
-        /// built from them. False for older folders, which ping-pong to hide
-        /// the wrap.
-        /// </summary>
-        public bool IsLoopable { get; private set; }
-
         internal string Folder { get; }
         internal Dictionary<int, ExpressionData> LoadedExpressions { get; } = new Dictionary<int, ExpressionData>();
 
@@ -214,9 +194,10 @@ namespace LiveTalk.API
 
         /// <summary>
         /// Bumped when the driving-frame recipe or bundled clips change, so
-        /// existing folders rebuild instead of serving stale frames.
+        /// existing folders rebuild instead of serving stale frames. The only
+        /// identity knob besides the portrait bytes and the expression set.
         /// </summary>
-        internal const int MotionPipelineVersion = 8;
+        internal const int Version = 9;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -239,58 +220,12 @@ namespace LiveTalk.API
         };
 
         /// <summary>
-        /// The expression-set half of the avatar id. Carries the motion
-        /// pipeline version and the driving-clip fingerprint, so a pipeline
-        /// change or a new set of clips gives every avatar a new id: an old
-        /// folder is neither reused nor half-matched, and the two generations
-        /// can coexist on disk until the old one is deleted.
+        /// The expression-set half of the avatar id. Carries <see cref="Version"/>,
+        /// so a recipe or clip change gives every avatar a new id: an old
+        /// folder is neither reused nor half-matched.
         /// </summary>
         internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion
-            + ";clips=" + DrivingClipsHash;
-
-        private static string _drivingClipsHash;
-
-        /// <summary>
-        /// Fingerprint of the bundled driving clips, computed once per session
-        /// from every <c>Resources/driving/*</c> <see cref="VideoClip"/>. Hashes
-        /// what a <see cref="VideoClip"/> exposes in a player as well as in the
-        /// editor — name, frame count, frame rate, size, length — which is what
-        /// changes when a clip is re-authored (the raw bytes are not readable
-        /// from an imported VideoClip at runtime). All seven clips are covered
-        /// whatever the mode, so a change to any of them rebuilds every avatar.
-        /// </summary>
-        internal static string DrivingClipsHash
-        {
-            get
-            {
-                if (_drivingClipsHash == null)
-                    _drivingClipsHash = ComputeDrivingClipsHash();
-                return _drivingClipsHash;
-            }
-        }
-
-        private static string ComputeDrivingClipsHash()
-        {
-            var sb = new System.Text.StringBuilder();
-            var inv = System.Globalization.CultureInfo.InvariantCulture;
-            foreach (string expression in AllExpressionNames)
-            {
-                VideoClip clip = LoadDrivingVideoForExpression(expression);
-                sb.Append(expression).Append('=');
-                if (clip == null)
-                {
-                    sb.Append("missing;");
-                    continue;
-                }
-                sb.Append(clip.frameCount).Append('@').Append(clip.frameRate.ToString("R", inv))
-                  .Append(',').Append(clip.width).Append('x').Append(clip.height)
-                  .Append(',').Append(clip.length.ToString("R", inv)).Append(';');
-            }
-            string hash = HashUtils.GenerateTextHash(sb.ToString()).Substring(0, 12);
-            Logger.LogVerbose($"[Avatar] Driving clips fingerprint {hash} ({sb})");
-            return hash;
-        }
+            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";v" + Version;
 
         /// <summary>Human name of an expression index, for logs.</summary>
         internal static string GetExpressionName(int index) =>
@@ -440,9 +375,7 @@ namespace LiveTalk.API
                     expressions = expressions,
                     createdUtc = DateTime.UtcNow,
                     fps = DefaultFrameRate,
-                    loopable = true,
-                    motionPipelineVersion = MotionPipelineVersion,
-                    drivingClipsHash = DrivingClipsHash,
+                    recipeVersion = Version,
                 };
                 string manifestPath = Path.Combine(staging, AvatarManifest.FileName);
                 yield return TaskYield.Wait(
@@ -868,15 +801,12 @@ namespace LiveTalk.API
             var avatar = new Avatar(id, mode, folder, image, isLegacy);
             if (manifest != null)
             {
-                // A folder from before motion editing has neither field: its
-                // frames are one per driving frame and have to be ping-ponged.
                 avatar.FrameRate = manifest.fps is > 0f ? manifest.fps.Value : DefaultFrameRate;
-                avatar.IsLoopable = manifest.loopable ?? false;
             }
             yield return avatar.LoadExpressionsData();
 
             Logger.LogVerbose($"[Avatar] Loaded avatar {id} ({avatar.LoadedExpressions.Count} expression(s), " +
-                              $"{avatar.FrameRate:F0} fps, {(avatar.IsLoopable ? "loopable" : "ping-pong")}) in {start.Elapsed.TotalMilliseconds:F0}ms");
+                              $"{avatar.FrameRate:F0} fps) in {start.Elapsed.TotalMilliseconds:F0}ms");
             onComplete?.Invoke(avatar);
         }
 
@@ -907,10 +837,6 @@ namespace LiveTalk.API
                     {
                         ExpressionName = GetExpressionName(expressionIndex)
                     };
-                    // The lip-sync generator walks the frames the same way the
-                    // player does: forward with wrap for a loopable set,
-                    // ping-pong for a legacy one.
-                    expressionData.Data.Loopable = IsLoopable;
 
                     // Load latents
                     yield return LoadExpressionLatents(expressionFolder, expressionData);

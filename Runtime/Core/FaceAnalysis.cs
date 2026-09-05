@@ -896,7 +896,7 @@ namespace LiveTalk.Core
             // Dispatch on the landmark layout, as upstream parse_pt2_from_pt_x does.
             // The 106-point indices applied to the 203-point LandmarkRunner output
             // land on contour points, which put the eye→lip axis ~40° off and
-            // rotated every source and driving crop by that much (fixed 2026-09-05).
+            // rotated the source crop by that much (fixed 2026-09-05).
             var pt2 = pts.Length switch
             {
                 203 => ParsePt2FromPt203(pts, useLip),

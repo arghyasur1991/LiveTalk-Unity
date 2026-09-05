@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Second face-crop on driving frames before motion extract. Bundled clips are already 512×512 face plates; extract is resize to 256. The source-portrait crop is unchanged.
+- `Avatar.IsLoopable` / `Character.IdleIsLoopable` and ping-pong idle. Clips are rest-to-rest; idle always wraps.
+- Clip fingerprint and `motionPipelineVersion` in the avatar id.
+
+### Changed
+- Avatar id includes `Avatar.Version` (recipe). Bump that constant to rebuild. Current: 9.
+
 ## [2.2.0] - 2026-09-05
 
 LivePortrait crops are upright (they were rotated ~40°), the bundled driving clips are new authored 25 fps rest-to-rest footage, idle loops forward, and speech continues from the idle frame. Existing avatar folders rebuild once.

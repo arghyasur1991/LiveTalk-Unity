@@ -63,9 +63,8 @@ namespace LiveTalk.API
     /// 
     /// Features:
     /// - Auto-loads character when assigned
-    /// - Plays idle animation (expression 0) at the avatar's frame rate: a
-    ///   forward loop for a loopable avatar (<see cref="Character.IdleIsLoopable"/>),
-    ///   ping-pong for one built before the motion pipeline
+    /// - Plays idle animation (expression 0) as a forward loop at the avatar's
+    ///   frame rate (bundled clips are rest-to-rest)
     /// - Queues and plays speech with smooth transitions
     /// - Seamlessly returns to idle after speech
     /// - Speech may be queued at any time after <see cref="AssignCharacter"/>; lines queued
@@ -79,8 +78,7 @@ namespace LiveTalk.API
     /// start playing and asks for the frames to be rendered from there; when
     /// the line is ready it lets the idle run on to that frame (bounded by
     /// <see cref="MaxContinuityWaitSeconds"/>) so the head never jumps, and on
-    /// the way out idle resumes from the frame speech ended on. Legacy
-    /// (ping-pong) avatars keep the old behaviour.</para>
+    /// the way out idle resumes from the frame speech ended on.</para>
     /// </summary>
     public class CharacterPlayer : MonoBehaviour
     {
@@ -126,10 +124,9 @@ namespace LiveTalk.API
         
         // Idle animation. _idleFrameIndex is the avatar-frame cursor: the next
         // idle frame to show, kept current through speech as well (see the
-        // class remarks). _idleForward is only meaningful for a ping-pong avatar.
+        // class remarks).
         private List<Texture> _idleFrames;
         private int _idleFrameIndex = 0;
-        private bool _idleForward = true;
         private Coroutine _idleCoroutine;
         private float _idleNextFrameTime;
         private int _shownAvatarIndex = -1;
@@ -230,9 +227,8 @@ namespace LiveTalk.API
         /// Render each line's lip-sync frames from the avatar frame the idle
         /// loop will be on when the line starts, and let the idle run on to
         /// that frame before switching, so speech continues the idle motion
-        /// instead of jumping to the clip's first frame. Only effective for a
-        /// loopable avatar (<see cref="Character.IdleIsLoopable"/>). Off, every
-        /// line starts from avatar frame 0 as before. Default on.
+        /// instead of jumping to the clip's first frame. Off, every line starts
+        /// from avatar frame 0. Default on.
         /// </summary>
         public bool SpeechContinuity { get; set; } = true;
 
@@ -264,11 +260,8 @@ namespace LiveTalk.API
         /// <summary>Frames in the idle loop, or 0 before they are loaded.</summary>
         public int IdleFrameCount => _idleFrames?.Count ?? 0;
 
-        /// <summary>True when the idle frames loop forward (loopable avatar) rather than ping-pong.</summary>
-        private bool IdleLoopable => _character != null && _character.IdleIsLoopable;
-
-        /// <summary>Continuity applies: loopable frames, the feature on, and frames to walk.</summary>
-        private bool ContinuityActive => SpeechContinuity && IdleLoopable && !audioOnly && _idleFrames != null && _idleFrames.Count > 1;
+        /// <summary>Continuity applies: the feature on, and frames to walk.</summary>
+        private bool ContinuityActive => SpeechContinuity && !audioOnly && _idleFrames != null && _idleFrames.Count > 1;
 
         /// <summary>The idle frame rate: the avatar's, or the serialized fallback for a legacy avatar.</summary>
         private float IdleFps
@@ -391,7 +384,6 @@ namespace LiveTalk.API
             _idleLoaded = false;
             _shownAvatarIndex = -1;
             _idleFrameIndex = 0;
-            _idleForward = true;
             
             _character = character;
             
@@ -574,9 +566,9 @@ namespace LiveTalk.API
                 _state = PlaybackState.Ready;
                 if (!_destroyed && autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
                 {
-                    // A loopable avatar carries on from the cursor: the stop
-                    // already cut the audio, no need to cut the face as well.
-                    StartIdleAnimation(fromStart: !IdleLoopable);
+                    // Carry on from the cursor: the stop already cut the audio,
+                    // no need to cut the face as well.
+                    StartIdleAnimation(fromStart: false);
                 }
             }
             else if (_loadCoroutine != null)
@@ -835,9 +827,7 @@ namespace LiveTalk.API
         /// <summary>
         /// Starts (or restarts) the idle loop. <paramref name="fromStart"/>
         /// rewinds to frame 0; otherwise the loop carries on from the cursor,
-        /// which is where the last idle or lip-sync frame left it — the
-        /// continuous case. A ping-pong avatar always rewinds, since its
-        /// cursor has no direction once speech has been on screen.
+        /// which is where the last idle or lip-sync frame left it.
         /// </summary>
         private void StartIdleAnimation(bool fromStart)
         {
@@ -846,10 +836,9 @@ namespace LiveTalk.API
                 StopCoroutine(_idleCoroutine);
             }
 
-            if (fromStart || !IdleLoopable)
+            if (fromStart)
             {
                 _idleFrameIndex = 0;
-                _idleForward = true;
             }
             else if (_idleFrames != null && _idleFrames.Count > 0)
             {
@@ -873,9 +862,8 @@ namespace LiveTalk.API
         /// Shows idle frames on a fixed schedule at the avatar's frame rate —
         /// frame <c>k</c> is due at <c>t0 + k / fps</c> — rather than sleeping
         /// a frame interval between frames, which rounds every wait up to the
-        /// next rendered frame and ran 25 fps idle at 20 in a 60 Hz editor. A
-        /// loopable avatar runs forward and wraps; a legacy one ping-pongs
-        /// (the only seamless walk when the two end frames differ).
+        /// next rendered frame and ran 25 fps idle at 20 in a 60 Hz editor.
+        /// Forward wrap: clips are rest-to-rest.
         /// </summary>
         private IEnumerator PlayIdleAnimation()
         {
@@ -897,31 +885,7 @@ namespace LiveTalk.API
                     // Index first: OnFrameUpdate subscribers read CurrentAvatarFrameIndex.
                     _shownAvatarIndex = _idleFrameIndex;
                     DisplayImage = _idleFrames[_idleFrameIndex];
-
-                    if (IdleLoopable)
-                    {
-                        _idleFrameIndex = (_idleFrameIndex + 1) % count;
-                    }
-                    else if (_idleForward)
-                    {
-                        _idleFrameIndex++;
-                        if (_idleFrameIndex >= count)
-                        {
-                            // Reached end, go reverse (skip last frame to avoid duplicate)
-                            _idleFrameIndex = Math.Max(0, count - 2);
-                            _idleForward = false;
-                        }
-                    }
-                    else
-                    {
-                        _idleFrameIndex--;
-                        if (_idleFrameIndex < 0)
-                        {
-                            // Reached start, go forward (skip first frame to avoid duplicate)
-                            _idleFrameIndex = Math.Min(1, count - 1);
-                            _idleForward = true;
-                        }
-                    }
+                    _idleFrameIndex = (_idleFrameIndex + 1) % count;
 
                     // Next due time. After a hitch longer than a frame, resync
                     // to now rather than bursting through the backlog.
@@ -946,19 +910,8 @@ namespace LiveTalk.API
             if (start < 0 || _idleFrames == null || _idleFrames.Count == 0)
                 return;
             int count = _idleFrames.Count;
-            if (IdleLoopable)
-            {
-                _shownAvatarIndex = Mod(start + frameIndex, count);
-                _idleFrameIndex = Mod(start + frameIndex + 1, count);
-            }
-            else
-            {
-                // Ping-pong: mirror the generator's walk so the cursor is at
-                // least the right frame, even though idle will rewind after.
-                int period = Math.Max(1, 2 * count - 2);
-                int c = Mod(start + frameIndex, period);
-                _shownAvatarIndex = c < count ? c : period - c;
-            }
+            _shownAvatarIndex = Mod(start + frameIndex, count);
+            _idleFrameIndex = Mod(start + frameIndex + 1, count);
         }
 
         /// <summary>
@@ -1530,15 +1483,15 @@ namespace LiveTalk.API
                     // Leave idle for speech.
                     if (ContinuityActive)
                     {
-                        // Loopable avatar: the line was rendered from the frame
-                        // the idle was predicted to reach; run the idle on to it
-                        // (or cut, past the bound), then hand over on the beat.
+                        // The line was rendered from the frame the idle was
+                        // predicted to reach; run the idle on to it (or cut,
+                        // past the bound), then hand over on the beat.
                         yield return AlignIdleToSpeechStart(item);
                     }
                     else if (needsToWait || isFirstSegment)
                     {
-                        // Legacy avatar, coming from idle: the line starts on the
-                        // clip's first frame, so show the last idle frame and cut.
+                        // Continuity off: the line starts on the clip's first
+                        // frame, so show the last idle frame and cut.
                         Logger.Log("[CharacterPlayer] Segment ready - transitioning from idle to speech");
                         StopIdleAnimation();
                         
@@ -1618,11 +1571,10 @@ namespace LiveTalk.API
             _state = PlaybackState.Ready;
             OnSpeechEnded?.Invoke();
             
-            // Return to idle: a loopable avatar carries on from the frame
-            // after the one speech ended on; a legacy one rewinds to frame 0.
+            // Return to idle from the frame after the one speech ended on.
             if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
             {
-                StartIdleAnimation(fromStart: !IdleLoopable);
+                StartIdleAnimation(fromStart: false);
             }
         }
 

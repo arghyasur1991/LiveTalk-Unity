@@ -53,7 +53,7 @@ Three entities with independent lifetimes, all under
 
 | Entity | What it is | Id | Cost |
 |---|---|---|---|
-| `Avatar` | A portrait plus the driving frames, latents and face crops LivePortrait and MuseTalk need to animate it. Immutable once built. | Content hash of the image bytes and the expression set (`CreationMode`). The same portrait built the same way always has the same id, so `CreateAvatarAsync` is get-or-create. | Minutes and hundreds of MB the first time; seconds to load afterwards. |
+| `Avatar` | A portrait plus the driving frames, latents and face crops LivePortrait and MuseTalk need to animate it. Immutable once built. | Content hash of the image bytes, the expression set (`CreationMode`), and `Avatar.Version`. The same portrait built the same way always has the same id, so `CreateAvatarAsync` is get-or-create. | Minutes and hundreds of MB the first time; seconds to load afterwards. |
 | `Voice` | A saved speaker. `VoiceKind.Designed` (VoiceDesign checkpoint, from a description) or `VoiceKind.Cloned` (Base checkpoint, in-context from a reference recording and its transcript). Carries `Sample` / `SampleText`: the rendered take for a designed voice, the reference itself for a clone. | Designed: a fresh GUID per call — every design samples a new speaker, so two rolls are two voices. Cloned: content hash of the reference PCM and transcript, so cloning the same take twice loads the existing folder. | Seconds. |
 | `Character` | A name plus references to one avatar and one voice. Nothing is copied. | GUID, assigned at creation, never changes. | Instant. |
 
@@ -231,7 +231,7 @@ Each expression is a bundled 25 fps clip of a rendered face
 (`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
 return to rest and share the lip-sync clock. Avatar creation renders one
 LivePortrait frame per driving frame. A change to the clips or the crop
-recipe bumps `Avatar.MotionPipelineVersion` and rebuilds.
+recipe bumps `Avatar.Version` and rebuilds.
 
 ## Design a voice (roll the dice)
 

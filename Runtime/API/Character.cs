@@ -158,15 +158,6 @@ namespace LiveTalk.API
         /// <summary>Where the idle frames are (expression 0), or null without an animatable avatar.</summary>
         internal string IdleFramesFolder => Avatar != null && Avatar.CanAnimate ? Avatar.ExpressionFolder(0) : null;
 
-        /// <summary>
-        /// True when the idle frames (the avatar's expression 0) run seamlessly
-        /// from the last back to the first, so a player should loop them
-        /// forward. False for an avatar built before the motion pipeline, or
-        /// with no avatar at all; such frames have to be ping-ponged. See
-        /// <see cref="Avatar.IsLoopable"/>.
-        /// </summary>
-        public bool IdleIsLoopable => Avatar != null && Avatar.IsLoopable;
-
         /// <summary>The rate the idle frames play at. See <see cref="Avatar.FrameRate"/>.</summary>
         public float IdleFrameRate => Avatar != null ? Avatar.FrameRate : Avatar.DefaultFrameRate;
 
@@ -694,7 +685,7 @@ namespace LiveTalk.API
         /// <param name="startFrameIndex">
         /// The avatar frame (index into the expression's driving frames) the
         /// first lip-sync frame is rendered onto; later frames walk on from it,
-        /// wrapping for a loopable avatar. A player passes the frame its idle
+        /// wrapping. A player passes the frame its idle
         /// loop will be on when the line starts so the head does not jump; 0
         /// is the clip's first frame. The <see cref="FrameStream"/> handed to
         /// <paramref name="onAudioReady"/> reports the start actually used in
@@ -1195,10 +1186,7 @@ namespace LiveTalk.API
                 int startFrameIndex = startFrameIndexProvider?.Invoke(expectedFrames) ?? 0;
                 int frameCount = avatarData.Latents.Count;
                 if (frameCount > 0)
-                {
-                    int period = avatarData.Loopable ? frameCount : Math.Max(1, 2 * frameCount - 2);
-                    startFrameIndex = ((startFrameIndex % period) + period) % period;
-                }
+                    startFrameIndex = ((startFrameIndex % frameCount) + frameCount) % frameCount;
                 outputStream.StartFrameIndex = startFrameIndex;
 
                 // Generate talking head using MuseTalk with preloaded data
