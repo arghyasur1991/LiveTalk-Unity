@@ -762,21 +762,6 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated animated frames</returns>
         /// <exception cref="ArgumentException">Thrown when source image or video player is null</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
-            => GenerateAnimatedTexturesAsync(sourceImage, videoPlayer, motion: null, maxFrames);
-
-        /// <summary>
-        /// As <see cref="GenerateAnimatedTexturesAsync(Texture2D, VideoPlayer, int)"/>,
-        /// with the driving motion edited in keypoint space before rendering:
-        /// retimed to <see cref="DrivingMotionOptions.TargetFps"/> and, when
-        /// <see cref="DrivingMotionOptions.LoopBlendSeconds"/> is positive,
-        /// crossfaded into a seamless forward loop. The output frame count is
-        /// then <c>MotionSequence.EditedCount</c> of the clip's, not the clip's,
-        /// and the first frame arrives only after the whole clip has been read.
-        /// <see cref="DrivingMotionOptions.SourceFps"/> of 0 reads the clip's
-        /// own frame rate. Null <paramref name="motion"/> is the unedited path.
-        /// </summary>
-        public FrameStream GenerateAnimatedTexturesAsync(
-            Texture2D sourceImage, VideoPlayer videoPlayer, DrivingMotionOptions motion, int maxFrames = -1)
         {
             if (!_initialized)
             {
@@ -785,27 +770,14 @@ namespace LiveTalk.API
             ValidateAnimationInputs(sourceImage, videoPlayer);
 
             int frameCount = CalculateFrameCount(videoPlayer, maxFrames);
-            int outputCount = frameCount;
-            if (motion != null)
-            {
-                if (motion.SourceFps <= 0f)
-                    motion.SourceFps = (float)videoPlayer.clip.frameRate;
-                outputCount = MotionSequence.EditedCount(frameCount, motion.SourceFps, motion.TargetFps,
-                    motion.LoopBlendFrames(motion.OutputFps));
-                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames @ {motion.SourceFps:F2} fps " +
-                           $"→ {outputCount} frames @ {motion.OutputFps:F2} fps{(motion.Loopable ? ", loopable" : "")}");
-            }
-            else
-            {
-                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
-            }
-            
-            var outputStream = new FrameStream(outputCount);
+            Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
+
+            var outputStream = new FrameStream(frameCount);
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream, motion), outputStream,
+                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(video)"));
-            
+
             return outputStream;
         }
 
@@ -819,17 +791,6 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated animated frames</returns>
         /// <exception cref="ArgumentException">Thrown when source image or path is invalid, or no frames are found</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
-            => GenerateAnimatedTexturesAsync(sourceImage, drivingFramesPath, null, maxFrames);
-
-        /// <summary>
-        /// Directory variant that also takes <see cref="DrivingMotionOptions"/>
-        /// (resample, loop blend, expression gain). A directory has no frame
-        /// rate of its own, so set <see cref="DrivingMotionOptions.SourceFps"/>
-        /// if you want resampling; leave it 0 to keep the frames' timing and
-        /// apply only the loop blend and gain. <c>null</c> is the raw path.
-        /// </summary>
-        public FrameStream GenerateAnimatedTexturesAsync(
-            Texture2D sourceImage, string drivingFramesPath, DrivingMotionOptions motion, int maxFrames = -1)
         {
             if (!_initialized)
             {
@@ -838,25 +799,14 @@ namespace LiveTalk.API
             ValidateAnimationInputs(sourceImage, drivingFramesPath);
 
             var frameFiles = GetFrameFiles(drivingFramesPath, maxFrames);
-            int outputCount = frameFiles.Length;
-            if (motion != null)
-            {
-                outputCount = MotionSequence.EditedCount(frameFiles.Length, motion.SourceFps, motion.TargetFps,
-                    motion.LoopBlendFrames(motion.OutputFps));
-                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameFiles.Length} driving frames from directory " +
-                           $"→ {outputCount} frames{(motion.Loopable ? ", loopable" : "")}, expression gain {motion.ExpressionGain:0.##}");
-            }
-            else
-            {
-                Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameFiles.Length} driving frames from directory");
-            }
+            Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameFiles.Length} driving frames from directory");
 
-            var outputStream = new FrameStream(outputCount);
+            var outputStream = new FrameStream(frameFiles.Length);
             _controller.LoadDrivingFrames(frameFiles);
             _controller.StartCoroutine(LiveTalkController.Produce(
-                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream, motion), outputStream,
+                _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(directory)"));
-            
+
             return outputStream;
         }
 

@@ -188,20 +188,17 @@ namespace LiveTalk.API
         public bool IsLegacy { get; }
 
         /// <summary>
-        /// Frame rate the driving frames play at. Frames built by the motion
-        /// pipeline (<see cref="MotionPipelineVersion"/> 2) are retimed to
-        /// <see cref="DrivingMotionOptions.TargetFps"/>, 25 by default — the
-        /// rate lip-sync frames are generated at, so idle and speech share one
-        /// clock. Folders built before that record no rate and were always
+        /// Frame rate the driving frames play at. Bundled clips are 25 fps, the
+        /// same clock lip-sync uses. Folders that record no rate were always
         /// displayed at 25, so 25 is reported for them too.
         /// </summary>
         public float FrameRate { get; private set; } = DefaultFrameRate;
 
         /// <summary>
         /// True when every expression's frames run last→first without a cut.
-        /// Bundled clips are authored rest-to-rest, so this is true even when
-        /// <c>EditMotion</c> is skipped. False for pre-pipeline folders, which
-        /// ping-pong to hide the wrap.
+        /// Bundled clips are authored rest-to-rest, so this is true for folders
+        /// built from them. False for older folders, which ping-pong to hide
+        /// the wrap.
         /// </summary>
         public bool IsLoopable { get; private set; }
 
@@ -216,62 +213,16 @@ namespace LiveTalk.API
         internal const float DefaultFrameRate = 25f;
 
         /// <summary>
-        /// Version of the driving-motion pipeline. Hashed into the avatar id
-        /// (<see cref="Signature"/>), so bumping it rebuilds every avatar into
-        /// a new folder instead of reusing frames built the old way.
-        /// <list type="bullet">
-        /// <item>1 (implicit, pre-2.1): one frame per driving frame at the clip's native rate, not loopable.</item>
-        /// <item>2: motion resampled to 25 fps and crossfaded into a seamless forward loop before rendering.</item>
-        /// <item>3: driving frames are face-cropped (fixed from frame 0) before motion extraction and relative scale is bounded, so the head no longer jumps in size and expressions transfer at full strength.</item>
-        /// <item>4: ScaleTransfer=0 (head size pinned), gain 2.0.</item>
-        /// <item>5: the face crop is upright. <c>FaceAnalysis.ParsePt2FromPtX</c> had applied the
-        /// 106-point eye/lip indices to the 203-point tracker output, rotating every source and
-        /// driving crop ~40° before the motion extractor saw it (expressions read weak, eyes
-        /// overshot on blinks, motion applied along a rotated axis). Gain re-tuned to 1.4 against
-        /// upright crops.</item>
-        /// <item>6: the eye keypoints are excluded from the expression gain
-        /// (<see cref="DrivingMotionOptions.EyeExpressionGain"/> = 1). A blink already spans the
-        /// eye's full range in the driver; amplified, the lids were pushed past closed.</item>
-        /// <item>7: no motion edit. Bundled clips are already 25 fps and rest-to-rest,
-        /// so resample / loop-blend were redundant; gain and scale-pin are off
-        /// so the render is LivePortrait's unedited relative transfer.</item>
-        /// </list>
+        /// Bumped when the driving-frame recipe changes so existing folders
+        /// rebuild instead of serving stale frames. 8 is upright crop, unedited
+        /// relative transfer, rest-to-rest 25 fps clips. Earlier numbers were
+        /// keypoint-space edits (resample, loop blend, gain, scale pin) that
+        /// chased a ~40° crop rotation; those edits are gone.
         /// </summary>
-        internal const int MotionPipelineVersion = 7;
+        internal const int MotionPipelineVersion = 8;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
-
-        /// <summary>
-        /// TEMP look validation. When set, every animated mode builds only this
-        /// clip as expression-0 (idle and Speak both use it). Set null to restore
-        /// the full set for the mode.
-        /// </summary>
-        internal const string LookOnlyExpression = "surprised";
-
-        /// <summary>
-        /// Motion edit applied at avatar build. Null skips <c>EditMotion</c>
-        /// entirely (one rendered frame per driving frame, no resample / loop
-        /// blend / gain / scale pin). The bundled clips are already 25 fps and
-        /// rest-to-rest. Callers of the raw API can still pass
-        /// <see cref="DrivingMotionOptions"/>. Returning non-null again means
-        /// bumping <see cref="MotionPipelineVersion"/>.
-        /// </summary>
-        private static DrivingMotionOptions DrivingMotion(string expression)
-        {
-            _ = expression;
-            return null;
-        }
-
-        /// <summary>
-        /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/> when
-        /// <see cref="DrivingMotion"/> returns options. Unused while that
-        /// method returns null. Part of <see cref="Signature"/> only then.
-        /// </summary>
-        internal static float ExpressionGainFor(string expression) => 1f;
-
-        private static string ExpressionGainSignature(CreationMode mode) =>
-            string.Join(",", ExpressionsFor(mode).Select(e => e + "=" + ExpressionGainFor(e).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
 
         private Avatar(string id, CreationMode mode, string folder, Texture2D image, bool isLegacy)
         {
@@ -283,14 +234,12 @@ namespace LiveTalk.API
         }
 
         /// <summary>Expression names generated for a mode, in index order.</summary>
-        internal static string[] ExpressionsFor(CreationMode mode)
+        internal static string[] ExpressionsFor(CreationMode mode) => mode switch
         {
-            if (mode == CreationMode.VoiceOnly) return Array.Empty<string>();
-            if (!string.IsNullOrEmpty(LookOnlyExpression)) return new[] { LookOnlyExpression };
-            return mode == CreationMode.SingleExpression
-                ? new[] { AllExpressionNames[0] }
-                : AllExpressionNames;
-        }
+            CreationMode.VoiceOnly => Array.Empty<string>(),
+            CreationMode.SingleExpression => new[] { AllExpressionNames[0] },
+            _ => AllExpressionNames,
+        };
 
         /// <summary>
         /// The expression-set half of the avatar id. Carries the motion
@@ -299,13 +248,9 @@ namespace LiveTalk.API
         /// folder is neither reused nor half-matched, and the two generations
         /// can coexist on disk until the old one is deleted.
         /// </summary>
-        internal static string Signature(CreationMode mode)
-        {
-            var s = mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion;
-            if (DrivingMotion("talk-neutral") != null)
-                s += ";gain=" + ExpressionGainSignature(mode);
-            return s + ";clips=" + DrivingClipsHash;
-        }
+        internal static string Signature(CreationMode mode) =>
+            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion
+            + ";clips=" + DrivingClipsHash;
 
         private static string _drivingClipsHash;
 
@@ -351,11 +296,8 @@ namespace LiveTalk.API
         }
 
         /// <summary>Human name of an expression index, for logs.</summary>
-        internal static string GetExpressionName(int index)
-        {
-            if (!string.IsNullOrEmpty(LookOnlyExpression) && index == 0) return LookOnlyExpression;
-            return index >= 0 && index < AllExpressionNames.Length ? AllExpressionNames[index] : $"expression-{index}";
-        }
+        internal static string GetExpressionName(int index) =>
+            index >= 0 && index < AllExpressionNames.Length ? AllExpressionNames[index] : $"expression-{index}";
 
         /// <summary>
         /// Encodes the image the way the avatar folder stores it, so the id
@@ -494,16 +436,14 @@ namespace LiveTalk.API
                 }
 
                 // Manifest last: its presence is what marks the folder complete.
-                var motion = DrivingMotion("talk-neutral");
                 var manifest = new AvatarManifest
                 {
                     id = id,
                     mode = mode,
                     expressions = expressions,
                     createdUtc = DateTime.UtcNow,
-                    fps = motion != null && motion.TargetFps > 0f ? motion.TargetFps : DefaultFrameRate,
-                    // Bundled clips are rest-to-rest, so wrap without a blend.
-                    loopable = motion != null ? motion.Loopable : true,
+                    fps = DefaultFrameRate,
+                    loopable = true,
                     motionPipelineVersion = MotionPipelineVersion,
                     drivingClipsHash = DrivingClipsHash,
                 };
@@ -545,8 +485,7 @@ namespace LiveTalk.API
             videoPlayer.Prepare();
             yield return new WaitUntil(() => videoPlayer.isPrepared);
 
-            // Null motion: one rendered frame per driving frame, unedited.
-            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, DrivingMotion(expression));
+            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer);
 
             // Process frames
             var processResult = new ProcessFramesResult();

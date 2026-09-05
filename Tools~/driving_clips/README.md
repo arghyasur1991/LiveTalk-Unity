@@ -130,12 +130,9 @@ Contact sheets and pixel-difference proxies missed an 11 % head swell and
 a 0.4x expression transfer for a whole pass, so transfer is now measured
 with the model's own reading of both sequences:
 
-1. In Play, render the clip onto the portrait **through the options
-   overload** (`GenerateAnimatedTexturesAsync(image, framesFolder, options)`
-   with `TargetFps 0`, `LoopBlendSeconds 0` so frames align 1:1 with the
-   driver, and the shipped `ExpressionGain` / `ScaleTransfer`). The
-   directory overload without options is the raw path and skips
-   `EditMotion` entirely — it does not exercise gain or scale handling.
+1. In Play, render the clip onto the portrait with
+   `GenerateAnimatedTexturesAsync(image, framesFolder)` so frames align 1:1
+   with the driver.
 2. `LiveTalkAPI.MeasureMotionAsync(framesDir, csv)` on the driver frames
    and on the output frames. One CSV row per frame: pitch/yaw/roll,
    extractor scale, translation, 63 expression dims, 203 landmarks.
@@ -150,17 +147,15 @@ with the model's own reading of both sequences:
      mouth width, mouth-corner drop, inner/outer brow height,
      pitch/yaw/roll): Pearson correlation of the delta-from-frame-0 series
      and amplitude ratio std(out)/std(driver). Pose should read ~1.0;
-     expression features at gain 1.4 read close to 1.0 on an upright crop
-     (eyes lower — their gain is 1, see `EyeExpressionGain`). A feature the
+     expression features on an upright crop read close to 1.0. A feature the
      driver holds still must stay still in the output.
    - A driver feature reported *still* means the clip itself is too
      weak on that channel (the first sad clip's mouth-corner drop was
-     0.05 IOD ≈ 5 px); fix the clip, not the gain.
+     0.05 IOD ≈ 5 px); fix the clip.
 
 A host project can drive steps 1–2 from a Play-mode job runner that calls
-`GenerateAnimatedTexturesAsync(portrait, framesDir, options)` with
-`TargetFps 0` / `LoopBlendSeconds 0` (frames then align 1:1 with the driver)
-followed by `MeasureMotionAsync` on both folders. `analyze.py` (hold / wrap /
+`GenerateAnimatedTexturesAsync(portrait, framesDir)` followed by
+`MeasureMotionAsync` on both folders. `analyze.py` (hold / wrap /
 border MAD, flicker) is still the check for loop seams and hair shimmer.
 
 Before trusting any of these numbers, check the extractor's read of the

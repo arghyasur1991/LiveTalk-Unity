@@ -150,24 +150,14 @@ namespace LiveTalk.Core
         /// <param name="sourceImage">The source image texture containing the face to animate</param>
         /// <param name="outputStream">The output stream to receive generated animated frames</param>
         /// <param name="drivingStream">The input stream providing driving frames for motion transfer</param>
-        /// <param name="motion">
-        /// Optional. When given, the motion of every driving frame is extracted
-        /// first, the sequence is retimed to <see cref="DrivingMotionOptions.TargetFps"/>
-        /// and made loopable (<see cref="MotionSequence"/>), and only then are
-        /// frames rendered — so the output is a different length from the
-        /// input and starts once the whole driving clip has been read. Null
-        /// renders each driving frame as it arrives, unchanged.
-        /// </param>
         /// <returns>An enumerator for Unity coroutine execution</returns>
         /// <exception cref="ArgumentNullException">Thrown when any parameter is null</exception>
         /// <exception cref="InvalidOperationException">Thrown when face detection or model initialization fails</exception>
         public IEnumerator GenerateAsync(
             Texture2D sourceImage,
             FrameStream outputStream,
-            FrameStream drivingStream,
-            DrivingMotionOptions motion = null)
+            FrameStream drivingStream)
         {
-            // Validate parameters
             if (sourceImage == null)
                 throw new ArgumentNullException(nameof(sourceImage));
             if (outputStream == null)
@@ -188,15 +178,12 @@ namespace LiveTalk.Core
                     LoadMaskTemplate();
                 }
 
-                // Convert source image to RGB24 format and process
                 sourceImage = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
                 var srcImg = TextureUtils.Texture2DToFrame(sourceImage);
 
-                // Start session
                 Logger.LogVerbose("[LivePortraitMuseTalkAPI] Starting Model sessions");
                 yield return TaskYield.Wait(StartSession(), "LivePortraitInference.StartSession");
 
-                // Process source image
                 Logger.LogVerbose("[LivePortraitMuseTalkAPI] Source image processing started asynchronously");
                 ProcessSourceImageResult processResult = null;
                 yield return TaskYield.Wait(ProcessSourceImageAsync(srcImg), r => processResult = r,
@@ -210,12 +197,6 @@ namespace LiveTalk.Core
                     InitialMotionInfo = null
                 };
 
-                // With motion editing the whole clip's motion is read before
-                // anything is rendered, so the sequence can be retimed and
-                // looped as one piece. Without it each frame is rendered as it
-                // arrives (the original pipelined path).
-                var motions = motion != null ? new List<MotionInfo>() : null;
-
                 while (processedFrames < drivingStream.TotalExpectedFrames && drivingStream.HasMoreFrames)
                 {
                     var awaiter = drivingStream.WaitForNext();
@@ -227,36 +208,22 @@ namespace LiveTalk.Core
                         var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
                         UnityEngine.Object.DestroyImmediate(drivingFrame);
 
-                        if (motions != null)
-                        {
-                            MotionInfo extracted = null;
-                            yield return TaskYield.Wait(ExtractDrivingMotionAsync(predInfo, imgRgbData),
-                                r => extracted = r, "LivePortraitInference.ExtractDrivingMotion");
-                            motions.Add(extracted);
-                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Extracted motion {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
-                        }
-                        else
-                        {
-                            (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
-                            yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
-                                r => prediction = r, "LivePortraitInference.ProcessNextFrame");
-                            predInfo = prediction.updatedPredInfo;
+                        (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
+                        yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
+                            r => prediction = r, "LivePortraitInference.ProcessNextFrame");
+                        predInfo = prediction.updatedPredInfo;
 
-                            if (prediction.generatedImg.data != null)
-                            {
-                                var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
-                                outputStream.Queue.Enqueue(generatedImgTexture);
-                                Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
-                            }
+                        if (prediction.generatedImg.data != null)
+                        {
+                            var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
+                            outputStream.Queue.Enqueue(generatedImgTexture);
+                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
                         }
 
                         processedFrames++;
                     }
                 }
 
-                // The driving loader finishing early because it failed is a
-                // failure of this animation too — a short, silently truncated
-                // clip is worse than an error that names the cause.
                 if (drivingStream.Error != null)
                 {
                     throw new InvalidOperationException(
@@ -264,39 +231,9 @@ namespace LiveTalk.Core
                         drivingStream.Error);
                 }
 
-                if (motions != null)
-                {
-                    if (motions.Count == 0)
-                        throw new InvalidOperationException("The driving clip yielded no frames to extract motion from.");
-
-                    // Edit in keypoint space, then render. The relative
-                    // retargeting reference (x_d_0) stays the clip's first
-                    // frame, so the edited motions are still expressed
-                    // against the same neutral as before.
-                    var edited = EditMotion(motions, motion, out float outputFps, out int blendFrames);
-                    outputStream.TotalExpectedFrames = edited.Count;
-                    Logger.Log($"[LivePortraitInference] Motion edited: {motions.Count} frames @ {motion.SourceFps:F2} fps → " +
-                               $"{edited.Count} frames @ {outputFps:F2} fps (loop blend {blendFrames} frames); " +
-                               $"per driving frame: face crop {predInfo.CropMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms, " +
-                               $"motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
-
-                    for (int i = 0; i < edited.Count; i++)
-                    {
-                        Frame rendered = default;
-                        yield return TaskYield.Wait(RenderMotionAsync(processResult, predInfo.InitialMotionInfo, edited[i]),
-                            r => rendered = r, "LivePortraitInference.RenderMotion");
-                        if (rendered.data != null)
-                        {
-                            outputStream.Queue.Enqueue(TextureUtils.FrameToTexture2D(rendered));
-                            Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Rendered frame {i + 1}/{edited.Count}");
-                        }
-                    }
-                    Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Motion-edited processing completed: {edited.Count} frames generated");
-                }
-                else
-                {
-                    Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Pipelined processing completed: {processedFrames} frames generated");
-                }
+                Logger.Log($"[LivePortraitInference] Processed {processedFrames} frames; " +
+                           $"per driving frame: face crop {predInfo.CropMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms, " +
+                           $"motion extractor {predInfo.ExtractMillis / Math.Max(1, predInfo.ExtractedFrames):F1} ms");
             }
             finally
             {
@@ -812,100 +749,6 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Off-main-thread wrapper of <see cref="ExtractDrivingMotion"/> for the
-        /// two-phase (edit-then-render) path.
-        /// </summary>
-        private Task<MotionInfo> ExtractDrivingMotionAsync(LivePortraitPredInfo predInfo, Frame drivingFrame)
-            => Task.Run(() => ExtractDrivingMotion(drivingFrame, predInfo));
-
-        /// <summary>
-        /// Off-main-thread render of one (possibly edited) driving motion,
-        /// pasted back into the source image.
-        /// </summary>
-        private Task<Frame> RenderMotionAsync(ProcessSourceImageResult processResult, MotionInfo xD0Info, MotionInfo xDInfo)
-        {
-            return Task.Run(async () =>
-            {
-                var Ip = await RenderMotion(processResult.XsInfo, processResult.Rs, processResult.Fs, processResult.Xs,
-                    xD0Info, xDInfo);
-                return PasteBack(Ip, processResult.CropInfo.Transform, processResult.SrcImg, processResult.MaskOri);
-            });
-        }
-
-        /// <summary>
-        /// Applies <see cref="DrivingMotionOptions"/> to an extracted motion
-        /// sequence: resample to the target rate, then crossfade into a loop.
-        /// </summary>
-        /// <summary>
-        /// LivePortrait's eye keypoints among the 21 implicit keypoints — the set
-        /// its eye-retargeting module edits (upstream <c>stitching_retargeting</c>:
-        /// eyes 11, 13, 15, 16; lips 6, 12, 14, 17, 19, 20).
-        /// </summary>
-        private static bool IsEyeKeypoint(int kp) => kp == 11 || kp == 13 || kp == 15 || kp == 16;
-
-        private static List<MotionInfo> EditMotion(
-            List<MotionInfo> motions, DrivingMotionOptions options, out float outputFps, out int blendFrames)
-        {
-            var edited = motions;
-            if (options.TargetFps > 0f && options.SourceFps > 0f)
-                edited = MotionSequence.Resample(edited, options.SourceFps, options.TargetFps);
-            outputFps = options.OutputFps;
-
-            // Expression gain: scale each frame's expression delta from the
-            // clip's reference (first) frame. Done here, on the motion, so the
-            // rendered frames, the loop blend and the cache all see one thing.
-            // The eye keypoints take their own gain (a blink is already a
-            // full-range motion; see DrivingMotionOptions.EyeExpressionGain).
-            if (edited.Count > 0 &&
-                (Mathf.Abs(options.ExpressionGain - 1f) > 1e-4f || Mathf.Abs(options.EyeExpressionGain - 1f) > 1e-4f))
-            {
-                var exp0 = edited[0].Expression;
-                float g = options.ExpressionGain;
-                float gEye = options.EyeExpressionGain;
-                for (int i = 0; i < edited.Count; i++)
-                {
-                    var e = edited[i].Expression;
-                    if (e == null || exp0 == null || e.Length != exp0.Length) continue;
-                    var scaled = new float[e.Length];
-                    for (int k = 0; k < e.Length; k++)
-                    {
-                        float gk = IsEyeKeypoint(k / 3) ? gEye : g;
-                        scaled[k] = exp0[k] + gk * (e[k] - exp0[k]);
-                    }
-                    edited[i].Expression = scaled;
-                }
-            }
-
-            // Scale transfer: the extractor's scale channel leaks expression
-            // (jaw drop, brow raise read as a bigger head), so by default the
-            // clip's scale is pinned to its first frame and the render keeps
-            // the source's head size. See DrivingMotionOptions.ScaleTransfer.
-            if (edited.Count > 0 && options.ScaleTransfer < 1f - 1e-4f)
-            {
-                var scale0 = edited[0].Scale;
-                float s = Mathf.Max(0f, options.ScaleTransfer);
-                for (int i = 0; i < edited.Count; i++)
-                {
-                    var sc = edited[i].Scale;
-                    if (sc == null || scale0 == null || sc.Length != scale0.Length) continue;
-                    var held = new float[sc.Length];
-                    for (int k = 0; k < sc.Length; k++)
-                        held[k] = scale0[k] * (1f + s * (sc[k] / scale0[k] - 1f));
-                    edited[i].Scale = held;
-                }
-            }
-
-            blendFrames = options.LoopBlendFrames(outputFps);
-            if (blendFrames > 0)
-            {
-                int before = edited.Count;
-                edited = MotionSequence.MakeLoopable(edited, blendFrames);
-                blendFrames = before - edited.Count;
-            }
-            return edited;
-        }
-
-        /// <summary>
         /// Tracks the face through <paramref name="img"/> and extracts its
         /// motion (pose, translation, scale, expression, canonical keypoints)
         /// with the rotation matrix filled in. The first frame seen becomes
@@ -1043,8 +886,6 @@ namespace LiveTalk.Core
             var expDiff = MathUtils.SubtractArrays(xDInfo.Expression, xD0Info.Expression);
             var deltaNew = MathUtils.AddArrays(xSInfo.Expression, expDiff);
             
-            // Upstream relative mode. How much driving scale reaches here is
-            // decided in EditMotion (DrivingMotionOptions.ScaleTransfer).
             var scaleDiff = MathUtils.DivideArrays(xDInfo.Scale, xD0Info.Scale);
             var scaleNew = MathUtils.MultiplyArrays(xSInfo.Scale, scaleDiff);
             

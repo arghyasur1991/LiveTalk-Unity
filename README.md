@@ -229,11 +229,12 @@ Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 
 Each expression is a bundled 25 fps clip of a rendered face
 (`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
-already return to rest and share the lip-sync clock, so avatar creation
-renders one frame per driving frame with no resample, loop blend, expression
-gain or scale pin. `DrivingMotionOptions` still exists for callers of
-`GenerateAnimatedTexturesAsync` that want those edits. Changing whether
-avatars apply them bumps `Avatar.MotionPipelineVersion` and rebuilds.
+already return to rest and share the lip-sync clock. Avatar creation renders
+one frame per driving frame with LivePortrait's relative transfer — no
+resample, loop blend, expression gain or scale pin. Those edits existed in
+2.1.0 to paper over a ~40° crop rotation (fixed in 2.2.0) and are gone.
+A change to the driving-frame recipe bumps `Avatar.MotionPipelineVersion`
+and rebuilds.
 
 ## Design a voice (roll the dice)
 
@@ -471,10 +472,6 @@ The two engines are also exposed directly; each returns a `FrameStream`.
 FrameStream a = api.GenerateAnimatedTexturesAsync(portrait, drivingFrames /* List<Texture2D> */);
 FrameStream b = api.GenerateAnimatedTexturesAsync(portrait, videoPlayer, maxFrames: -1);
 FrameStream c = api.GenerateAnimatedTexturesAsync(portrait, "path/to/frames", maxFrames: 50);
-
-// optional keypoint-space edits (resample, loop, gains, scale pin) — avatars skip these
-var motion = new DrivingMotionOptions { TargetFps = 25f, LoopBlendSeconds = 0.4f, ExpressionGain = 1.4f };
-FrameStream e = api.GenerateAnimatedTexturesAsync(portrait, "path/to/frames", motion);
 
 // MuseTalk: lip-sync a portrait (plus optional extra frames in a folder) to a clip
 FrameStream d = api.GenerateTalkingHeadAsync(portrait, "path/to/avatar/frames", audioClip);
