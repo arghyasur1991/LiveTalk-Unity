@@ -29,6 +29,7 @@ backend and the storage layout — see [Migrating from 1.x](#migrating-from-1x).
 - [Speak with CharacterPlayer](#speak-with-characterplayer)
 - [Speak directly with SpeakAsync](#speak-directly-with-speakasync)
 - [DialogueOrchestrator](#dialogueorchestrator)
+- [Performances (scripted scenes)](#performances-scripted-scenes)
 - [Raw animation without a character](#raw-animation-without-a-character)
 - [Caching](#caching)
 - [Error handling contract](#error-handling-contract)
@@ -462,6 +463,79 @@ orchestrator.QueueDialogueBatch(new List<DialogueOrchestrator.DialogueSegment>
 Also: `UnregisterCharacter(id)`, `Stop()`, `ClearQueue()`, `IsPlaying`,
 `QueuedDialogueCount`, `CurrentSpeakerId`, `OnDialogueStarted`, `OnError`.
 
+## Performances (scripted scenes)
+
+`CharacterPlayer` and `DialogueOrchestrator` are for conversations where the
+next line is not known: one utterance at a time, the face idles between them,
+each line carries its own expression. A **scripted scene** is the opposite —
+everything is known before the first frame — and wants two independent tracks
+on one clock:
+
+- an **expression track**: what the face does over time, regardless of speech —
+  play an expression clip through, or play to its peak and *hold* it with the
+  idle clip's own micro-motion; blend into the next; react while someone else
+  is talking;
+- a **speech track**: timed utterances by any character, lip-synced onto
+  *whatever the expression track has at that tick*, overlapping across
+  characters when a line interrupts another.
+
+```csharp
+var perf = new Performance { DefaultGap = 0.3f };
+
+// Lines chain after the previous one by default (any character).
+var l1 = perf.AddUtterance(alex, "That's because it bends it.");
+var l2 = perf.AddUtterance(you,  "…It bends time.");                  // voice-only character
+var l3 = perf.AddUtterance(alex, "I've been saving that for three weeks.",
+                           Anchor.End(l2, -0.2f));                    // steps on the end of l2
+
+// Expressions are placed independently of speech.
+var smirk = perf.AddExpression(alex, 3 /* smile */, Anchor.Start(l1, -0.3f));   // face leads the line
+smirk.Mode = ExpressionMode.HoldAtPeak; smirk.Peak01 = 0.6f; smirk.HoldSeconds = 2f; smirk.Micro01 = 0.15f;
+perf.AddExpression(alex, 6 /* confused */, Anchor.Start(l2, 0.4f));          // reacts while `you` talk
+
+yield return api.RenderPerformanceAsync(perf,
+    rendered =>
+    {
+        var player = api.CreatePerformancePlayer(rendered);
+        player.OnFrame   += (characterId, tex) => { if (characterId == alex.Id) rawImage.texture = tex; };
+        player.OnCaption += c => caption.text = c.Text;
+        player.OnReady   += () => player.Play();
+    },
+    onError: ex => Debug.LogError(ex),
+    onProgress: (stage, p) => Debug.Log($"{p:P0} {stage}"));
+```
+
+What rendering does, once per fingerprint (cues + characters + voices):
+
+1. **Audio** for every utterance (the normal speech cache, voice + text).
+2. **Resolve**: anchors become seconds; the expression track becomes a *pose
+   per tick* for each animated character. Idle (expression 0) runs underneath,
+   forward, wrapping. A cue blends in from whatever pose is on screen, plays its
+   clip (or plays to the peak and holds), and blends back out. A tick that lands
+   exactly on a stored driving frame is that frame — free. Blends and holds are
+   rendered from the avatar's recorded poses (`motion.bin`, avatar v2) into a
+   pose cache, once ever per avatar + pose.
+3. **Lip-sync** per spoken utterance over the base frames its ticks have.
+4. A **manifest** (`perf_<fingerprint>/performance.json` under the cache) with a
+   frame path per tick per character, the wavs, and captions. Frames are
+   referenced, not copied; only lip-synced composites are new files.
+
+`PerformancePlayer` streams frames from disk `Lookahead` ticks ahead of the play
+head, plays each utterance's wav on a per-character `AudioSource` child, and
+raises `OnFrame(characterId, texture)`, `OnUtteranceStarted`, `OnCaption` /
+`OnCaptionCleared`, `OnEnded`. Transport: `Play`, `Pause`, `Resume`, `Stop`,
+`Seek(seconds)`, `Time`, `PlaybackState`.
+
+`Anchor.At(seconds)`, `Anchor.Start(cue, offset)`, `Anchor.End(cue, offset)`,
+`Anchor.AfterPrevious(offset)`. Two utterances of the *same* character never
+overlap (the later one is pushed); different characters may. An `Utterance`
+with `LipSync = false` plays its audio over the face as it is (a vocalisation,
+or a character with no avatar).
+
+`api.RenderPosesAsync(portrait, poses, onFrame)` is the primitive underneath:
+frames from 63-float driving poses, no extractor. Poses come from
+`Avatar` frames (recorded at build) or any interpolation / offset of them.
+
 ## Raw animation without a character
 
 The two engines are also exposed directly; each returns a `FrameStream`.
@@ -489,6 +563,8 @@ and `DialogueOrchestrator` — read and write two kinds of entry under
 |---|---|---|
 | Speech audio | `hash(voiceId, text)` | `<key>.wav` |
 | Lip-sync frames | `hash(voiceId, text, avatarId, expressionIndex)` | `<key>_frames/frame_000000.png …` |
+| Rendered pose (performances) | `hash(avatarId, pose)` | `pose_<key>.png` |
+| Rendered performance | performance fingerprint | `perf_<key>/performance.json` + `frames_<character>/` |
 
 Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at

@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Performances: an expression track and a speech track on one 25 fps clock.**
+  `Performance` holds `ExpressionCue`s (an expression the face performs:
+  play the clip through, or play to its peak and hold it with the idle
+  clip's own micro-motion, eyes at 1.0 so blinks stay real) and
+  `Utterance`s (a line by any character, lip-synced or audio-only),
+  each placed by an `Anchor` — absolute seconds, or relative to another
+  cue's start or end, so a reaction can be authored against a line whose
+  length is only known once its audio exists, and lines can overlap
+  (an interruption). `LiveTalkAPI.RenderPerformanceAsync` renders it
+  once into the cache: audio per utterance (cached on voice + text), the
+  track resolved to a pose per tick, then lip-sync per utterance over the
+  base frames the track has at those ticks; `PerformancePlayer` streams
+  the result — frames per animated character, wavs, captions — from disk
+  a little ahead of the play head. `CharacterPlayer` is unchanged and
+  remains the right tool for a chat where the next line is not known.
+- **`LiveTalkAPI.RenderPosesAsync`** — full frames from final LivePortrait
+  driving poses (63 floats), no motion extractor. The primitive behind
+  blends and holds; also usable on its own.
+- **Avatar v2 records the driving pose per frame** (`motion.bin` per
+  expression; `Avatar.Version` 2). Existing avatar folders rebuild once.
+  A blend is a `lerp` between two authored poses; a hold is the peak pose
+  plus the idle clip's delta from its rest. No gain, no scale pin — this
+  is not the 2.1 motion editing.
 - **`Tools~/driving_clips/build.py`** — one command to generate
   `Resources/driving/*.mp4` from scratch. Look, character, framing and
   encode knobs live in the SETTINGS block at the top of that file;

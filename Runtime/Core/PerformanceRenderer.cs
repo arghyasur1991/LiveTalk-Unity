@@ -173,7 +173,7 @@ namespace LiveTalk.Core
                             {
                                 string png = poseFiles[toRender[i].key];
                                 File.WriteAllBytes(png, tex.EncodeToPNG());
-                                UnityEngine.Object.Destroy(tex);
+                                Release(tex);
                                 done++;
                                 onProgress?.Invoke($"Pose {done}/{toRender.Count} ({character.Name})", 0.1f + 0.4f * done / toRender.Count);
                             },
@@ -214,7 +214,7 @@ namespace LiveTalk.Core
                                     File.WriteAllBytes(png, tex.EncodeToPNG());
                                     frames[k0 + i] = png;
                                 }
-                                UnityEngine.Object.Destroy(tex);
+                                Release(tex);
                                 i++;
                             }
                             if (stream.Error != null) throw stream.Error;
@@ -297,6 +297,13 @@ namespace LiveTalk.Core
                 }
             }
             onComplete(slice);
+        }
+
+        static void Release(UnityEngine.Object o)
+        {
+            if (o == null) return;
+            if (Application.isPlaying) UnityEngine.Object.Destroy(o);
+            else UnityEngine.Object.DestroyImmediate(o);
         }
 
         static string SafeName(string s)
