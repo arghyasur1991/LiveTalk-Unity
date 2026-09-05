@@ -63,17 +63,29 @@ namespace LiveTalk.API
     /// 
     /// Features:
     /// - Auto-loads character when assigned
-    /// - Plays idle animation (expression 0) at 25 FPS with ping-pong cycling
+    /// - Plays idle animation (expression 0) as a forward loop at the avatar's
+    ///   frame rate (bundled clips are rest-to-rest)
     /// - Queues and plays speech with smooth transitions
     /// - Seamlessly returns to idle after speech
     /// - Speech may be queued at any time after <see cref="AssignCharacter"/>; lines queued
     ///   before the player is <see cref="PlaybackState.Ready"/> play as soon as it is.
+    ///
+    /// <para><b>Continuity.</b> Every frame on screen is some avatar frame:
+    /// idle frame <c>k</c> is avatar frame <c>k</c>, and lip-sync frame
+    /// <c>i</c> of a line started on avatar frame <c>s</c> is avatar frame
+    /// <c>s + i</c>. The player keeps one cursor across both. When a line is
+    /// generated the player predicts where the idle loop will be when it can
+    /// start playing and asks for the frames to be rendered from there; when
+    /// the line is ready it lets the idle run on to that frame (bounded by
+    /// <see cref="MaxContinuityWaitSeconds"/>) so the head never jumps, and on
+    /// the way out idle resumes from the frame speech ended on.</para>
     /// </summary>
     public class CharacterPlayer : MonoBehaviour
     {
         // Inspector-assignable
         [SerializeField] private Texture _displayImage = null;
         [SerializeField] private readonly bool autoPlayIdle = true;
+        /// <summary>Idle rate used only when the character reports none (a legacy avatar).</summary>
         [SerializeField] private readonly float idleFPS = 25f;
         [SerializeField] private bool audioOnly = false; // For characters without avatars
         
@@ -110,11 +122,21 @@ namespace LiveTalk.API
         private Coroutine _loadCoroutine;
         private bool _idleLoaded;
         
-        // Idle animation
+        // Idle animation. _idleFrameIndex is the avatar-frame cursor: the next
+        // idle frame to show, kept current through speech as well (see the
+        // class remarks).
         private List<Texture> _idleFrames;
         private int _idleFrameIndex = 0;
-        private bool _idleForward = true;
         private Coroutine _idleCoroutine;
+        private float _idleNextFrameTime;
+        private int _shownAvatarIndex = -1;
+
+        // Continuity estimators: how long lip-sync generation takes from the
+        // moment the start frame is chosen to the moment the line can play.
+        // Batch: per frame; streaming: a flat lead. Learnt from every line.
+        private float _batchSecondsPerFrame = 0.15f;
+        private float _streamLeadSeconds = 0.8f;
+        private const float EstimatorGain = 0.4f;
         
         // Speech animation
         private Coroutine _speechCoroutine;
@@ -128,6 +150,7 @@ namespace LiveTalk.API
         
         // Pipelined processing
         private readonly Queue<PendingSpeechItem> _pendingAnimations = new();
+        private PendingSpeechItem _playingItem;
         private readonly List<FrameCollector> _frameCollectors = new();
         private bool _isSpeechProcessorRunning = false;
         private bool _isAnimationPlayerRunning = false;
@@ -146,6 +169,33 @@ namespace LiveTalk.API
 
             /// <summary>A <see cref="CollectAnimationFrames"/> is draining <see cref="FrameStream"/> into <see cref="Frames"/>.</summary>
             public bool CollectorStarted { get; set; }
+
+            /// <summary>Avatar frame the generator was asked to start on, or -1 if never asked (audio-only, legacy).</summary>
+            public int PredictedStart { get; set; } = -1;
+
+            /// <summary>When the start frame was chosen (generation about to begin), for the latency estimators.</summary>
+            public float GenerationStartedAt { get; set; }
+
+            /// <summary>Frames the line was expected to have when the start was chosen; -1 when streaming.</summary>
+            public int GenerationFrames { get; set; } = -1;
+
+            /// <summary>Avatar frame the frames actually start on, read off the stream once the item is ready; -1 unknown.</summary>
+            public int StartFrameIndex =>
+                Stream?.Frames?.StartFrameIndex ?? FrameStream?.StartFrameIndex ?? -1;
+
+            /// <summary>Avatar frame the line ends on (exclusive), or -1 unknown. Used to chain the next line's start.</summary>
+            public int ExpectedEnd(int loopLength)
+            {
+                int start = StartFrameIndex >= 0 ? StartFrameIndex : PredictedStart;
+                if (start < 0 || loopLength <= 0)
+                    return -1;
+                int frames = FrameStream != null && FrameStream.TotalExpectedFrames > 0
+                    ? FrameStream.TotalExpectedFrames
+                    : GenerationFrames;
+                if (frames <= 0)
+                    return -1;
+                return (start + frames) % loopLength;
+            }
         }
 
         // Streaming playback: one streaming AudioClip whose PCM reader pulls
@@ -172,6 +222,56 @@ namespace LiveTalk.API
         /// 0.35 s is normally enough. Not used by the batch path or cache hits.
         /// </summary>
         public float PrerollSeconds { get; set; } = 0.35f;
+
+        /// <summary>
+        /// Render each line's lip-sync frames from the avatar frame the idle
+        /// loop will be on when the line starts, and let the idle run on to
+        /// that frame before switching, so speech continues the idle motion
+        /// instead of jumping to the clip's first frame. Off, every line starts
+        /// from avatar frame 0. Default on.
+        /// </summary>
+        public bool SpeechContinuity { get; set; } = true;
+
+        /// <summary>
+        /// Longest the player will let the idle loop run on to reach the frame
+        /// a ready line starts on, in seconds. The start frame is predicted
+        /// when generation begins; if the idle has since gone past it, waiting
+        /// means going round the loop again, and past this bound the player
+        /// cuts instead (logged with the size of the jump). Default 2 s.
+        /// </summary>
+        public float MaxContinuityWaitSeconds { get; set; } = 2f;
+
+        /// <summary>
+        /// Margin added to the predicted generation time when choosing a
+        /// line's start frame, in seconds. Erring late costs a short idle
+        /// run-on before the line; erring early costs a cut (or a wait round
+        /// the loop). Default 0.25 s.
+        /// </summary>
+        public float ContinuityLeadSeconds { get; set; } = 0.25f;
+
+        /// <summary>
+        /// The avatar frame currently on screen — an index into the
+        /// character's idle frames (expression 0), whether the frame came
+        /// from the idle loop or from a line's lip-sync — or -1 when nothing
+        /// animated is showing.
+        /// </summary>
+        public int CurrentAvatarFrameIndex => _shownAvatarIndex;
+
+        /// <summary>Frames in the idle loop, or 0 before they are loaded.</summary>
+        public int IdleFrameCount => _idleFrames?.Count ?? 0;
+
+        /// <summary>Continuity applies: the feature on, and frames to walk.</summary>
+        private bool ContinuityActive => SpeechContinuity && !audioOnly && _idleFrames != null && _idleFrames.Count > 1;
+
+        /// <summary>The idle frame rate: the avatar's, or the serialized fallback for a legacy avatar.</summary>
+        private float IdleFps
+        {
+            get
+            {
+                float fps = _character != null ? _character.IdleFrameRate : 0f;
+                return fps > 0f ? fps : (idleFPS > 0f ? idleFPS : 25f);
+            }
+        }
 
         /// <summary>One in-flight <see cref="CollectAnimationFrames"/>, so <see cref="Stop"/> can find it.</summary>
         private class FrameCollector
@@ -282,6 +382,8 @@ namespace LiveTalk.API
                 _loadCoroutine = null;
             }
             _idleLoaded = false;
+            _shownAvatarIndex = -1;
+            _idleFrameIndex = 0;
             
             _character = character;
             
@@ -441,6 +543,7 @@ namespace LiveTalk.API
             
             _speechQueue.Clear();
             _pendingAnimations.Clear();
+            _playingItem = null;
             _speechRunStarted = false;
 
             // Reset processing flags so new speech can start fresh. Leaving
@@ -463,9 +566,9 @@ namespace LiveTalk.API
                 _state = PlaybackState.Ready;
                 if (!_destroyed && autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
                 {
-                    _idleFrameIndex = 0;
-                    _idleForward = true;
-                    StartIdleAnimation();
+                    // Carry on from the cursor: the stop already cut the audio,
+                    // no need to cut the face as well.
+                    StartIdleAnimation(fromStart: false);
                 }
             }
             else if (_loadCoroutine != null)
@@ -540,13 +643,13 @@ namespace LiveTalk.API
                 // Paused between segments: the loop was idling while it waited
                 // for the next one, so put the idle back.
                 if (_idleWasRunningAtPause)
-                    StartIdleAnimation();
+                    StartIdleAnimation(fromStart: false);
             }
             else
             {
                 _state = PlaybackState.Ready;
                 if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
-                    StartIdleAnimation();
+                    StartIdleAnimation(fromStart: false);
             }
 
             _pausedWhileSpeaking = false;
@@ -632,7 +735,7 @@ namespace LiveTalk.API
                 _state = PlaybackState.Ready;
                 if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
                 {
-                    StartIdleAnimation();
+                    StartIdleAnimation(fromStart: true);
                 }
             }
             
@@ -721,15 +824,27 @@ namespace LiveTalk.API
             }
         }
 
-        private void StartIdleAnimation()
+        /// <summary>
+        /// Starts (or restarts) the idle loop. <paramref name="fromStart"/>
+        /// rewinds to frame 0; otherwise the loop carries on from the cursor,
+        /// which is where the last idle or lip-sync frame left it.
+        /// </summary>
+        private void StartIdleAnimation(bool fromStart)
         {
             if (_idleCoroutine != null)
             {
                 StopCoroutine(_idleCoroutine);
             }
-            
-            _idleFrameIndex = 0;
-            _idleForward = true;
+
+            if (fromStart)
+            {
+                _idleFrameIndex = 0;
+            }
+            else if (_idleFrames != null && _idleFrames.Count > 0)
+            {
+                _idleFrameIndex = Mod(_idleFrameIndex, _idleFrames.Count);
+            }
+            _idleNextFrameTime = Time.time;
             _idleCoroutine = StartCoroutine(PlayIdleAnimation());
             OnIdleStarted?.Invoke();
         }
@@ -743,10 +858,15 @@ namespace LiveTalk.API
             }
         }
 
+        /// <summary>
+        /// Shows idle frames on a fixed schedule at the avatar's frame rate —
+        /// frame <c>k</c> is due at <c>t0 + k / fps</c> — rather than sleeping
+        /// a frame interval between frames, which rounds every wait up to the
+        /// next rendered frame and ran 25 fps idle at 20 in a 60 Hz editor.
+        /// Forward wrap: clips are rest-to-rest.
+        /// </summary>
         private IEnumerator PlayIdleAnimation()
         {
-            float frameInterval = 1f / idleFPS;
-            
             // Continue while idle coroutine is running (controlled by Start/Stop)
             // Don't check state - we explicitly start/stop this coroutine
             while (true)
@@ -756,35 +876,42 @@ namespace LiveTalk.API
                     yield return new WaitForSeconds(0.1f);
                     continue;
                 }
-                
-                // Display current frame
-                Texture currentFrame = _idleFrames[_idleFrameIndex];
-                DisplayImage = currentFrame;
-                
-                // Advance frame index with ping-pong logic (no duplicate frames)
-                if (_idleForward)
+
+                float interval = 1f / IdleFps;
+                if (Time.time >= _idleNextFrameTime)
                 {
-                    _idleFrameIndex++;
-                    if (_idleFrameIndex >= _idleFrames.Count)
-                    {
-                        // Reached end, go reverse (skip last frame to avoid duplicate)
-                        _idleFrameIndex = Math.Max(0, _idleFrames.Count - 2);
-                        _idleForward = false;
-                    }
+                    int count = _idleFrames.Count;
+                    _idleFrameIndex = Mathf.Clamp(_idleFrameIndex, 0, count - 1);
+                    // Index first: OnFrameUpdate subscribers read CurrentAvatarFrameIndex.
+                    _shownAvatarIndex = _idleFrameIndex;
+                    DisplayImage = _idleFrames[_idleFrameIndex];
+                    _idleFrameIndex = (_idleFrameIndex + 1) % count;
+
+                    // Next due time. After a hitch longer than a frame, resync
+                    // to now rather than bursting through the backlog.
+                    _idleNextFrameTime += interval;
+                    if (Time.time - _idleNextFrameTime > interval)
+                        _idleNextFrameTime = Time.time + interval;
                 }
-                else // Going reverse
-                {
-                    _idleFrameIndex--;
-                    if (_idleFrameIndex < 0)
-                    {
-                        // Reached start, go forward (skip first frame to avoid duplicate)
-                        _idleFrameIndex = Math.Min(1, _idleFrames.Count - 1);
-                        _idleForward = true;
-                    }
-                }
-                
-                yield return new WaitForSeconds(frameInterval);
+
+                yield return null;
             }
+        }
+
+        private static int Mod(int a, int m) => m <= 0 ? 0 : ((a % m) + m) % m;
+
+        /// <summary>
+        /// Moves the avatar cursor to lip-sync frame <paramref name="frameIndex"/>
+        /// of a line that started on avatar frame <paramref name="start"/>, so
+        /// idle resumes from the frame after the one speech ended on.
+        /// </summary>
+        private void MarkSpeechFrameShown(int start, int frameIndex)
+        {
+            if (start < 0 || _idleFrames == null || _idleFrames.Count == 0)
+                return;
+            int count = _idleFrames.Count;
+            _shownAvatarIndex = Mod(start + frameIndex, count);
+            _idleFrameIndex = Mod(start + frameIndex + 1, count);
         }
 
         /// <summary>
@@ -918,6 +1045,13 @@ namespace LiveTalk.API
                         FrameStream frameStream = null;
                         AudioClip audioClip2 = null;
                         bool hasError2 = false;
+
+                        // The generator asks for its start frame when it is
+                        // about to begin, and we answer with where the idle
+                        // loop (or the line before) will have got to by the
+                        // time this line can play. See PredictStartFrame.
+                        var itemForStart = pendingItem;
+                        Func<int, int> startFrameProvider = expectedFrames => PredictStartFrame(itemForStart, expectedFrames);
                         
                         IEnumerator speechCoroutine = _character.SpeakAsync(
                             line,
@@ -957,7 +1091,9 @@ namespace LiveTalk.API
                                 frameStream = speech.Frames;
                                 StartFrameCollector(pendingItem, speech.Frames);
                                 Logger.Log($"[CharacterPlayer] Speech stream started at t={Time.realtimeSinceStartup:F3}s ({speech.SecondsAvailable:F2}s of audio)");
-                            }
+                            },
+                            onSpeechChunk: null,
+                            startFrameIndexProvider: startFrameProvider
                         );
                         
                         // Start the speech generation
@@ -1030,6 +1166,139 @@ namespace LiveTalk.API
             OnError?.Invoke(ex);
         }
         
+        /// <summary>
+        /// Answers the generator's "which avatar frame do I start on?" for
+        /// <paramref name="item"/>, asked as generation is about to begin.
+        ///
+        /// If an earlier line is still pending or playing, this one follows it
+        /// with no idle between, so it starts where that one ends. Otherwise
+        /// the idle loop is running and will keep running until this line is
+        /// ready: predict how long that is (batch: frames × learnt seconds per
+        /// frame; streaming: a learnt flat lead) plus
+        /// <see cref="ContinuityLeadSeconds"/>, and start that many frames
+        /// ahead of the cursor. The player loop then waits for the idle to
+        /// reach the frame (or cuts, past <see cref="MaxContinuityWaitSeconds"/>).
+        /// Returns 0 when continuity does not apply.
+        /// </summary>
+        private int PredictStartFrame(PendingSpeechItem item, int expectedFrames)
+        {
+            item.GenerationStartedAt = Time.realtimeSinceStartup;
+            item.GenerationFrames = expectedFrames;
+            if (!ContinuityActive)
+                return 0;
+
+            int count = _idleFrames.Count;
+            int start;
+
+            // Chained: the line before this one in the queue (or on screen).
+            PendingSpeechItem previous = null;
+            foreach (var pending in _pendingAnimations)
+            {
+                if (ReferenceEquals(pending, item))
+                    break;
+                previous = pending;
+            }
+            if (previous == null && _playingItem != null && !ReferenceEquals(_playingItem, item))
+                previous = _playingItem;
+
+            int chainedEnd = previous?.ExpectedEnd(count) ?? -1;
+            if (chainedEnd >= 0)
+            {
+                start = chainedEnd;
+                Logger.Log($"[CharacterPlayer] Continuity: line follows the previous one, start frame {start}");
+            }
+            else
+            {
+                float lead = expectedFrames >= 0
+                    ? expectedFrames * _batchSecondsPerFrame
+                    : _streamLeadSeconds;
+                lead += ContinuityLeadSeconds;
+                int leadFrames = Mathf.RoundToInt(lead * IdleFps);
+                start = Mod(_idleFrameIndex + leadFrames, count);
+                Logger.Log($"[CharacterPlayer] Continuity: idle cursor {_idleFrameIndex}, predicted {lead:F2}s ({leadFrames} frames) to ready → start frame {start}");
+            }
+
+            item.PredictedStart = start;
+            return start;
+        }
+
+        /// <summary>
+        /// Feeds a line's measured generation time back into the estimator
+        /// <see cref="PredictStartFrame"/> reads, once the line is ready to play.
+        /// </summary>
+        private void LearnGenerationTime(PendingSpeechItem item)
+        {
+            if (item.PredictedStart < 0 || item.GenerationStartedAt <= 0f)
+                return;
+            float elapsed = Time.realtimeSinceStartup - item.GenerationStartedAt;
+            if (elapsed <= 0f)
+                return;
+            if (item.GenerationFrames > 0)
+            {
+                float perFrame = elapsed / item.GenerationFrames;
+                _batchSecondsPerFrame = Mathf.Lerp(_batchSecondsPerFrame, perFrame, EstimatorGain);
+                Logger.Log($"[CharacterPlayer] Continuity: batch line ready {elapsed:F2}s after start chosen ({perFrame * 1000f:F0} ms/frame; estimate now {_batchSecondsPerFrame * 1000f:F0} ms/frame)");
+            }
+            else
+            {
+                _streamLeadSeconds = Mathf.Lerp(_streamLeadSeconds, elapsed, EstimatorGain);
+                Logger.Log($"[CharacterPlayer] Continuity: streamed line ready {elapsed:F2}s after start chosen (estimate now {_streamLeadSeconds:F2}s)");
+            }
+        }
+
+        /// <summary>
+        /// Brings the screen to the avatar frame a ready line starts on. With
+        /// the idle running from the cursor, waits until its next frame is the
+        /// line's first (bounded by <see cref="MaxContinuityWaitSeconds"/>),
+        /// then stops it so the line's frame 0 lands on the idle's next tick.
+        /// Beyond the bound it cuts and says by how much. No-op when
+        /// continuity does not apply or the line's start is unknown.
+        /// </summary>
+        private IEnumerator AlignIdleToSpeechStart(PendingSpeechItem item)
+        {
+            int target = item.StartFrameIndex;
+            if (!ContinuityActive || target < 0)
+            {
+                StopIdleAnimation();
+                yield break;
+            }
+
+            int count = _idleFrames.Count;
+            target = Mod(target, count);
+            int cursor = Mod(_idleFrameIndex, count);
+            int distance = Mod(target - cursor, count);
+            int maxWaitFrames = Mathf.RoundToInt(MaxContinuityWaitSeconds * IdleFps);
+
+            if (distance == 0)
+            {
+                Logger.Log($"[CharacterPlayer] Continuity: idle cursor {cursor} == speech start {target}; seamless");
+            }
+            else if (distance <= maxWaitFrames)
+            {
+                if (_idleCoroutine == null)
+                    StartIdleAnimation(fromStart: false);
+                float waitStart = Time.realtimeSinceStartup;
+                float deadline = waitStart + MaxContinuityWaitSeconds + 1f;
+                while (Mod(_idleFrameIndex, count) != target && Time.realtimeSinceStartup < deadline)
+                {
+                    if (_state != PlaybackState.Speaking && _state != PlaybackState.Paused)
+                        break;
+                    yield return null;
+                }
+                Logger.Log($"[CharacterPlayer] Continuity: idle run on {cursor} → {target} ({distance} frames, {Time.realtimeSinceStartup - waitStart:F2}s) ; seamless");
+            }
+            else
+            {
+                Logger.LogWarning($"[CharacterPlayer] Continuity: idle cursor {cursor} is {count - distance} frames past speech start {target} " +
+                                  $"(waiting {distance} frames exceeds {MaxContinuityWaitSeconds:F1}s); cutting");
+            }
+
+            StopIdleAnimation();
+            // The line's first frame is due when the idle's next frame was.
+            while (Time.time < _idleNextFrameTime && _state == PlaybackState.Speaking)
+                yield return null;
+        }
+
         /// <summary>
         /// Starts draining <paramref name="frameStream"/> into the item's frame
         /// list, once per item. Tracked so <see cref="Stop"/> can find it.
@@ -1149,11 +1418,10 @@ namespace LiveTalk.API
                     
                     if (needsToWait && !isFirstSegment && _state != PlaybackState.Paused)
                     {
-                        // Next segment not ready - return to idle while waiting
+                        // Next segment not ready - return to idle while waiting,
+                        // carrying on from the frame the last line ended on.
                         Logger.Log("[CharacterPlayer] Next segment not ready - returning to idle while waiting");
-                        _idleFrameIndex = 0;
-                        _idleForward = true;
-                        StartIdleAnimation();
+                        StartIdleAnimation(fromStart: false);
                     }
                     
                     // Wait for next segment to be ready (idle animates during this wait)
@@ -1172,6 +1440,8 @@ namespace LiveTalk.API
                         break;
                     
                     var item = _pendingAnimations.Dequeue();
+                    _playingItem = item;
+                    LearnGenerationTime(item);
 
                     // Paused while waiting: hold before touching the display.
                     while (_state == PlaybackState.Paused)
@@ -1210,17 +1480,25 @@ namespace LiveTalk.API
                         continue;
                     }
                     
-                    // Stop idle and transition to last idle frame before playing
-                    if (needsToWait || isFirstSegment)
+                    // Leave idle for speech.
+                    if (ContinuityActive)
                     {
-                        // We were in idle (either first time or returned to idle) - do smooth transition
+                        // The line was rendered from the frame the idle was
+                        // predicted to reach; run the idle on to it (or cut,
+                        // past the bound), then hand over on the beat.
+                        yield return AlignIdleToSpeechStart(item);
+                    }
+                    else if (needsToWait || isFirstSegment)
+                    {
+                        // Continuity off: the line starts on the clip's first
+                        // frame, so show the last idle frame and cut.
                         Logger.Log("[CharacterPlayer] Segment ready - transitioning from idle to speech");
                         StopIdleAnimation();
                         
-                        // Transition idle to its last frame for smooth start
                         if (_idleFrames != null && _idleFrames.Count > 0)
                         {
                             Texture lastIdleFrame = _idleFrames[^1];
+                            _shownAvatarIndex = _idleFrames.Count - 1;
                             DisplayImage = lastIdleFrame;
                             
                             // Brief pause to show transition
@@ -1235,25 +1513,27 @@ namespace LiveTalk.API
                     
                     if (streamed)
                     {
-                        Logger.Log($"[CharacterPlayer] Playing streamed segment: {item.Frames.Count} frames and {item.Stream.SecondsAvailable:F2}s of audio so far");
+                        Logger.Log($"[CharacterPlayer] Playing streamed segment: {item.Frames.Count} frames and {item.Stream.SecondsAvailable:F2}s of audio so far (avatar frame {item.StartFrameIndex})");
                         yield return PlayStreamingSegment(item);
                     }
                     else
                     {
-                        Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s");
+                        Logger.Log($"[CharacterPlayer] Playing segment: {item.Frames.Count} frames, {item.AudioClip.length}s (avatar frame {item.StartFrameIndex})");
                         
                         // Play this segment with its audio
-                        yield return PlayFramesSynchronized(item.Frames, item.AudioClip);
+                        yield return PlayFramesSynchronized(item.Frames, item.AudioClip, item.StartFrameIndex);
                     }
                     
                     // After playing, we're no longer in first segment
                     isFirstSegment = false;
+                    _playingItem = null;
                 }
 
                 completed = true;
             }
             finally
             {
+                _playingItem = null;
                 // Exception path only. Normal completion continues below (and a
                 // stopped coroutine has a stale epoch — Stop() reset the flags).
                 if (!completed && epoch == _epoch)
@@ -1291,17 +1571,14 @@ namespace LiveTalk.API
             _state = PlaybackState.Ready;
             OnSpeechEnded?.Invoke();
             
-            // Return to idle (starting from frame 0 for smooth loop)
-            _idleFrameIndex = 0;
-            _idleForward = true;
-            
+            // Return to idle from the frame after the one speech ended on.
             if (autoPlayIdle && !audioOnly && _idleFrames != null && _idleFrames.Count > 0)
             {
-                StartIdleAnimation();
+                StartIdleAnimation(fromStart: false);
             }
         }
 
-        private IEnumerator PlayFramesSynchronized(List<Texture> frames, AudioClip audioClip)
+        private IEnumerator PlayFramesSynchronized(List<Texture> frames, AudioClip audioClip, int startFrameIndex = -1)
         {
             if (frames.Count == 0 || audioClip == null)
             {
@@ -1315,8 +1592,11 @@ namespace LiveTalk.API
             _audioSource.clip = audioClip;
             _audioSource.Play();
             
-            // Play frames at calculated rate. Holds while Paused (audio is paused
-            // by Pause()); exits only if the player left Speaking some other way.
+            // Play frames on a schedule off the audio clock — frame i is due at
+            // i * interval — so the display cannot drift from the audio the way
+            // a sleep per frame (rounded up to the next rendered frame) did.
+            // Holds while Paused (audio is paused by Pause()); exits only if
+            // the player left Speaking some other way.
             for (int i = 0; i < frames.Count; i++)
             {
                 while (_state == PlaybackState.Paused)
@@ -1324,10 +1604,15 @@ namespace LiveTalk.API
                 if (_state != PlaybackState.Speaking)
                     yield break;
 
+                MarkSpeechFrameShown(startFrameIndex, i);
                 DisplayImage = frames[i];
                 if (i == 0)
                     MarkSpeechStarted("batch");
-                yield return new WaitForSeconds(frameInterval);
+
+                float due = (i + 1) * frameInterval;
+                while (_state == PlaybackState.Paused
+                       || (_state == PlaybackState.Speaking && _audioSource.isPlaying && _audioSource.time < due))
+                    yield return null;
             }
             
             // Wait for audio to finish
@@ -1374,6 +1659,7 @@ namespace LiveTalk.API
 
             int shown = -1;
             int displayed = 0;
+            int startFrame = item.StartFrameIndex;
             int heldTicks = 0;
             int maxDeficit = 0;
             bool holdWarned = false;
@@ -1428,6 +1714,7 @@ namespace LiveTalk.API
                         if (target < available)
                         {
                             shown = target;
+                            MarkSpeechFrameShown(startFrame, shown);
                             DisplayImage = item.Frames[shown];
                             displayed++;
                             MarkSpeechStarted("streamed");
@@ -1439,6 +1726,7 @@ namespace LiveTalk.API
                             if (available - 1 > shown)
                             {
                                 shown = available - 1;
+                                MarkSpeechFrameShown(startFrame, shown);
                                 DisplayImage = item.Frames[shown];
                                 displayed++;
                                 MarkSpeechStarted("streamed");

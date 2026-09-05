@@ -158,6 +158,9 @@ namespace LiveTalk.API
         /// <summary>Where the idle frames are (expression 0), or null without an animatable avatar.</summary>
         internal string IdleFramesFolder => Avatar != null && Avatar.CanAnimate ? Avatar.ExpressionFolder(0) : null;
 
+        /// <summary>The rate the idle frames play at. See <see cref="Avatar.FrameRate"/>.</summary>
+        public float IdleFrameRate => Avatar != null ? Avatar.FrameRate : Avatar.DefaultFrameRate;
+
         // Ids read from character.json before the halves are loaded
         // (metadata load), and the legacy file for the inline path.
         private string _avatarId;
@@ -678,12 +681,25 @@ namespace LiveTalk.API
         /// Ignored for a cache hit, since there is nothing to stream — the
         /// whole clip is already on disk and arrives via onAudioReady.
         /// </param>
+        /// <param name="onStreamStarted">Optional. Fires once when streamed lip-sync begins delivering audio and frames (see <see cref="LiveTalkAPI.StreamLipSync"/>).</param>
+        /// <param name="startFrameIndex">
+        /// The avatar frame (index into the expression's driving frames) the
+        /// first lip-sync frame is rendered onto; later frames walk on from it,
+        /// wrapping. A player passes the frame its idle
+        /// loop will be on when the line starts so the head does not jump; 0
+        /// is the clip's first frame. The <see cref="FrameStream"/> handed to
+        /// <paramref name="onAudioReady"/> reports the start actually used in
+        /// <see cref="FrameStream.StartFrameIndex"/> — a frames-cache hit
+        /// replays from the start it was rendered with, not the one requested.
+        /// </param>
         /// <returns>Coroutine for audio generation</returns>
         /// <remarks>
         /// Audio is cached on <c>(Voice.Id, text)</c> and frames on
         /// <c>(Voice.Id, text, Avatar.Id, expressionIndex)</c>, so a replaced
         /// voice never replays old takes and the same line at two expressions
-        /// never shares frames.
+        /// never shares frames. The start frame is recorded inside the frames
+        /// entry rather than keyed on, so a line has one entry whatever the
+        /// idle loop was doing when it was first spoken.
         ///
         /// Every failure reaches <paramref name="onError"/>: a faulted speech
         /// synthesis, a lip-sync model that failed to load, a driving-frame
@@ -701,10 +717,37 @@ namespace LiveTalk.API
             Action<FrameStream> onAnimationComplete = null,
             Action<Exception> onError = null,
             Action<float[], int> onSpeechChunk = null,
-            Action<SpeechStream> onStreamStarted = null)
+            Action<SpeechStream> onStreamStarted = null,
+            int startFrameIndex = 0)
+        {
+            int start = Math.Max(0, startFrameIndex);
+            return SpeakAsync(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk,
+                onStreamStarted, _ => start);
+        }
+
+        /// <summary>
+        /// As <see cref="SpeakAsync(string, int, Action{FrameStream, AudioClip}, Action{FrameStream}, Action{Exception}, Action{float[], int}, Action{SpeechStream}, int)"/>,
+        /// but the start frame is asked for at the moment lip-sync generation
+        /// begins — after synthesis on the batch path, at the first audio chunk
+        /// when streaming — rather than when the line is queued. The argument
+        /// is the number of frames the line will have, or -1 when not yet
+        /// known (streaming). A player whose idle loop keeps running while the
+        /// line is prepared can predict where that loop will be when playback
+        /// starts far more accurately from here than from the call site.
+        /// </summary>
+        internal IEnumerator SpeakAsync(
+            string text,
+            int expressionIndex,
+            Action<FrameStream, AudioClip> onAudioReady,
+            Action<FrameStream> onAnimationComplete,
+            Action<Exception> onError,
+            Action<float[], int> onSpeechChunk,
+            Action<SpeechStream> onStreamStarted,
+            Func<int, int> startFrameIndexProvider)
         {
             return TaskYield.Guard(
-                SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk, onStreamStarted),
+                SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk, onStreamStarted,
+                    startFrameIndexProvider),
                 onError,
                 "Character.SpeakAsync");
         }
@@ -738,7 +781,8 @@ namespace LiveTalk.API
             Action<FrameStream> onAnimationComplete,
             Action<Exception> onError,
             Action<float[], int> onSpeechChunk,
-            Action<SpeechStream> onStreamStarted)
+            Action<SpeechStream> onStreamStarted,
+            Func<int, int> startFrameIndexProvider)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
@@ -890,7 +934,8 @@ namespace LiveTalk.API
                         var extractor = features;
                         liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
                             GenerateAnimationWithQueue(liveTalkAPI, expression.Data,
-                                () => liveTalkAPI.GenerateTalkingHeadIncremental(expression.Data, extractor),
+                                start => liveTalkAPI.GenerateTalkingHeadIncremental(expression.Data, extractor, start),
+                                startFrameIndexProvider, expectedFrames: -1,
                                 animationStream, framesCacheKey, onAnimationComplete, extractor),
                             ex =>
                             {
@@ -1006,8 +1051,14 @@ namespace LiveTalk.API
             {
                 Logger.LogVerbose($"[Character] Loading {cachedFrameCount} cached animation frames for: {text[..Math.Min(30, text.Length)]}...");
                 
-                // Load frames from cache into output stream
-                outputStream = new FrameStream(cachedFrameCount);
+                // Load frames from cache into output stream. The frames were
+                // rendered from whatever avatar frame the first speaking of
+                // this line started on; the consumer reads it off the stream
+                // and lines its idle up to it (or cuts) — it cannot be changed.
+                outputStream = new FrameStream(cachedFrameCount)
+                {
+                    StartFrameIndex = LiveTalkCache.ReadFramesStartIndex(cachedFramesFolder)
+                };
                 
                 // Audio ready callback
                 onAudioReady?.Invoke(outputStream, audioClip);
@@ -1041,9 +1092,13 @@ namespace LiveTalk.API
             // and a MuseTalk lease that is never given back.
             var batchStream = outputStream;
             var clip = audioClip;
+            // The frame count is a function of the audio length, so the start
+            // frame provider can be told it up front.
+            int expectedFrames = WhisperModel.FrameCountFor(Mathf.RoundToInt(clip.length * AudioUtils.SAMPLE_RATE));
             liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
                 GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data,
-                    () => liveTalkAPI.GenerateTalkingHeadWithPreloadedData(expressionData.Data, clip),
+                    start => liveTalkAPI.GenerateTalkingHeadWithPreloadedData(expressionData.Data, clip, start),
+                    startFrameIndexProvider, expectedFrames,
                     batchStream, framesCacheKey, onAnimationComplete, features: null),
                 ex => { batchStream.Fail(ex); onError?.Invoke(ex); },
                 "Character.GenerateAnimation"));
@@ -1096,15 +1151,21 @@ namespace LiveTalk.API
 
         /// <summary>
         /// Generate animation frames with queuing to prevent parallel MuseTalk usage.
-        /// <paramref name="startProducer"/> is invoked once the lease is held and
-        /// returns the stream the engine produces into (batch: the whole clip;
-        /// streaming: incremental from <paramref name="features"/>, which is
-        /// disposed here when the run ends).
+        /// <paramref name="startProducer"/> is invoked once the lease is held,
+        /// with the avatar frame to start from, and returns the stream the
+        /// engine produces into (batch: the whole clip; streaming: incremental
+        /// from <paramref name="features"/>, which is disposed here when the
+        /// run ends). The start frame comes from
+        /// <paramref name="startFrameIndexProvider"/> at that same moment —
+        /// as late as it can be decided — and is recorded on
+        /// <paramref name="outputStream"/> and in the frames cache entry.
         /// </summary>
         private static IEnumerator GenerateAnimationWithQueue(
             LiveTalkAPI liveTalkAPI,
             AvatarData avatarData,
-            Func<FrameStream> startProducer,
+            Func<int, FrameStream> startProducer,
+            Func<int, int> startFrameIndexProvider,
+            int expectedFrames,
             FrameStream outputStream,
             string framesCacheKey,
             Action<FrameStream> onAnimationComplete,
@@ -1119,8 +1180,17 @@ namespace LiveTalk.API
             bool completed = false;
             try
             {
+                // Which avatar frame to render the first frame onto, decided
+                // now that generation is actually about to start. Wrapped
+                // into range so a caller may hand in a raw running counter.
+                int startFrameIndex = startFrameIndexProvider?.Invoke(expectedFrames) ?? 0;
+                int frameCount = avatarData.Latents.Count;
+                if (frameCount > 0)
+                    startFrameIndex = ((startFrameIndex % frameCount) + frameCount) % frameCount;
+                outputStream.StartFrameIndex = startFrameIndex;
+
                 // Generate talking head using MuseTalk with preloaded data
-                var generatedStream = startProducer();
+                var generatedStream = startProducer(startFrameIndex);
                 outputStream.TotalExpectedFrames = generatedStream.TotalExpectedFrames;
 
                 // Forward frames from generated stream to output stream
@@ -1128,6 +1198,8 @@ namespace LiveTalk.API
                 if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(framesCacheKey))
                 {
                     framesFolder = LiveTalkCache.CreateFramesCacheFolder(framesCacheKey);
+                    if (framesFolder != null)
+                        LiveTalkCache.WriteFramesStartIndex(framesFolder, startFrameIndex);
                 }
 
                 int frameIndex = 0;

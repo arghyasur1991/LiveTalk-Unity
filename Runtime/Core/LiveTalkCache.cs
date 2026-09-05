@@ -304,6 +304,52 @@ namespace LiveTalk.Core
             }
         }
 
+        /// <summary>Name of the file inside a frames folder recording the avatar frame the entry was rendered from.</summary>
+        private const string FramesStartFileName = "start.txt";
+
+        /// <summary>
+        /// Records the avatar frame index the first cached frame was rendered
+        /// onto, so a replay can line the idle loop up to it. Best effort: a
+        /// failure to write leaves the entry readable as "from frame 0".
+        /// </summary>
+        public static void WriteFramesStartIndex(string framesFolder, int startFrameIndex)
+        {
+            if (string.IsNullOrEmpty(framesFolder))
+                return;
+            try
+            {
+                File.WriteAllText(System.IO.Path.Combine(framesFolder, FramesStartFileName),
+                    startFrameIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[Cache] Could not record the start frame of {framesFolder}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// The avatar frame index a cached frames entry was rendered from, or 0
+        /// when the entry predates the record (every such entry started at 0).
+        /// </summary>
+        public static int ReadFramesStartIndex(string framesFolder)
+        {
+            if (string.IsNullOrEmpty(framesFolder))
+                return 0;
+            try
+            {
+                string path = System.IO.Path.Combine(framesFolder, FramesStartFileName);
+                if (File.Exists(path)
+                    && int.TryParse(File.ReadAllText(path).Trim(), System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out int start))
+                    return Math.Max(0, start);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[Cache] Could not read the start frame of {framesFolder}: {ex.Message}");
+            }
+            return 0;
+        }
+
         /// <summary>
         /// Delete cached animation frames for a given speech cache key.
         /// </summary>

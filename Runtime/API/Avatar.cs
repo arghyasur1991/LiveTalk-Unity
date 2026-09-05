@@ -106,6 +106,15 @@ namespace LiveTalk.API
         public DateTime createdUtc;
         public string version = "2.0";
 
+        /// <summary>Frame rate the driving frames were rendered at. Absent in older folders (played at 25).</summary>
+        public float? fps;
+
+        /// <summary>
+        /// Recipe that built the frames (<see cref="Avatar.Version"/>). Stored
+        /// for logs; the avatar id already includes it, so a bump rebuilds.
+        /// </summary>
+        public int? recipeVersion;
+
         public const string FileName = "avatar.json";
     }
 
@@ -166,6 +175,13 @@ namespace LiveTalk.API
         /// </summary>
         public bool IsLegacy { get; }
 
+        /// <summary>
+        /// Frame rate the driving frames play at. Bundled clips are 25 fps, the
+        /// same clock lip-sync uses. Folders that record no rate were always
+        /// displayed at 25, so 25 is reported for them too.
+        /// </summary>
+        public float FrameRate { get; private set; } = DefaultFrameRate;
+
         internal string Folder { get; }
         internal Dictionary<int, ExpressionData> LoadedExpressions { get; } = new Dictionary<int, ExpressionData>();
 
@@ -174,6 +190,14 @@ namespace LiveTalk.API
 
         internal const string ImageFileName = "image.png";
         internal const string DrivingFramesFolderName = "drivingFrames";
+        internal const float DefaultFrameRate = 25f;
+
+        /// <summary>
+        /// Bumped when the driving-frame recipe or bundled clips change, so
+        /// existing folders rebuild instead of serving stale frames. The only
+        /// identity knob besides the portrait bytes and the expression set.
+        /// </summary>
+        internal const int Version = 9;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -195,8 +219,13 @@ namespace LiveTalk.API
             _ => AllExpressionNames,
         };
 
+        /// <summary>
+        /// The expression-set half of the avatar id. Carries <see cref="Version"/>,
+        /// so a recipe or clip change gives every avatar a new id: an old
+        /// folder is neither reused nor half-matched.
+        /// </summary>
         internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode));
+            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";v" + Version;
 
         /// <summary>Human name of an expression index, for logs.</summary>
         internal static string GetExpressionName(int index) =>
@@ -345,6 +374,8 @@ namespace LiveTalk.API
                     mode = mode,
                     expressions = expressions,
                     createdUtc = DateTime.UtcNow,
+                    fps = DefaultFrameRate,
+                    recipeVersion = Version,
                 };
                 string manifestPath = Path.Combine(staging, AvatarManifest.FileName);
                 yield return TaskYield.Wait(
@@ -384,7 +415,6 @@ namespace LiveTalk.API
             videoPlayer.Prepare();
             yield return new WaitUntil(() => videoPlayer.isPrepared);
 
-            // Generate animated textures using LivePortrait
             var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer);
 
             // Process frames
@@ -744,14 +774,16 @@ namespace LiveTalk.API
 
             // Mode: from the manifest when there is one, otherwise inferred.
             CreationMode mode;
+            AvatarManifest manifest = null;
             string manifestPath = Path.Combine(folder, AvatarManifest.FileName);
             if (File.Exists(manifestPath))
             {
                 string manifestJson = null;
                 yield return TaskYield.Wait(File.ReadAllTextAsync(manifestPath), t => manifestJson = t,
                     $"Avatar.Load read {manifestPath}");
-                mode = JsonConvert.DeserializeObject<AvatarManifest>(manifestJson)?.mode
-                       ?? throw new InvalidDataException($"Could not parse {manifestPath}");
+                manifest = JsonConvert.DeserializeObject<AvatarManifest>(manifestJson)
+                           ?? throw new InvalidDataException($"Could not parse {manifestPath}");
+                mode = manifest.mode;
             }
             else if (modeHint.HasValue)
             {
@@ -767,9 +799,14 @@ namespace LiveTalk.API
             }
 
             var avatar = new Avatar(id, mode, folder, image, isLegacy);
+            if (manifest != null)
+            {
+                avatar.FrameRate = manifest.fps is > 0f ? manifest.fps.Value : DefaultFrameRate;
+            }
             yield return avatar.LoadExpressionsData();
 
-            Logger.LogVerbose($"[Avatar] Loaded avatar {id} ({avatar.LoadedExpressions.Count} expression(s)) in {start.Elapsed.TotalMilliseconds:F0}ms");
+            Logger.LogVerbose($"[Avatar] Loaded avatar {id} ({avatar.LoadedExpressions.Count} expression(s), " +
+                              $"{avatar.FrameRate:F0} fps) in {start.Elapsed.TotalMilliseconds:F0}ms");
             onComplete?.Invoke(avatar);
         }
 

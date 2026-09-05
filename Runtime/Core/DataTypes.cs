@@ -336,6 +336,27 @@ namespace LiveTalk.Core
         /// These latents are used as input to the UNet model for frame generation
         /// </summary>
         public List<float[]> Latents { get; set; } = new List<float[]>();
+
+        /// <summary>
+        /// The avatar frame output frame <paramref name="frameIndex"/> is
+        /// rendered onto, when the walk started at avatar frame
+        /// <paramref name="startFrameIndex"/>. Forward with wrap: bundled
+        /// clips are rest-to-rest. One function for latents and face regions
+        /// so the two never drift.
+        /// </summary>
+        public int AvatarFrameIndex(int frameIndex, int startFrameIndex = 0)
+        {
+            int n = Latents.Count;
+            if (n <= 1)
+                return 0;
+            return Mod(startFrameIndex + frameIndex, n);
+        }
+
+        private static int Mod(int a, int m)
+        {
+            int r = a % m;
+            return r < 0 ? r + m : r;
+        }
     }
     
     /// <summary>
