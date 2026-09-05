@@ -336,6 +336,39 @@ namespace LiveTalk.Core
         /// These latents are used as input to the UNet model for frame generation
         /// </summary>
         public List<float[]> Latents { get; set; } = new List<float[]>();
+
+        /// <summary>
+        /// True when the frames run seamlessly from the last back to the first,
+        /// so generation walks them forward with wrap. False: ping-pong, the
+        /// only seamless walk for a set whose ends differ.
+        /// </summary>
+        public bool Loopable { get; set; }
+
+        /// <summary>
+        /// The avatar frame output frame <paramref name="frameIndex"/> is
+        /// rendered onto, when the walk started at avatar frame
+        /// <paramref name="startFrameIndex"/>. Forward with wrap for a
+        /// loopable set; for a ping-pong set the period is <c>2n - 2</c>
+        /// (<c>0,1,…,n-1,n-2,…,1</c>: neither end frame repeats at the turn).
+        /// One function for latents and face regions so the two never drift.
+        /// </summary>
+        public int AvatarFrameIndex(int frameIndex, int startFrameIndex = 0)
+        {
+            int n = Latents.Count;
+            if (n <= 1)
+                return 0;
+            if (Loopable)
+                return Mod(startFrameIndex + frameIndex, n);
+            int period = 2 * n - 2;
+            int c = Mod(startFrameIndex + frameIndex, period);
+            return c < n ? c : period - c;
+        }
+
+        private static int Mod(int a, int m)
+        {
+            int r = a % m;
+            return r < 0 ? r + m : r;
+        }
     }
     
     /// <summary>
