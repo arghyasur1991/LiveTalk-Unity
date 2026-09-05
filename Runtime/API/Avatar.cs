@@ -213,11 +213,8 @@ namespace LiveTalk.API
         internal const float DefaultFrameRate = 25f;
 
         /// <summary>
-        /// Bumped when the driving-frame recipe changes so existing folders
-        /// rebuild instead of serving stale frames. 8 is upright crop, unedited
-        /// relative transfer, rest-to-rest 25 fps clips. Earlier numbers were
-        /// keypoint-space edits (resample, loop blend, gain, scale pin) that
-        /// chased a ~40° crop rotation; those edits are gone.
+        /// Bumped when the driving-frame recipe or bundled clips change, so
+        /// existing folders rebuild instead of serving stale frames.
         /// </summary>
         internal const int MotionPipelineVersion = 8;
 
