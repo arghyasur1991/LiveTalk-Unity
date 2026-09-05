@@ -42,9 +42,21 @@ namespace LiveTalk.API
         /// portrait, say — absorbs part of any opposite-signed delta, so a
         /// clearly sad driver can arrive as a faint frown. Values of 1.3–1.7
         /// restore legibility; above ~2 the mouth and brows start to tear.
-        /// Head pose, translation and scale are not affected.
+        /// Head pose, translation and scale are not affected, and neither are
+        /// the eye keypoints — see <see cref="EyeExpressionGain"/>.
         /// </summary>
         public float ExpressionGain { get; set; } = 1f;
+
+        /// <summary>
+        /// <see cref="ExpressionGain"/> for the four eye keypoints (LivePortrait's
+        /// eye-retargeting set, indices 11, 13, 15, 16) instead of the general
+        /// value. Default 1: a blink already spans the eye's full range in the
+        /// driver, so amplifying it pushes the lids past closed — the lash line
+        /// lands below the eye and the socket bulges — while the rest of the
+        /// face still wants the general gain to read. Set equal to
+        /// <see cref="ExpressionGain"/> to restore a single multiplier.
+        /// </summary>
+        public float EyeExpressionGain { get; set; } = 1f;
 
         /// <summary>
         /// How much of the driving clip's <em>scale</em> change (head size, as

@@ -150,15 +150,25 @@ with the model's own reading of both sequences:
      mouth width, mouth-corner drop, inner/outer brow height,
      pitch/yaw/roll): Pearson correlation of the delta-from-frame-0 series
      and amplitude ratio std(out)/std(driver). Pose should read ~1.0;
-     expression features at gain 2.0 read 0.75–1.1. A feature the driver
-     holds still must stay still in the output.
+     expression features at gain 1.4 read close to 1.0 on an upright crop
+     (eyes lower — their gain is 1, see `EyeExpressionGain`). A feature the
+     driver holds still must stay still in the output.
    - A driver feature reported *still* means the clip itself is too
      weak on that channel (the first sad clip's mouth-corner drop was
      0.05 IOD ≈ 5 px); fix the clip, not the gain.
 
-`PocketHamlet/tools/livetalk/driver_test/gen_measure_matrix.cs` is a
-Play-mode job-queue runner for steps 1–2. `analyze.py` (hold / wrap /
+A host project can drive steps 1–2 from a Play-mode job runner that calls
+`GenerateAnimatedTexturesAsync(portrait, framesDir, options)` with
+`TargetFps 0` / `LoopBlendSeconds 0` (frames then align 1:1 with the driver)
+followed by `MeasureMotionAsync` on both folders. `analyze.py` (hold / wrap /
 border MAD, flicker) is still the check for loop seams and hair shimmer.
+
+Before trusting any of these numbers, check the extractor's read of the
+**driver's frame 0** against an independent LivePortrait implementation
+(pose within ~0.3°, roll especially): `MeasureMotionAsync` runs the same
+crop on driver and output, so a preprocessing bug in the crop is invisible
+to its correlations. A 40° roll on a level driver was exactly such a bug
+(fixed in 2.2.0); every gain figure measured before it is void.
 
 ## Character notes (what `mblab_rich.py` fixes and why)
 

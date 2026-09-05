@@ -836,6 +836,13 @@ namespace LiveTalk.Core
         /// Applies <see cref="DrivingMotionOptions"/> to an extracted motion
         /// sequence: resample to the target rate, then crossfade into a loop.
         /// </summary>
+        /// <summary>
+        /// LivePortrait's eye keypoints among the 21 implicit keypoints — the set
+        /// its eye-retargeting module edits (upstream <c>stitching_retargeting</c>:
+        /// eyes 11, 13, 15, 16; lips 6, 12, 14, 17, 19, 20).
+        /// </summary>
+        private static bool IsEyeKeypoint(int kp) => kp == 11 || kp == 13 || kp == 15 || kp == 16;
+
         private static List<MotionInfo> EditMotion(
             List<MotionInfo> motions, DrivingMotionOptions options, out float outputFps, out int blendFrames)
         {
@@ -847,17 +854,24 @@ namespace LiveTalk.Core
             // Expression gain: scale each frame's expression delta from the
             // clip's reference (first) frame. Done here, on the motion, so the
             // rendered frames, the loop blend and the cache all see one thing.
-            if (edited.Count > 0 && Mathf.Abs(options.ExpressionGain - 1f) > 1e-4f)
+            // The eye keypoints take their own gain (a blink is already a
+            // full-range motion; see DrivingMotionOptions.EyeExpressionGain).
+            if (edited.Count > 0 &&
+                (Mathf.Abs(options.ExpressionGain - 1f) > 1e-4f || Mathf.Abs(options.EyeExpressionGain - 1f) > 1e-4f))
             {
                 var exp0 = edited[0].Expression;
                 float g = options.ExpressionGain;
+                float gEye = options.EyeExpressionGain;
                 for (int i = 0; i < edited.Count; i++)
                 {
                     var e = edited[i].Expression;
                     if (e == null || exp0 == null || e.Length != exp0.Length) continue;
                     var scaled = new float[e.Length];
                     for (int k = 0; k < e.Length; k++)
-                        scaled[k] = exp0[k] + g * (e[k] - exp0[k]);
+                    {
+                        float gk = IsEyeKeypoint(k / 3) ? gEye : g;
+                        scaled[k] = exp0[k] + gk * (e[k] - exp0[k]);
+                    }
                     edited[i].Expression = scaled;
                 }
             }

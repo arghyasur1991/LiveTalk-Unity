@@ -230,9 +230,12 @@ namespace LiveTalk.API
         /// driving crop ~40° before the motion extractor saw it (expressions read weak, eyes
         /// overshot on blinks, motion applied along a rotated axis). Gain re-tuned to 1.4 against
         /// upright crops.</item>
+        /// <item>6: the eye keypoints are excluded from the expression gain
+        /// (<see cref="DrivingMotionOptions.EyeExpressionGain"/> = 1). A blink already spans the
+        /// eye's full range in the driver; amplified, the lids were pushed past closed.</item>
         /// </list>
         /// </summary>
-        internal const int MotionPipelineVersion = 5;
+        internal const int MotionPipelineVersion = 6;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -250,6 +253,7 @@ namespace LiveTalk.API
                 TargetFps = DefaultFrameRate,
                 LoopBlendSeconds = 0.4f,
                 ExpressionGain = ExpressionGainFor(expression),
+                EyeExpressionGain = 1f,
             };
 
         /// <summary>
