@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Avatar creation no longer edits driving motion.** Bundled clips are already 25 fps and rest-to-rest, so resample and the 0.4 s loop blend were redundant. Expression gain and scale-pin are also off so the render is LivePortrait's unedited relative transfer. `GenerateAnimatedTexturesAsync(..., DrivingMotionOptions)` is unchanged for callers that still want those edits. `MotionPipelineVersion` 7: every avatar folder rebuilds once.
+
 ## [2.2.0] - 2026-09-05
 
 The face crop LivePortrait works from was rotated ~40° in every previous release (see Fixed). Expressions now transfer as the driver moves them, blinks close naturally, and the seven bundled driving clips are re-rendered with a look tuned for the motion extractor. `MotionPipelineVersion` is 6, so **every existing avatar folder is rebuilt once** on its next `CreateAvatarAsync`.

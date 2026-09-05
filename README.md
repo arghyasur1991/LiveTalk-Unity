@@ -228,22 +228,12 @@ Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 ### How the driving clips are applied
 
 Each expression is a bundled 25 fps clip of a rendered face
-(`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). At avatar
-build time LivePortrait extracts the clip's motion once, edits it in
-keypoint space, then renders every frame onto the portrait:
-
-| Edit | Value baked into avatars | Why |
-|---|---|---|
-| Resample | 25 fps | one playback rate for every clip |
-| Loop blend | last 0.4 s crossfaded into the first | idle plays as a seamless forward loop |
-| `ExpressionGain` | 1.4 | LivePortrait transfers expression conservatively onto a different identity |
-| `EyeExpressionGain` | 1.0 | a blink already spans the eye's range; amplified, lids go past closed |
-| `ScaleTransfer` | 0 | the extractor's scale channel leaks expression; the clips have a fixed camera |
-
-These values are part of the avatar id (`Avatar.MotionPipelineVersion`), so
-changing them in a new package version rebuilds existing avatars once. The
-same edits are available to callers of the raw API through
-`DrivingMotionOptions` (below).
+(`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
+already return to rest and share the lip-sync clock, so avatar creation
+renders one frame per driving frame with no resample, loop blend, expression
+gain or scale pin. `DrivingMotionOptions` still exists for callers of
+`GenerateAnimatedTexturesAsync` that want those edits. Changing whether
+avatars apply them bumps `Avatar.MotionPipelineVersion` and rebuilds.
 
 ## Design a voice (roll the dice)
 
@@ -482,7 +472,7 @@ FrameStream a = api.GenerateAnimatedTexturesAsync(portrait, drivingFrames /* Lis
 FrameStream b = api.GenerateAnimatedTexturesAsync(portrait, videoPlayer, maxFrames: -1);
 FrameStream c = api.GenerateAnimatedTexturesAsync(portrait, "path/to/frames", maxFrames: 50);
 
-// ...with the keypoint-space edits avatars use (resample, loop, gains, scale pin)
+// optional keypoint-space edits (resample, loop, gains, scale pin) — avatars skip these
 var motion = new DrivingMotionOptions { TargetFps = 25f, LoopBlendSeconds = 0.4f, ExpressionGain = 1.4f };
 FrameStream e = api.GenerateAnimatedTexturesAsync(portrait, "path/to/frames", motion);
 

@@ -90,10 +90,10 @@ identical rest pose** — across all seven clips.
 - **512x512, 25 fps**, face filling ~55–65 % of the frame, plain neutral
   background, soft even lighting. Match the framing of the existing clips
   (`lp_scene.py` owns it; do not change it per clip).
-- **Start and end at the same rest pose**, eased to zero velocity. The
-  avatar pipeline crossfades the last 0.4 s into the first in keypoint
-  space, but a clip that already returns to rest loops best, and a shared
-  rest pose makes cuts between expression clips seamless.
+- **Start and end at the same rest pose**, eased to zero velocity.
+  Avatar creation wraps last→first without a motion-space blend; a clip
+  that already returns to rest loops, and a shared rest pose makes cuts
+  between expression clips seamless.
 - Idle: 25–30 s, aperiodic blinks (never on a fixed period, never on a
   gesture beat), slow breathing with one deeper breath, small gaze shifts
   and head sway, a few tilts/turns ≤ 6°, no repeated gesture. Mouth stays

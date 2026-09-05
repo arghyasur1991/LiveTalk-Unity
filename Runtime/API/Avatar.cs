@@ -198,11 +198,10 @@ namespace LiveTalk.API
         public float FrameRate { get; private set; } = DefaultFrameRate;
 
         /// <summary>
-        /// True when every expression's frames run seamlessly from the last
-        /// back to the first (see <c>MotionSequence.MakeLoopable</c>), so a
-        /// player should loop them forward rather than ping-pong. False for
-        /// folders built before the motion pipeline, which have to be
-        /// ping-ponged to avoid a hard cut at the wrap.
+        /// True when every expression's frames run last→first without a cut.
+        /// Bundled clips are authored rest-to-rest, so this is true even when
+        /// <c>EditMotion</c> is skipped. False for pre-pipeline folders, which
+        /// ping-pong to hide the wrap.
         /// </summary>
         public bool IsLoopable { get; private set; }
 
@@ -233,39 +232,36 @@ namespace LiveTalk.API
         /// <item>6: the eye keypoints are excluded from the expression gain
         /// (<see cref="DrivingMotionOptions.EyeExpressionGain"/> = 1). A blink already spans the
         /// eye's full range in the driver; amplified, the lids were pushed past closed.</item>
+        /// <item>7: no motion edit. Bundled clips are already 25 fps and rest-to-rest,
+        /// so resample / loop-blend were redundant; gain and scale-pin are off
+        /// so the render is LivePortrait's unedited relative transfer.</item>
         /// </list>
         /// </summary>
-        internal const int MotionPipelineVersion = 6;
+        internal const int MotionPipelineVersion = 7;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
 
         /// <summary>
-        /// The motion edit every avatar is built with. Deliberately not a
-        /// knob: the numbers are part of the folder format, so changing them
-        /// means bumping <see cref="MotionPipelineVersion"/>. A new instance
-        /// per call because the API fills <see cref="DrivingMotionOptions.SourceFps"/>
-        /// in from each expression's clip.
+        /// Motion edit applied at avatar build. Null skips <c>EditMotion</c>
+        /// entirely (one rendered frame per driving frame, no resample / loop
+        /// blend / gain / scale pin). The bundled clips are already 25 fps and
+        /// rest-to-rest. Callers of the raw API can still pass
+        /// <see cref="DrivingMotionOptions"/>. Returning non-null again means
+        /// bumping <see cref="MotionPipelineVersion"/>.
         /// </summary>
-        private static DrivingMotionOptions DrivingMotion(string expression) =>
-            new()
-            {
-                TargetFps = DefaultFrameRate,
-                LoopBlendSeconds = 0.4f,
-                ExpressionGain = ExpressionGainFor(expression),
-                EyeExpressionGain = 1f,
-            };
+        private static DrivingMotionOptions DrivingMotion(string expression)
+        {
+            _ = expression;
+            return null;
+        }
 
         /// <summary>
-        /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/>.
-        /// Chosen on the reference (upright-crop) pipeline rendering the bundled
-        /// clips onto a neutral portrait: 1.0 already reads, 1.4 is clearly
-        /// expressive with natural blinks, 1.8 is strong but starts to look
-        /// pushed on the surprised mouth. The earlier 2.0 was tuned against the
-        /// rotated crop (pipeline version 4) and over-drives an upright one.
-        /// Part of <see cref="Signature"/>: changing a value rebuilds.
+        /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/> when
+        /// <see cref="DrivingMotion"/> returns options. Unused while that
+        /// method returns null. Part of <see cref="Signature"/> only then.
         /// </summary>
-        internal static float ExpressionGainFor(string expression) => 1.4f;
+        internal static float ExpressionGainFor(string expression) => 1f;
 
         private static string ExpressionGainSignature(CreationMode mode) =>
             string.Join(",", ExpressionsFor(mode).Select(e => e + "=" + ExpressionGainFor(e).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
@@ -294,10 +290,13 @@ namespace LiveTalk.API
         /// folder is neither reused nor half-matched, and the two generations
         /// can coexist on disk until the old one is deleted.
         /// </summary>
-        internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion
-            + ";gain=" + ExpressionGainSignature(mode)
-            + ";clips=" + DrivingClipsHash;
+        internal static string Signature(CreationMode mode)
+        {
+            var s = mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";motion=v" + MotionPipelineVersion;
+            if (DrivingMotion("talk-neutral") != null)
+                s += ";gain=" + ExpressionGainSignature(mode);
+            return s + ";clips=" + DrivingClipsHash;
+        }
 
         private static string _drivingClipsHash;
 
@@ -483,15 +482,16 @@ namespace LiveTalk.API
                 }
 
                 // Manifest last: its presence is what marks the folder complete.
-                var motion = DrivingMotion("talk-neutral");   // fps / loopable are the same for every expression; only gain differs
+                var motion = DrivingMotion("talk-neutral");
                 var manifest = new AvatarManifest
                 {
                     id = id,
                     mode = mode,
                     expressions = expressions,
                     createdUtc = DateTime.UtcNow,
-                    fps = motion.TargetFps > 0f ? motion.TargetFps : DefaultFrameRate,
-                    loopable = motion.Loopable,
+                    fps = motion != null && motion.TargetFps > 0f ? motion.TargetFps : DefaultFrameRate,
+                    // Bundled clips are rest-to-rest, so wrap without a blend.
+                    loopable = motion != null ? motion.Loopable : true,
                     motionPipelineVersion = MotionPipelineVersion,
                     drivingClipsHash = DrivingClipsHash,
                 };
@@ -533,8 +533,7 @@ namespace LiveTalk.API
             videoPlayer.Prepare();
             yield return new WaitUntil(() => videoPlayer.isPrepared);
 
-            // Generate animated textures using LivePortrait, with the driving
-            // motion retimed to the canonical rate and made loopable first.
+            // Null motion: one rendered frame per driving frame, unedited.
             var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, DrivingMotion(expression));
 
             // Process frames
