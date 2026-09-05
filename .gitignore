@@ -39,3 +39,6 @@ __pycache__/
 *.onnx
 *.onnx.data
 *.onnx_data
+
+# FasterLivePortrait writes <clip>.pkl next to a driving video it is run on
+*.pkl
