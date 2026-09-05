@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **TEMP:** `Avatar.LookOnlyExpression = "surprised"` — animated avatars build only that clip (as expression-0) so a look pass is one driving video, not seven. Set the const empty to restore the mode's full set.
 - **Avatar creation no longer edits driving motion.** Bundled clips are already 25 fps and rest-to-rest, so resample and the 0.4 s loop blend were redundant. Expression gain and scale-pin are also off so the render is LivePortrait's unedited relative transfer. `GenerateAnimatedTexturesAsync(..., DrivingMotionOptions)` is unchanged for callers that still want those edits. `MotionPipelineVersion` 7: every avatar folder rebuilds once.
 
 ## [2.2.0] - 2026-09-05

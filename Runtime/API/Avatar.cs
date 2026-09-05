@@ -243,6 +243,13 @@ namespace LiveTalk.API
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
 
         /// <summary>
+        /// TEMP look validation. When set, every animated mode builds only this
+        /// clip as expression-0 (idle and Speak both use it). Set null to restore
+        /// the full set for the mode.
+        /// </summary>
+        internal const string LookOnlyExpression = "surprised";
+
+        /// <summary>
         /// Motion edit applied at avatar build. Null skips <c>EditMotion</c>
         /// entirely (one rendered frame per driving frame, no resample / loop
         /// blend / gain / scale pin). The bundled clips are already 25 fps and
@@ -276,12 +283,14 @@ namespace LiveTalk.API
         }
 
         /// <summary>Expression names generated for a mode, in index order.</summary>
-        internal static string[] ExpressionsFor(CreationMode mode) => mode switch
+        internal static string[] ExpressionsFor(CreationMode mode)
         {
-            CreationMode.VoiceOnly => Array.Empty<string>(),
-            CreationMode.SingleExpression => new[] { AllExpressionNames[0] },
-            _ => AllExpressionNames,
-        };
+            if (mode == CreationMode.VoiceOnly) return Array.Empty<string>();
+            if (!string.IsNullOrEmpty(LookOnlyExpression)) return new[] { LookOnlyExpression };
+            return mode == CreationMode.SingleExpression
+                ? new[] { AllExpressionNames[0] }
+                : AllExpressionNames;
+        }
 
         /// <summary>
         /// The expression-set half of the avatar id. Carries the motion
@@ -342,8 +351,11 @@ namespace LiveTalk.API
         }
 
         /// <summary>Human name of an expression index, for logs.</summary>
-        internal static string GetExpressionName(int index) =>
-            index >= 0 && index < AllExpressionNames.Length ? AllExpressionNames[index] : $"expression-{index}";
+        internal static string GetExpressionName(int index)
+        {
+            if (!string.IsNullOrEmpty(LookOnlyExpression) && index == 0) return LookOnlyExpression;
+            return index >= 0 && index < AllExpressionNames.Length ? AllExpressionNames[index] : $"expression-{index}";
+        }
 
         /// <summary>
         /// Encodes the image the way the avatar folder stores it, so the id
