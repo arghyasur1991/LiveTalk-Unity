@@ -893,7 +893,16 @@ namespace LiveTalk.Core
         /// <returns>An array of two transformed reference points for face alignment calculations</returns>
         private Vector2[] ParsePt2FromPtX(Vector2[] pts, bool useLip)
         {
-            var pt2 = ParsePt2FromPt106(pts, useLip);
+            // Dispatch on the landmark layout, as upstream parse_pt2_from_pt_x does.
+            // The 106-point indices applied to the 203-point LandmarkRunner output
+            // land on contour points, which put the eye→lip axis ~40° off and
+            // rotated every source and driving crop by that much (fixed 2026-09-05).
+            var pt2 = pts.Length switch
+            {
+                203 => ParsePt2FromPt203(pts, useLip),
+                106 => ParsePt2FromPt106(pts, useLip),
+                _ => throw new ArgumentException($"Unsupported landmark layout: {pts.Length} points (expected 106 or 203)", nameof(pts)),
+            };
             
             if (!useLip)
             {
@@ -930,6 +939,25 @@ namespace LiveTalk.Core
             }
             
             return pt2;
+        }
+        
+        /// <summary>
+        /// Parses the two reference points (eye centre, lip centre) from the 203-point
+        /// LandmarkRunner layout — upstream <c>parse_pt2_from_pt203</c>. Points 0–23 are
+        /// the left eye contour, 24–47 the right, 48 and 66 the upper/lower lip centres.
+        /// </summary>
+        private Vector2[] ParsePt2FromPt203(Vector2[] pt203, bool useLip)
+        {
+            Vector2 ptLeftEye = (pt203[0] + pt203[6] + pt203[12] + pt203[18]) / 4f;
+            Vector2 ptRightEye = (pt203[24] + pt203[30] + pt203[36] + pt203[42]) / 4f;
+            
+            if (useLip)
+            {
+                Vector2 ptCenterEye = (ptLeftEye + ptRightEye) / 2f;
+                Vector2 ptCenterLip = (pt203[48] + pt203[66]) / 2f;
+                return new Vector2[] { ptCenterEye, ptCenterLip };
+            }
+            return new Vector2[] { ptLeftEye, ptRightEye };
         }
         
         /// <summary>

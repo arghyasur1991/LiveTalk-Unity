@@ -32,6 +32,12 @@ DOF_FSTOP = 4.0
 # extractor's landmark tracker, and no grey-on-grey with the shadow side.
 BG_PLANE = (0.05, 0.42, 0.12, 1.0)
 LOOK = 'AgX - High Contrast'
+# A/B overrides for the extractor-facing look (see README "Validating"):
+#   LP_BG=grey|green   LP_LIGHTS=hard|soft   LP_LOOK=<AgX look name>
+if os.environ.get("LP_BG") == "grey":
+    BG_PLANE = (0.36, 0.36, 0.37, 1.0)
+LIGHTS = os.environ.get("LP_LIGHTS", "hard")
+LOOK = os.environ.get("LP_LOOK", LOOK)
 
 
 def open_character(path):
@@ -139,10 +145,16 @@ def setup_lights(scn, hm):
     # key side carves the nose, the nasolabial folds and the brow ridge
     # into real shadows; the fill is kept ~5:1 under it so those creases
     # survive; a top light lifts the forehead and cheekbones.
-    _area(scn, "Key",  (fc.x + 0.75, fc.y - 1.0, fc.z + 0.95), fc, 80, 0.45, (1.0, 0.96, 0.92))
-    _area(scn, "Fill", (fc.x - 1.1, fc.y - 1.0, fc.z + 0.2), fc, 26, 1.5, (0.92, 0.95, 1.0))
-    _area(scn, "Top",  (fc.x + 0.1, fc.y - 0.5, fc.z + 1.3), fc, 20, 0.6)
-    _area(scn, "Rim",  (fc.x - 0.4, fc.y + 0.9, fc.z + 0.8), fc, 30, 0.6)
+    if LIGHTS == "soft":
+        # the v2 beauty setup: big soft key, gentle ratio
+        _area(scn, "Key",  (fc.x + 0.9, fc.y - 1.1, fc.z + 0.7), fc, 60, 1.0, (1.0, 0.96, 0.92))
+        _area(scn, "Fill", (fc.x - 1.1, fc.y - 1.0, fc.z + 0.2), fc, 25, 1.5, (0.92, 0.95, 1.0))
+        _area(scn, "Rim",  (fc.x - 0.4, fc.y + 0.9, fc.z + 0.8), fc, 30, 0.6)
+    else:
+        _area(scn, "Key",  (fc.x + 0.75, fc.y - 1.0, fc.z + 0.95), fc, 80, 0.45, (1.0, 0.96, 0.92))
+        _area(scn, "Fill", (fc.x - 1.1, fc.y - 1.0, fc.z + 0.2), fc, 26, 1.5, (0.92, 0.95, 1.0))
+        _area(scn, "Top",  (fc.x + 0.1, fc.y - 0.5, fc.z + 1.3), fc, 20, 0.6)
+        _area(scn, "Rim",  (fc.x - 0.4, fc.y + 0.9, fc.z + 0.8), fc, 30, 0.6)
     # a small frontal catch light so the eyes carry a wet highlight
     _area(scn, "Catch", (fc.x + 0.15, fc.y - 1.6, fc.z + 0.25), fc, 6, 0.25, (1.0, 0.98, 0.95))
 

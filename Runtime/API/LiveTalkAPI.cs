@@ -1022,6 +1022,9 @@ namespace LiveTalk.API
             sb.Append('\n');
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            yield return TaskYield.Wait(_livePortrait.StartSession(), "MeasureMotion.StartSession");
+            try
+            {
             foreach (var file in files)
             {
                 var tex = FileUtils.LoadFrame(file);
@@ -1045,6 +1048,11 @@ namespace LiveTalk.API
                     sb.Append(',').Append(p.x.ToString("F2", ci)).Append(',').Append(p.y.ToString("F2", ci));
                 }
                 sb.Append('\n');
+            }
+            }
+            finally
+            {
+                _livePortrait.EndSession();
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(csvPath));

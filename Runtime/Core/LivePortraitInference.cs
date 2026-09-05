@@ -339,9 +339,10 @@ namespace LiveTalk.Core
         }
 
         /// <summary>
-        /// Starts the session for all models
+        /// Starts the session for all models. Internal so <see cref="MeasureMotion"/>'s
+        /// caller can bracket a measurement the way a generate call is.
         /// </summary>
-        private async Task StartSession()
+        internal async Task StartSession()
         {
             await _appearanceFeatureExtractor.StartSession();
             await _motionExtractor.StartSession();
@@ -353,7 +354,7 @@ namespace LiveTalk.Core
         /// <summary>
         /// Ends the session for all models
         /// </summary>
-        private void EndSession()
+        internal void EndSession()
         {
             _appearanceFeatureExtractor.EndSession();
             _motionExtractor.EndSession();

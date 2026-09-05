@@ -224,9 +224,15 @@ namespace LiveTalk.API
         /// <item>1 (implicit, pre-2.1): one frame per driving frame at the clip's native rate, not loopable.</item>
         /// <item>2: motion resampled to 25 fps and crossfaded into a seamless forward loop before rendering.</item>
         /// <item>3: driving frames are face-cropped (fixed from frame 0) before motion extraction and relative scale is bounded, so the head no longer jumps in size and expressions transfer at full strength.</item>
+        /// <item>4: ScaleTransfer=0 (head size pinned), gain 2.0.</item>
+        /// <item>5: the face crop is upright. <c>FaceAnalysis.ParsePt2FromPtX</c> had applied the
+        /// 106-point eye/lip indices to the 203-point tracker output, rotating every source and
+        /// driving crop ~40° before the motion extractor saw it (expressions read weak, eyes
+        /// overshot on blinks, motion applied along a rotated axis). Gain re-tuned to 1.4 against
+        /// upright crops.</item>
         /// </list>
         /// </summary>
-        internal const int MotionPipelineVersion = 4;   // 4: ScaleTransfer=0 (head size pinned), gain 2.0
+        internal const int MotionPipelineVersion = 5;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -248,15 +254,14 @@ namespace LiveTalk.API
 
         /// <summary>
         /// Per-expression <see cref="DrivingMotionOptions.ExpressionGain"/>.
-        /// Measured with <c>Tools~/driving_clips/compare_motion.py</c> on the
-        /// bundled clips: at gain 1 LivePortrait passes 0.35-0.75 of the
-        /// driver's eye-opening, brow-height and lip-opening change onto a
-        /// different identity (pose passes at ~1.0). At 2.0 those land at
-        /// 0.75-1.1 with no tearing; 2.5 overshoots the brows (1.25) and
-        /// the eye correlation starts to drop. Part of <see cref="Signature"/>:
-        /// changing a value rebuilds.
+        /// Chosen on the reference (upright-crop) pipeline rendering the bundled
+        /// clips onto a neutral portrait: 1.0 already reads, 1.4 is clearly
+        /// expressive with natural blinks, 1.8 is strong but starts to look
+        /// pushed on the surprised mouth. The earlier 2.0 was tuned against the
+        /// rotated crop (pipeline version 4) and over-drives an upright one.
+        /// Part of <see cref="Signature"/>: changing a value rebuilds.
         /// </summary>
-        internal static float ExpressionGainFor(string expression) => 2f;
+        internal static float ExpressionGainFor(string expression) => 1.4f;
 
         private static string ExpressionGainSignature(CreationMode mode) =>
             string.Join(",", ExpressionsFor(mode).Select(e => e + "=" + ExpressionGainFor(e).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
