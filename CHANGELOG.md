@@ -12,8 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CUDA first (`AppendExecutionProvider_CUDA`), then WebGPU (D3D12) on
   Windows, then CPU. CUDA needs the optional
   `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu` package
-  plus CUDA 13 and cuDNN 9; onnxruntime-unity only wires that EP in
-  Player builds. The Windows editor uses WebGPU from the core package.
+  and the CUDA 13 toolkit (`cublas64_13`). Before creating `OrtEnv`,
+  LiveTalk prepends the gpu-package plugin folder and `CUDA_PATH\bin`
+  (CUDA 13.1: `bin\x64`) to the process PATH so the Unity **editor** can
+  `LoadLibrary` the CUDA provider. Uses the string
+  `AppendExecutionProvider("CUDA")` API — the typed
+  `AppendExecutionProvider_CUDA` P/Invoke is missing from the CPU
+  `onnxruntime.dll` (`EntryPointNotFoundException`). Restart the editor
+  after installing the toolkit. This ORT CUDA DLL links cuBLAS 13, not
+  cuDNN, at load time. Menu: **LiveTalk → Log ONNX Execution Providers**.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU

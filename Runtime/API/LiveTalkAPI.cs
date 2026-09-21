@@ -515,6 +515,28 @@ namespace LiveTalk.API
         public static long GetCacheSizeBytes(string cacheLocation = null) =>
             string.IsNullOrEmpty(cacheLocation) ? LiveTalkCache.GetSize() : LiveTalkCache.GetSize(cacheLocation);
 
+        /// <summary>
+        /// Puts Windows CUDA provider DLLs on this process's library search
+        /// path. Call before the first ONNX environment is created. Idempotent.
+        /// </summary>
+        public static void PrepareNativeExecutionProviders() =>
+            ModelUtils.EnsureNativeProviderSearchPath();
+
+        /// <summary>
+        /// ONNX Runtime execution providers this process can name. Triggers
+        /// environment creation if needed, so call it after
+        /// <see cref="PrepareNativeExecutionProviders"/>.
+        /// </summary>
+        public static string[] GetAvailableExecutionProviders() =>
+            ModelUtils.GetAvailableProviders();
+
+        /// <summary>
+        /// Opens one ONNX file with the CUDA EP and disposes it. Returns a
+        /// short status; the console has the ORT exception if CUDA cannot load.
+        /// </summary>
+        public static string ProbeCudaExecutionProvider(string modelPath) =>
+            ModelUtils.ProbeCuda(modelPath);
+
         #endregion
 
         #region Constructor
@@ -538,6 +560,7 @@ namespace LiveTalk.API
             bool enableCache = true,
             string ttsModelRoot = null)
         {
+            ModelUtils.EnsureNativeProviderSearchPath();
             if (_initialized)
             {
                 EnsureRuntimeHost();

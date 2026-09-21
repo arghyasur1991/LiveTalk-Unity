@@ -704,10 +704,13 @@ method), `QueueSpeechBatch`, `HasQueuedSpeech` (use `QueuedSpeechCount`).
 - Unity 6000.0.46f1 or newer.
 - macOS with CoreML tested (Apple silicon).
 - Windows: WebGPU (editor and player) via the core ONNX Runtime package
-  0.4.9+. CUDA / TensorRT are optional: add
-  `com.github.asus4.onnxruntime.win-x64-gpu` at the same version, install
-  CUDA 13 and cuDNN 9, and build a **player** (the CUDA EP is not wired
-  in the Unity editor). Linux CUDA is the same with `linux-x64-gpu`.
+  0.4.9+. CUDA: add `com.github.asus4.onnxruntime.win-x64-gpu` at the
+  same version and install CUDA Toolkit **13.1** (cuBLAS 13;
+  `cublas64_13.dll`). LiveTalk prepends the provider folder to PATH so
+  the **editor** can load CUDA, not only a player. After installing the
+  toolkit, **quit and reopen Unity** (native ORT survives domain reload).
+  **LiveTalk → Log ONNX Execution Providers** should list `CUDAExecutionProvider`.
+  The 4060 8 GB card is for LivePortrait / MuseTalk, not Qwen 1.7B fp32.
 - RAM: 32 GB recommended for avatar creation with a TTS checkpoint resident;
   see [Memory](#memory).
 - Disk: ~7 GB LivePortrait + MuseTalk ONNX, plus ~8 GB per Qwen3-TTS checkpoint.

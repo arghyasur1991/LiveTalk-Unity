@@ -50,6 +50,7 @@ namespace LiveTalk.Utils
         /// <exception cref="InvalidOperationException">Thrown when ONNX Runtime initialization fails</exception>
         public static void Initialize(LogLevel logLevel = LogLevel.WARNING)
         {
+            EnsureNativeProviderSearchPath();
             var ortLogLevel = logLevel switch
             {
                 LogLevel.VERBOSE => OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE,
@@ -162,7 +163,8 @@ namespace LiveTalk.Utils
             if (wantAccelerator && CudaPlatform())
             {
                 var cuda = TryLoadWithProvider(modelPath, "CUDA",
-                    options => options.AppendExecutionProvider_CUDA(0));
+                    options => options.AppendExecutionProvider("CUDA",
+                        new Dictionary<string, string> { ["device_id"] = "0" }));
                 if (cuda != null)
                     return cuda;
             }
@@ -179,6 +181,117 @@ namespace LiveTalk.Utils
             Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
             return cpuModel;
         }
+
+        /// <summary>
+        /// Puts the Windows CUDA provider DLLs (and CUDA 13 cuBLAS, if the
+        /// toolkit is installed) on this process's PATH so
+        /// <c>LoadLibrary("onnxruntime_providers_cuda.dll")</c> can succeed
+        /// in the Unity editor. The player copies those DLLs next to
+        /// <c>onnxruntime.dll</c>; the editor leaves them in another
+        /// PackageCache folder. Idempotent. No-op off Windows.
+        /// Call before the first <c>OrtEnv</c> is created.
+        /// </summary>
+        internal static void EnsureNativeProviderSearchPath()
+        {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            PrependToProcessPath(FindWindowsGpuProviderDirectory());
+            PrependToProcessPath(FindCuda13BinDirectory());
+#endif
+        }
+
+        internal static string[] GetAvailableProviders()
+        {
+            EnsureNativeProviderSearchPath();
+            return OrtEnv.Instance().GetAvailableProviders();
+        }
+
+        internal static string ProbeCuda(string modelPath)
+        {
+            EnsureNativeProviderSearchPath();
+            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+                return "missing model: " + modelPath;
+            var session = TryLoadWithProvider(modelPath, "CUDA",
+                options => options.AppendExecutionProvider("CUDA",
+                    new Dictionary<string, string> { ["device_id"] = "0" }));
+            if (session == null)
+                return "CUDA session failed";
+            session.Dispose();
+            return "CUDA session ok";
+        }
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        static void PrependToProcessPath(string dir)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return;
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (PathContains(path, dir))
+                return;
+            Environment.SetEnvironmentVariable("PATH", dir + Path.PathSeparator + path);
+            Logger.Log($"[ModelUtils] Prepended native search PATH: {dir}");
+        }
+
+        static bool PathContains(string path, string dir)
+        {
+            string trimmed = dir.TrimEnd('\\', '/');
+            foreach (string part in path.Split(Path.PathSeparator))
+            {
+                if (string.Equals(part.TrimEnd('\\', '/'), trimmed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        static string FindWindowsGpuProviderDirectory()
+        {
+            string project = Path.GetDirectoryName(Application.dataPath);
+            if (string.IsNullOrEmpty(project))
+                return null;
+            string cache = Path.Combine(project, "Library", "PackageCache");
+            if (!Directory.Exists(cache))
+                return null;
+            foreach (string pkg in Directory.GetDirectories(cache, "com.github.asus4.onnxruntime.win-x64-gpu@*"))
+            {
+                string x64 = Path.Combine(pkg, "Plugins", "Windows", "x64");
+                if (File.Exists(Path.Combine(x64, "onnxruntime_providers_cuda.dll")))
+                    return x64;
+            }
+            return null;
+        }
+
+        static string FindCuda13BinDirectory()
+        {
+            string fromEnv = Environment.GetEnvironmentVariable("CUDA_PATH");
+            string fromEnvBin = Cuda13BinIfPresent(fromEnv);
+            if (fromEnvBin != null)
+                return fromEnvBin;
+            string root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "NVIDIA GPU Computing Toolkit", "CUDA");
+            if (!Directory.Exists(root))
+                return null;
+            foreach (string ver in Directory.GetDirectories(root, "v13.*"))
+            {
+                string found = Cuda13BinIfPresent(ver);
+                if (found != null)
+                    return found;
+            }
+            return null;
+        }
+
+        static string Cuda13BinIfPresent(string cudaRoot)
+        {
+            if (string.IsNullOrEmpty(cudaRoot) || !Directory.Exists(cudaRoot))
+                return null;
+            string binX64 = Path.Combine(cudaRoot, "bin", "x64");
+            if (File.Exists(Path.Combine(binX64, "cublas64_13.dll")))
+                return binX64;
+            string bin = Path.Combine(cudaRoot, "bin");
+            if (File.Exists(Path.Combine(bin, "cublas64_13.dll")))
+                return bin;
+            return null;
+        }
+#endif
 
         #endregion
 
@@ -340,7 +453,8 @@ namespace LiveTalk.Utils
                 LogSeverityLevel = _ortLogLevel
             };
 
-            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
+            if (LiveTalkAPI.Instance?.Config != null
+                && LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
                 options.EnableMemoryPattern = false;
                 options.EnableCpuMemArena = false;
@@ -482,7 +596,7 @@ namespace LiveTalk.Utils
             }
             catch (Exception e)
             {
-                Logger.LogWarning($"[ModelUtils] {label} provider failed: {e.Message}");
+                Logger.LogWarning($"[ModelUtils] {label} provider failed: {e}");
                 return null;
             }
         }
