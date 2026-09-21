@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NVIDIA\CUDNN\v9.*\bin`. The editor's CPU `onnxruntime.dll` does not
   name CUDA on the string API; registered EP devices do
   (`AppendExecutionProvider(OrtEnv, cudaDevices)`). Menu: **LiveTalk →
-  Log ONNX Execution Providers**.
+  Log ONNX Execution Providers**. `ProbeCudaExecutionProviderRun` opens
+  a CUDA session and runs one dummy forward on the calling thread.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU

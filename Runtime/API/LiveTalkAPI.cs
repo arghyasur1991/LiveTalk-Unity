@@ -537,6 +537,13 @@ namespace LiveTalk.API
         public static string ProbeCudaExecutionProvider(string modelPath) =>
             ModelUtils.ProbeCuda(modelPath);
 
+        /// <summary>
+        /// Opens one ONNX file with CUDA and runs a dummy forward on the
+        /// calling thread. Use this to test Session.Run without a thread-pool hop.
+        /// </summary>
+        public static string ProbeCudaExecutionProviderRun(string modelPath) =>
+            ModelUtils.ProbeCudaRun(modelPath);
+
         #endregion
 
         #region Constructor

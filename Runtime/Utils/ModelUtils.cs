@@ -1,8 +1,11 @@
 using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -234,6 +237,98 @@ namespace LiveTalk.Utils
                 return $"CUDA session failed; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
             session.Dispose();
             return $"CUDA session ok; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
+        }
+
+        /// <summary>
+        /// Opens a CUDA session and runs one dummy forward on this thread.
+        /// Does not hop to the thread pool. Dispose happens on the same thread.
+        /// </summary>
+        internal static string ProbeCudaRun(string modelPath)
+        {
+            int threadId = Thread.CurrentThread.ManagedThreadId;
+            EnsureNativeProviderSearchPath();
+            var env = OrtEnv.Instance();
+            string providers = string.Join(",", GetAvailableProviders());
+            string devices = DescribeEpDevices(env);
+            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+                return $"missing model: {modelPath}; thread={threadId}; providers={providers}; devices={devices}";
+
+            var session = TryLoadCuda(modelPath);
+            if (session == null)
+                return $"CUDA session failed; thread={threadId}; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
+
+            string shapes = DescribeInputShapes(session);
+            try
+            {
+                var inputs = BuildDummyInputs(session);
+                var start = Stopwatch.StartNew();
+                using var results = session.Run(inputs);
+                int outputs = 0;
+                foreach (var _ in results)
+                    outputs++;
+                return $"CUDA run ok; thread={threadId}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
+            }
+            catch (Exception e)
+            {
+                return $"CUDA run failed; thread={threadId}; inputs={shapes}; registered={_cudaLibraryRegistered}; {e}";
+            }
+            finally
+            {
+                session.Dispose();
+            }
+        }
+
+        static string DescribeInputShapes(InferenceSession session)
+        {
+            var parts = new List<string>();
+            foreach (var kv in session.InputMetadata)
+            {
+                string dims = kv.Value.Dimensions == null
+                    ? "?"
+                    : string.Join("x", kv.Value.Dimensions);
+                parts.Add(kv.Key + ":" + kv.Value.ElementType.Name + "[" + dims + "]");
+            }
+            return parts.Count == 0 ? "(none)" : string.Join(";", parts);
+        }
+
+        static List<NamedOnnxValue> BuildDummyInputs(InferenceSession session)
+        {
+            var inputs = new List<NamedOnnxValue>();
+            foreach (var kv in session.InputMetadata)
+            {
+                if (kv.Value.ElementType != typeof(float))
+                    throw new InvalidOperationException(
+                        $"probe only handles float inputs; {kv.Key} is {kv.Value.ElementType}");
+                int[] dims = ProbeRunDimensions(kv.Value.Dimensions);
+                long len = 1;
+                foreach (int d in dims)
+                    len *= d;
+                var tensor = new DenseTensor<float>(new float[len], dims);
+                inputs.Add(NamedOnnxValue.CreateFromTensor(kv.Key, tensor));
+            }
+            return inputs;
+        }
+
+        static int[] ProbeRunDimensions(int[] dims)
+        {
+            var copy = new int[dims.Length];
+            for (int i = 0; i < dims.Length; i++)
+            {
+                if (dims[i] > 0)
+                {
+                    copy[i] = dims[i];
+                    continue;
+                }
+                if (dims.Length == 4 && i == 0)
+                    copy[i] = 1;
+                else if (dims.Length == 4 && i == 1)
+                    copy[i] = 3;
+                else if (dims.Length == 4)
+                    copy[i] = 640;
+                else
+                    copy[i] = 1;
+            }
+            return copy;
         }
 
         static InferenceSession TryLoadCuda(string modelPath)
