@@ -14,8 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package and the CUDA 13 toolkit (`cublas64_13`). LiveTalk prepends the
   gpu-package plugin folder and `CUDA_PATH\bin` (CUDA 13.1: `bin\x64`)
   to PATH, then `OrtEnv.RegisterExecutionProviderLibrary` on
-  `onnxruntime_providers_cuda.dll`. The editor's CPU `onnxruntime.dll`
-  does not name CUDA on the string API; registered EP devices do
+  `onnxruntime_providers_cuda.dll`. Session.Run still needs cuDNN 9
+  (`cudnn64_9.dll`); LiveTalk prepends `CUDNN_PATH`, CUDA `bin`,
+  `%USERPROFILE%\Downloads\cudnn-cu13\nvidia\cudnn\bin`, or
+  `NVIDIA\CUDNN\v9.*\bin`. The editor's CPU `onnxruntime.dll` does not
+  name CUDA on the string API; registered EP devices do
   (`AppendExecutionProvider(OrtEnv, cudaDevices)`). Menu: **LiveTalk →
   Log ONNX Execution Providers**.
 

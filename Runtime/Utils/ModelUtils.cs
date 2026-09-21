@@ -182,8 +182,8 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
-        /// Puts the Windows CUDA provider DLLs (and CUDA 13 cuBLAS, if the
-        /// toolkit is installed) on this process's PATH so
+        /// Puts the Windows CUDA provider DLLs, CUDA 13 cuBLAS, and cuDNN 9
+        /// on this process's PATH so
         /// <c>LoadLibrary("onnxruntime_providers_cuda.dll")</c> can succeed
         /// in the Unity editor, then registers that library with
         /// <c>OrtEnv.RegisterExecutionProviderLibrary</c>. The player copies
@@ -196,6 +196,7 @@ namespace LiveTalk.Utils
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             PrependToProcessPath(FindWindowsGpuProviderDirectory());
             PrependToProcessPath(FindCuda13BinDirectory());
+            PrependToProcessPath(FindCudnn9BinDirectory());
             TryRegisterCudaProviderLibrary();
 #endif
         }
@@ -329,6 +330,48 @@ namespace LiveTalk.Utils
             if (File.Exists(Path.Combine(bin, "cublas64_13.dll")))
                 return bin;
             return null;
+        }
+
+        static string FindCudnn9BinDirectory()
+        {
+            string fromEnv = Cudnn9BinIfPresent(Environment.GetEnvironmentVariable("CUDNN_PATH"));
+            if (fromEnv != null)
+                return fromEnv;
+            string cudaRoot = Environment.GetEnvironmentVariable("CUDA_PATH");
+            if (!string.IsNullOrEmpty(cudaRoot))
+            {
+                string fromCuda = Cudnn9BinIfPresent(cudaRoot)
+                    ?? Cudnn9BinIfPresent(Path.Combine(cudaRoot, "bin"))
+                    ?? Cudnn9BinIfPresent(Path.Combine(cudaRoot, "bin", "x64"));
+                if (fromCuda != null)
+                    return fromCuda;
+            }
+            string downloads = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads", "cudnn-cu13", "nvidia", "cudnn", "bin");
+            string fromDownloads = Cudnn9BinIfPresent(downloads);
+            if (fromDownloads != null)
+                return fromDownloads;
+            string nvidia = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "NVIDIA", "CUDNN");
+            if (Directory.Exists(nvidia))
+            {
+                foreach (string ver in Directory.GetDirectories(nvidia, "v9.*"))
+                {
+                    string found = Cudnn9BinIfPresent(Path.Combine(ver, "bin"));
+                    if (found != null)
+                        return found;
+                }
+            }
+            return null;
+        }
+
+        static string Cudnn9BinIfPresent(string dir)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return null;
+            return File.Exists(Path.Combine(dir, "cudnn64_9.dll")) ? dir : null;
         }
 
         static void TryRegisterCudaProviderLibrary()
