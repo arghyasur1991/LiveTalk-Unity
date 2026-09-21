@@ -27,6 +27,7 @@ namespace LiveTalk.Utils
         private static bool _disposeLoadThread = false;
         private static string _cacheDirectory = "";
         private static OrtLoggingLevel _ortLogLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
+        private static bool _cudaLibraryRegistered;
 
         #endregion
 
@@ -162,9 +163,7 @@ namespace LiveTalk.Utils
 
             if (wantAccelerator && CudaPlatform())
             {
-                var cuda = TryLoadWithProvider(modelPath, "CUDA",
-                    options => options.AppendExecutionProvider("CUDA",
-                        new Dictionary<string, string> { ["device_id"] = "0" }));
+                var cuda = TryLoadCuda(modelPath);
                 if (cuda != null)
                     return cuda;
             }
@@ -186,37 +185,77 @@ namespace LiveTalk.Utils
         /// Puts the Windows CUDA provider DLLs (and CUDA 13 cuBLAS, if the
         /// toolkit is installed) on this process's PATH so
         /// <c>LoadLibrary("onnxruntime_providers_cuda.dll")</c> can succeed
-        /// in the Unity editor. The player copies those DLLs next to
-        /// <c>onnxruntime.dll</c>; the editor leaves them in another
-        /// PackageCache folder. Idempotent. No-op off Windows.
-        /// Call before the first <c>OrtEnv</c> is created.
+        /// in the Unity editor, then registers that library with
+        /// <c>OrtEnv.RegisterExecutionProviderLibrary</c>. The player copies
+        /// those DLLs next to <c>onnxruntime.dll</c>; the editor leaves them
+        /// in another PackageCache folder. Idempotent. No-op off Windows.
+        /// Call before the first session; safe if <c>OrtEnv</c> already exists.
         /// </summary>
         internal static void EnsureNativeProviderSearchPath()
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             PrependToProcessPath(FindWindowsGpuProviderDirectory());
             PrependToProcessPath(FindCuda13BinDirectory());
+            TryRegisterCudaProviderLibrary();
 #endif
         }
 
         internal static string[] GetAvailableProviders()
         {
             EnsureNativeProviderSearchPath();
-            return OrtEnv.Instance().GetAvailableProviders();
+            var names = new List<string>(OrtEnv.Instance().GetAvailableProviders());
+            try
+            {
+                foreach (var device in OrtEnv.Instance().GetEpDevices())
+                {
+                    if (!string.IsNullOrEmpty(device.EpName) && !names.Contains(device.EpName))
+                        names.Add(device.EpName);
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"[ModelUtils] GetEpDevices failed: {e.Message}");
+            }
+            return names.ToArray();
         }
 
         internal static string ProbeCuda(string modelPath)
         {
             EnsureNativeProviderSearchPath();
+            var env = OrtEnv.Instance();
+            string providers = string.Join(",", GetAvailableProviders());
+            string devices = DescribeEpDevices(env);
             if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
-                return "missing model: " + modelPath;
-            var session = TryLoadWithProvider(modelPath, "CUDA",
+                return $"missing model: {modelPath}; providers={providers}; devices={devices}";
+
+            var session = TryLoadCuda(modelPath);
+            if (session == null)
+                return $"CUDA session failed; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
+            session.Dispose();
+            return $"CUDA session ok; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
+        }
+
+        static InferenceSession TryLoadCuda(string modelPath)
+        {
+            EnsureNativeProviderSearchPath();
+            var env = OrtEnv.Instance();
+            var cudaDevices = new List<OrtEpDevice>();
+            foreach (var device in env.GetEpDevices())
+            {
+                if (device.EpName != null &&
+                    device.EpName.IndexOf("CUDA", StringComparison.OrdinalIgnoreCase) >= 0)
+                    cudaDevices.Add(device);
+            }
+            if (cudaDevices.Count > 0)
+            {
+                var viaDevices = TryLoadWithProvider(modelPath, "CUDA-EP-device",
+                    options => options.AppendExecutionProvider(env, cudaDevices, null));
+                if (viaDevices != null)
+                    return viaDevices;
+            }
+            return TryLoadWithProvider(modelPath, "CUDA",
                 options => options.AppendExecutionProvider("CUDA",
                     new Dictionary<string, string> { ["device_id"] = "0" }));
-            if (session == null)
-                return "CUDA session failed";
-            session.Dispose();
-            return "CUDA session ok";
         }
 
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
@@ -291,7 +330,54 @@ namespace LiveTalk.Utils
                 return bin;
             return null;
         }
+
+        static void TryRegisterCudaProviderLibrary()
+        {
+            if (_cudaLibraryRegistered)
+                return;
+            string dir = FindWindowsGpuProviderDirectory();
+            if (string.IsNullOrEmpty(dir))
+            {
+                Logger.LogWarning("[ModelUtils] CUDA provider DLL folder not found");
+                return;
+            }
+            string dll = Path.Combine(dir, "onnxruntime_providers_cuda.dll");
+            if (!File.Exists(dll))
+                return;
+            try
+            {
+                OrtEnv.Instance().RegisterExecutionProviderLibrary("cuda", dll);
+                _cudaLibraryRegistered = true;
+                Logger.Log($"[ModelUtils] Registered CUDA EP library: {dll}");
+            }
+            catch (Exception e)
+            {
+                string msg = e.Message ?? "";
+                if (msg.IndexOf("already", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _cudaLibraryRegistered = true;
+                    Logger.Log("[ModelUtils] CUDA EP library already registered");
+                    return;
+                }
+                Logger.LogWarning($"[ModelUtils] RegisterExecutionProviderLibrary(cuda) failed: {e}");
+            }
+        }
 #endif
+
+        static string DescribeEpDevices(OrtEnv env)
+        {
+            try
+            {
+                var names = new List<string>();
+                foreach (var device in env.GetEpDevices())
+                    names.Add(device.EpName ?? "?");
+                return names.Count == 0 ? "(none)" : string.Join(",", names);
+            }
+            catch (Exception e)
+            {
+                return "GetEpDevices failed: " + e.Message;
+            }
+        }
 
         #endregion
 

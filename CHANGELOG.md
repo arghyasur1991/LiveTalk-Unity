@@ -9,18 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Windows / Linux GPU load for models that prefer CoreML or CUDA:
-  CUDA first (`AppendExecutionProvider_CUDA`), then WebGPU (D3D12) on
-  Windows, then CPU. CUDA needs the optional
-  `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu` package
-  and the CUDA 13 toolkit (`cublas64_13`). Before creating `OrtEnv`,
-  LiveTalk prepends the gpu-package plugin folder and `CUDA_PATH\bin`
-  (CUDA 13.1: `bin\x64`) to the process PATH so the Unity **editor** can
-  `LoadLibrary` the CUDA provider. Uses the string
-  `AppendExecutionProvider("CUDA")` API — the typed
-  `AppendExecutionProvider_CUDA` P/Invoke is missing from the CPU
-  `onnxruntime.dll` (`EntryPointNotFoundException`). Restart the editor
-  after installing the toolkit. This ORT CUDA DLL links cuBLAS 13, not
-  cuDNN, at load time. Menu: **LiveTalk → Log ONNX Execution Providers**.
+  CUDA first, then WebGPU (D3D12) on Windows, then CPU. CUDA needs the
+  optional `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu`
+  package and the CUDA 13 toolkit (`cublas64_13`). LiveTalk prepends the
+  gpu-package plugin folder and `CUDA_PATH\bin` (CUDA 13.1: `bin\x64`)
+  to PATH, then `OrtEnv.RegisterExecutionProviderLibrary` on
+  `onnxruntime_providers_cuda.dll`. The editor's CPU `onnxruntime.dll`
+  does not name CUDA on the string API; registered EP devices do
+  (`AppendExecutionProvider(OrtEnv, cudaDevices)`). Menu: **LiveTalk →
+  Log ONNX Execution Providers**.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
