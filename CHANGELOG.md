@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- CoreML-preferred models (LivePortrait, MuseTalk, face analysis) now
+  load on CPU when CoreML is not in the ONNX Runtime build (Windows
+  editor, Linux). The previous path logged a CPU fallback and returned
+  null, so the first inference failed with `Failed to load model`.
+
 ## [2.4.0] - 2026-09-19
 
 Hosts can pull an expression's frames for a duration without reaching

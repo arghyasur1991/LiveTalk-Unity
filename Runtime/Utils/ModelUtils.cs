@@ -152,12 +152,12 @@ namespace LiveTalk.Utils
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             
             var sessionOptions = CreateSessionOptions();
-            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML) 
+            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
+                && CoreMLAvailable())
             {
                 return LoadModelWithCoreML(modelPath, sessionOptions);
             }
-            
-            // Default CPU execution with optimized settings
+
             var cpuModel = new InferenceSession(modelPath, sessionOptions);
             Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
             return cpuModel;
@@ -417,7 +417,17 @@ namespace LiveTalk.Utils
                     Logger.LogWarning($"[ModelUtils] CoreML fallback also failed: {fallbackException.Message}. Using CPU provider.");
                 }
             }
-            return null;
+
+            var cpuFallback = new InferenceSession(modelPath, CreateSessionOptions());
+            Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
+            return cpuFallback;
+        }
+
+        static bool CoreMLAvailable()
+        {
+            return Application.platform == RuntimePlatform.OSXEditor
+                || Application.platform == RuntimePlatform.OSXPlayer
+                || Application.platform == RuntimePlatform.IPhonePlayer;
         }
 
         #endregion
