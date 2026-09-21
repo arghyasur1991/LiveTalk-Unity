@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Windows / Linux GPU load for models that prefer CoreML or CUDA:
+  CUDA first (`AppendExecutionProvider_CUDA`), then WebGPU (D3D12) on
+  Windows, then CPU. CUDA needs the optional
+  `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu` package
+  plus CUDA 13 and cuDNN 9; onnxruntime-unity only wires that EP in
+  Player builds. The Windows editor uses WebGPU from the core package.
+
+### Changed
+- Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
+  EP in the Windows core binary).
+
 ### Fixed
 - CoreML-preferred models (LivePortrait, MuseTalk, face analysis) now
   load on CPU when CoreML is not in the ONNX Runtime build (Windows

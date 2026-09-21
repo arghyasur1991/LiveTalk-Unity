@@ -71,8 +71,10 @@ What falls out of that:
 
 ## Install
 
-Requires Unity **6000.0.46f1** or newer. Developed on macOS (CoreML); Windows
-is untested.
+Requires Unity **6000.0.46f1** or newer. Developed on macOS (CoreML). Windows
+loads CoreML-tagged models on **WebGPU** in the editor (D3D12, bundled in
+`com.github.asus4.onnxruntime`) and on **CUDA** in a Windows player when the
+optional GPU package is present.
 
 Three steps, in this order, in `Packages/manifest.json` (or the equivalent
 Package Manager UI):
@@ -700,7 +702,12 @@ method), `QueueSpeechBatch`, `HasQueuedSpeech` (use `QueuedSpeechCount`).
 ## Requirements and performance
 
 - Unity 6000.0.46f1 or newer.
-- macOS with CoreML tested (Apple silicon). Windows compiles, untested.
+- macOS with CoreML tested (Apple silicon).
+- Windows: WebGPU (editor and player) via the core ONNX Runtime package
+  0.4.9+. CUDA / TensorRT are optional: add
+  `com.github.asus4.onnxruntime.win-x64-gpu` at the same version, install
+  CUDA 13 and cuDNN 9, and build a **player** (the CUDA EP is not wired
+  in the Unity editor). Linux CUDA is the same with `linux-x64-gpu`.
 - RAM: 32 GB recommended for avatar creation with a TTS checkpoint resident;
   see [Memory](#memory).
 - Disk: ~7 GB LivePortrait + MuseTalk ONNX, plus ~8 GB per Qwen3-TTS checkpoint.

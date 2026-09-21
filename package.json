@@ -15,7 +15,7 @@
   "licensesUrl": "https://github.com/genesisinteractive/LiveTalk-Unity/blob/main/LICENSE",
   "dependencies": {
     "com.genesis.qwentts.unity": "0.1.1",
-    "com.github.asus4.onnxruntime": "0.4.0",
+    "com.github.asus4.onnxruntime": "0.4.9",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.unity.ugui": "2.0.0"
   },

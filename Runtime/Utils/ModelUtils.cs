@@ -151,14 +151,31 @@ namespace LiveTalk.Utils
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             
-            var sessionOptions = CreateSessionOptions();
-            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
-                && CoreMLAvailable())
+            bool wantAccelerator = modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
+                || modelConfig.preferredExecutionProvider == ExecutionProvider.CUDA;
+
+            if (wantAccelerator && CoreMLAvailable())
             {
-                return LoadModelWithCoreML(modelPath, sessionOptions);
+                return LoadModelWithCoreML(modelPath, CreateSessionOptions());
             }
 
-            var cpuModel = new InferenceSession(modelPath, sessionOptions);
+            if (wantAccelerator && CudaPlatform())
+            {
+                var cuda = TryLoadWithProvider(modelPath, "CUDA",
+                    options => options.AppendExecutionProvider_CUDA(0));
+                if (cuda != null)
+                    return cuda;
+            }
+
+            if (wantAccelerator && WebGpuPlatform())
+            {
+                var webGpu = TryLoadWithProvider(modelPath, "WebGPU",
+                    options => options.AppendExecutionProvider("WebGPU", new Dictionary<string, string>()));
+                if (webGpu != null)
+                    return webGpu;
+            }
+
+            var cpuModel = new InferenceSession(modelPath, CreateSessionOptions());
             Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
             return cpuModel;
         }
@@ -428,6 +445,46 @@ namespace LiveTalk.Utils
             return Application.platform == RuntimePlatform.OSXEditor
                 || Application.platform == RuntimePlatform.OSXPlayer
                 || Application.platform == RuntimePlatform.IPhonePlayer;
+        }
+
+        static bool CudaPlatform()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor
+                || Application.platform == RuntimePlatform.WindowsPlayer
+                || Application.platform == RuntimePlatform.LinuxEditor
+                || Application.platform == RuntimePlatform.LinuxPlayer;
+        }
+
+        static bool WebGpuPlatform()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor
+                || Application.platform == RuntimePlatform.WindowsPlayer;
+        }
+
+        /// <summary>
+        /// Attempts one execution provider on a fresh SessionOptions. A failed
+        /// AppendExecutionProvider can taint the options object, so callers
+        /// must not reuse it. Returns null when the provider is missing from
+        /// this ONNX Runtime build (typical for CUDA in the Unity editor).
+        /// </summary>
+        static InferenceSession TryLoadWithProvider(
+            string modelPath,
+            string label,
+            Action<SessionOptions> configure)
+        {
+            try
+            {
+                var options = CreateSessionOptions();
+                configure(options);
+                var session = new InferenceSession(modelPath, options);
+                Logger.Log($"[ModelUtils] Loaded model with {label} provider: {modelPath}");
+                return session;
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"[ModelUtils] {label} provider failed: {e.Message}");
+                return null;
+            }
         }
 
         #endregion
