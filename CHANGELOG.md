@@ -32,8 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DrivingFrameCap` limits avatar creation to that many frames of the
   first expression (zero means the full clips). `[FrameProfile]` logs
   video `ReadPixels` and PNG encode/write. A copy of the core this launch
-  needs an editor restart. Do not domain-reload while CUDA sessions
-  are alive: their finalizer crashes the editor.
+  needs an editor restart.
+- Editor: LiveTalk disposes all of its inference sessions in
+  `AssemblyReloadEvents.beforeAssemblyReload`. The TTS package releases
+  the process-wide `OrtEnv` in its own hook; a session still alive then
+  was finalized against a dead environment during domain unload and
+  crashed the editor. The hook logs its order relative to the TTS
+  release so a wrong order is visible.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
