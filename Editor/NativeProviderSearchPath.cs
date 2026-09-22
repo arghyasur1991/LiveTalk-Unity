@@ -13,6 +13,15 @@ namespace LiveTalk.Editor
     {
         static NativeProviderSearchPath()
         {
+            // A just-applied overlay is on disk only. The CPU core is already
+            // mapped, so do not create OrtEnv until the next launch.
+            if (WindowsGpuCoreOverlay.TryApply(out string overlay))
+            {
+                Debug.LogWarning("[LiveTalk] " + overlay);
+                return;
+            }
+            if (!string.IsNullOrEmpty(overlay))
+                Debug.LogWarning("[LiveTalk] " + overlay);
             LiveTalkAPI.PrepareNativeExecutionProviders();
         }
 

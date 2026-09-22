@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`AppendExecutionProvider(OrtEnv, cudaDevices)`). Menu: **LiveTalk →
   Log ONNX Execution Providers**. `ProbeCudaExecutionProviderRun` opens
   a CUDA session and runs one dummy forward on the calling thread.
+  On Windows the editor setup replaces the asus4 CPU
+  `onnxruntime.dll` with the Gpu.Windows 1.29.0 core from the Genesis
+  Drive mount (`My Private/Projects/GenesisInteractive/onnxruntime/win-x64/1.29.0`)
+  before the first session. The stock CPU core fast-fails on the first
+  cuDNN conv `Session.Run`. A copy this launch needs an editor restart.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU

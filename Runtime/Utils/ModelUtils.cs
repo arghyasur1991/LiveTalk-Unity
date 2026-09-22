@@ -31,6 +31,9 @@ namespace LiveTalk.Utils
         private static string _cacheDirectory = "";
         private static OrtLoggingLevel _ortLogLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
         private static bool _cudaLibraryRegistered;
+        private static string _cachedProjectRoot;
+        internal static int ProbeDummySpatial = 512;
+        internal static Dictionary<string, string> ProbeCudaEpOptions;
 
         #endregion
 
@@ -278,6 +281,44 @@ namespace LiveTalk.Utils
             }
         }
 
+        internal static string ProbeCpuRun(string modelPath)
+        {
+            int threadId = Thread.CurrentThread.ManagedThreadId;
+            EnsureNativeProviderSearchPath();
+            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+                return $"missing model: {modelPath}; thread={threadId}";
+
+            InferenceSession session;
+            try
+            {
+                session = new InferenceSession(modelPath, CreateSessionOptions());
+            }
+            catch (Exception e)
+            {
+                return $"CPU session failed; thread={threadId}; {e}";
+            }
+
+            string shapes = DescribeInputShapes(session);
+            try
+            {
+                var inputs = BuildDummyInputs(session);
+                var start = Stopwatch.StartNew();
+                using var results = session.Run(inputs);
+                int outputs = 0;
+                foreach (var _ in results)
+                    outputs++;
+                return $"CPU run ok; thread={threadId}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}";
+            }
+            catch (Exception e)
+            {
+                return $"CPU run failed; thread={threadId}; inputs={shapes}; {e}";
+            }
+            finally
+            {
+                session.Dispose();
+            }
+        }
+
         static string DescribeInputShapes(InferenceSession session)
         {
             var parts = new List<string>();
@@ -324,7 +365,7 @@ namespace LiveTalk.Utils
                 else if (dims.Length == 4 && i == 1)
                     copy[i] = 3;
                 else if (dims.Length == 4)
-                    copy[i] = 640;
+                    copy[i] = ProbeDummySpatial > 0 ? ProbeDummySpatial : 512;
                 else
                     copy[i] = 1;
             }
@@ -345,7 +386,7 @@ namespace LiveTalk.Utils
             if (cudaDevices.Count > 0)
             {
                 var viaDevices = TryLoadWithProvider(modelPath, "CUDA-EP-device",
-                    options => options.AppendExecutionProvider(env, cudaDevices, null));
+                    options => options.AppendExecutionProvider(env, cudaDevices, ProbeCudaEpOptions));
                 if (viaDevices != null)
                     return viaDevices;
             }
@@ -379,7 +420,9 @@ namespace LiveTalk.Utils
 
         static string FindWindowsGpuProviderDirectory()
         {
-            string project = Path.GetDirectoryName(Application.dataPath);
+            if (string.IsNullOrEmpty(_cachedProjectRoot))
+                _cachedProjectRoot = Path.GetDirectoryName(Application.dataPath);
+            string project = _cachedProjectRoot;
             if (string.IsNullOrEmpty(project))
                 return null;
             string cache = Path.Combine(project, "Library", "PackageCache");
