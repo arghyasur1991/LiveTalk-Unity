@@ -550,6 +550,9 @@ namespace LiveTalk.API
         public static string ProbeCudaExecutionProviderRun(string modelPath) =>
             ModelUtils.ProbeCudaRun(modelPath);
 
+        public static string ProbeCudaExecutionProviderRunOnLargeStack(string modelPath, int stackBytes) =>
+            ModelUtils.ProbeCudaRunOnLargeStack(modelPath, stackBytes);
+
         /// <summary>
         /// Opens one ONNX file on CPU and runs a dummy forward on the calling thread.
         /// </summary>

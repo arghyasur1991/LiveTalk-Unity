@@ -281,6 +281,52 @@ namespace LiveTalk.Utils
             }
         }
 
+        /// <summary>
+        /// Creates the CUDA session on the caller and runs one dummy forward
+        /// on a new thread with a large stack. Dispose stays on the caller.
+        /// </summary>
+        internal static string ProbeCudaRunOnLargeStack(string modelPath, int stackBytes)
+        {
+            int createThread = Thread.CurrentThread.ManagedThreadId;
+            EnsureNativeProviderSearchPath();
+            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+                return $"missing model: {modelPath}; createThread={createThread}";
+
+            var session = TryLoadCuda(modelPath);
+            if (session == null)
+                return $"CUDA session failed; createThread={createThread}; registered={_cudaLibraryRegistered}";
+
+            string shapes = DescribeInputShapes(session);
+            string report = "large-stack run did not finish";
+            var worker = new Thread(() =>
+            {
+                int runThread = Thread.CurrentThread.ManagedThreadId;
+                try
+                {
+                    var inputs = BuildDummyInputs(session);
+                    var start = Stopwatch.StartNew();
+                    using var results = session.Run(inputs);
+                    int outputs = 0;
+                    foreach (var _ in results)
+                        outputs++;
+                    report = $"CUDA run ok; createThread={createThread}; runThread={runThread}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}";
+                }
+                catch (Exception e)
+                {
+                    report = $"CUDA run failed; createThread={createThread}; runThread={runThread}; inputs={shapes}; {e.GetType().Name}: {e.Message}";
+                }
+            }, stackBytes)
+            {
+                IsBackground = true,
+                Name = "LiveTalkCudaRun"
+            };
+            worker.Start();
+            if (!worker.Join(180000))
+                report = "large-stack CUDA run timed out";
+            session.Dispose();
+            return report;
+        }
+
         internal static string ProbeCpuRun(string modelPath)
         {
             int threadId = Thread.CurrentThread.ManagedThreadId;

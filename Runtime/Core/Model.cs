@@ -2,7 +2,10 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Linq;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace LiveTalk.Core
@@ -237,7 +240,8 @@ namespace LiveTalk.Core
             
             try
             {
-                await Task.Run(() => _session.Run(_inputs, _preallocatedOutputs, runOptions));
+                await Task.Run(() => OrtRunThread.Invoke(() =>
+                    _session.Run(_inputs, _preallocatedOutputs, runOptions)));
             }
             catch (Exception ex)
             {
@@ -303,7 +307,13 @@ namespace LiveTalk.Core
             IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results;
             try
             {
-                results = await Task.Run(() => _session.Run(_inputs, _session.OutputNames, runOptions));
+                results = await Task.Run(() =>
+                {
+                    IDisposableReadOnlyCollection<DisposableNamedOnnxValue> local = null;
+                    OrtRunThread.Invoke(() =>
+                        local = _session.Run(_inputs, _session.OutputNames, runOptions));
+                    return local;
+                });
             }
             catch (Exception ex)
             {
@@ -538,5 +548,71 @@ namespace LiveTalk.Core
         }
 
         #endregion
+
+        /// <summary>
+        /// Unity's main thread and the pool threads are too small for the CUDA
+        /// EP's first cuDNN conv search. One 16 MB thread runs every session;
+        /// that also keeps the CUDA EP off the pool.
+        /// </summary>
+        static class OrtRunThread
+        {
+            const int StackBytes = 16 * 1024 * 1024;
+            static readonly BlockingCollection<Action> Queue = new();
+            static readonly object Gate = new();
+            static Thread _thread;
+
+            internal static void Invoke(Action work)
+            {
+                EnsureStarted();
+                if (ReferenceEquals(Thread.CurrentThread, _thread))
+                {
+                    work();
+                    return;
+                }
+
+                ExceptionDispatchInfo error = null;
+                using var done = new ManualResetEventSlim(false);
+                Queue.Add(() =>
+                {
+                    try
+                    {
+                        work();
+                    }
+                    catch (Exception ex)
+                    {
+                        error = ExceptionDispatchInfo.Capture(ex);
+                    }
+                    finally
+                    {
+                        done.Set();
+                    }
+                });
+                done.Wait();
+                error?.Throw();
+            }
+
+            static void EnsureStarted()
+            {
+                if (_thread != null)
+                    return;
+                lock (Gate)
+                {
+                    if (_thread != null)
+                        return;
+                    _thread = new Thread(Loop, StackBytes)
+                    {
+                        IsBackground = true,
+                        Name = "LiveTalkOrt"
+                    };
+                    _thread.Start();
+                }
+            }
+
+            static void Loop()
+            {
+                foreach (var work in Queue.GetConsumingEnumerable())
+                    work();
+            }
+        }
     }
 }

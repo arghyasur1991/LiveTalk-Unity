@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `onnxruntime.dll` with the Gpu.Windows 1.29.0 core from the Genesis
   Drive mount (`My Private/Projects/GenesisInteractive/onnxruntime/win-x64/1.29.0`)
   before the first session. The stock CPU core fast-fails on the first
-  cuDNN conv `Session.Run`. A copy this launch needs an editor restart.
+  cuDNN conv `Session.Run` even on a large stack. The GPU core runs, but
+  Unity's main thread and pool threads are still too small for that
+  search, so `Model` runs every session on one 16 MB background thread.
+  A copy of the core this launch needs an editor restart.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
