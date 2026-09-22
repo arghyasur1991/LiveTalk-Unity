@@ -87,8 +87,31 @@ namespace LiveTalk.API
                 return false;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(finalFolder));
-            Directory.Move(staging, finalFolder);
-            return true;
+            try
+            {
+                Directory.Move(staging, finalFolder);
+                return true;
+            }
+            catch (IOException ex)
+            {
+                // Windows denies the rename when Explorer, Defender, or a
+                // leftover handle still has the tree. The bytes are finished;
+                // copying them into place must not be treated as a failed
+                // create (the caller deletes an uncommitted staging folder).
+                Logger.LogWarning($"[Storage] Rename denied ({ex.Message}); copying into {finalFolder}");
+                CopyTree(staging, finalFolder);
+                DeleteFolder(staging);
+                return true;
+            }
+        }
+
+        static void CopyTree(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (string file in Directory.GetFiles(source))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+            foreach (string dir in Directory.GetDirectories(source))
+                CopyTree(dir, Path.Combine(destination, Path.GetFileName(dir)));
         }
 
         /// <summary>Removes a folder if it exists; never throws.</summary>
@@ -122,6 +145,16 @@ namespace LiveTalk.API
                 {
                     if (Path.GetFileName(dir).Contains(StagingSuffix))
                     {
+                        // A finished tree whose rename was denied is not
+                        // unfinished. Sweeping it is how a completed avatar
+                        // disappeared (2026-09-22).
+                        if (File.Exists(Path.Combine(dir, "avatar.json"))
+                            || File.Exists(Path.Combine(dir, "voice.json"))
+                            || File.Exists(Path.Combine(dir, "voice.meta.json")))
+                        {
+                            Logger.LogWarning($"[Storage] Keeping finished staging folder {dir}");
+                            continue;
+                        }
                         Logger.Log($"[Storage] Removing unfinished folder {dir}");
                         DeleteFolder(dir);
                     }

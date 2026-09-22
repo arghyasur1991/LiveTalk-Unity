@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Committing a finished avatar or voice copies the staging folder into
+  place when Windows denies the rename, and a staging folder that
+  already has `avatar.json` or `voice.json` is not swept on the next
+  launch.
+
 ### Added
 - Windows / Linux GPU load for models that prefer CoreML or CUDA:
   CUDA first, then WebGPU (D3D12) on Windows, then CPU. CUDA needs the
