@@ -359,11 +359,6 @@ namespace LiveTalk.API
                     Directory.CreateDirectory(expressionFolder);
 
                     Logger.Log($"[Avatar] Processing expression: {expression} (index: {expressionIndex})");
-                    if (LiveTalkAPI.DrivingFrameCap > 0 && expressionIndex > 0)
-                    {
-                        Logger.Log("[FrameProfile] driving-frame cap set; skipping remaining expressions");
-                        break;
-                    }
 
                     // A missing driving video is a failed avatar, not a shorter
                     // one: the folder is contractually complete or absent.
@@ -415,24 +410,37 @@ namespace LiveTalk.API
             LiveTalkAPI liveTalkAPI,
             int maxFrames)
         {
-            var videoPlayer = liveTalkAPI.Object.GetComponent<VideoPlayer>();
-            videoPlayer.clip = drivingVideo;
-            videoPlayer.isLooping = false;
-            videoPlayer.playOnAwake = false;
-            videoPlayer.skipOnDrop = false;
-            videoPlayer.Prepare();
-            yield return new WaitUntil(() => videoPlayer.isPrepared);
-
             // Generate animated textures using LivePortrait, recording the
-            // driving pose each frame came from.
+            // driving pose each frame came from. A host may supply the clip's
+            // frames pre-extracted; that path needs no VideoPlayer and so no
+            // player loop (see LiveTalkAPI.DrivingFramesFolderProvider).
             var poses = new List<float[]>();
-            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(
-                image, videoPlayer, poses, maxFrames > 0 ? maxFrames : -1);
+            int frameLimit = maxFrames > 0 ? maxFrames : -1;
+            string framesFolder = LiveTalkAPI.DrivingFramesFolderProvider?.Invoke(expression, drivingVideo);
+            FrameStream outputStream;
+            VideoPlayer videoPlayer = null;
+            if (!string.IsNullOrEmpty(framesFolder) && Directory.Exists(framesFolder))
+            {
+                Logger.Log($"[Avatar] Driving frames for '{expression}' from folder: {framesFolder}");
+                outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, framesFolder, poses, frameLimit);
+            }
+            else
+            {
+                videoPlayer = liveTalkAPI.Object.GetComponent<VideoPlayer>();
+                videoPlayer.clip = drivingVideo;
+                videoPlayer.isLooping = false;
+                videoPlayer.playOnAwake = false;
+                videoPlayer.skipOnDrop = false;
+                videoPlayer.Prepare();
+                yield return new WaitUntil(() => videoPlayer.isPrepared);
+                outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, poses, frameLimit);
+            }
 
             // Process frames
             var processResult = new ProcessFramesResult();
             yield return ProcessFramesCoroutine(outputStream, expressionFolder, processResult, liveTalkAPI);
-            videoPlayer.clip = null;
+            if (videoPlayer != null)
+                videoPlayer.clip = null;
 
             // The LivePortrait producer marks its stream finished on a fault
             // too (so the loop above exits); a truncated expression is a

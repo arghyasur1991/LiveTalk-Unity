@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first expression (zero means the full clips). `[FrameProfile]` logs
   video `ReadPixels` and PNG encode/write. A copy of the core this launch
   needs an editor restart.
+- Edit-mode bakes no longer depend on the player loop. Unity services
+  that loop — and every `StartCoroutine` — only while the editor is the
+  foreground application, so an unfocused avatar bake advanced one frame
+  per stray repaint. Producers now start through
+  `LiveTalkController.Run`: a Unity coroutine in Play, an
+  `EditorApplication.update`-driven iterator (`EditModeCoroutines`) in
+  the editor. `LiveTalkAPI.DrivingFramesFolderProvider` lets a host hand
+  avatar creation a folder of pre-extracted driving frames instead of the
+  `VideoPlayer`, which also needs the player loop. `DrivingFrameCap` now
+  caps every expression (a complete, short avatar) instead of skipping
+  expressions.
 - Editor: LiveTalk disposes all of its inference sessions in
   `AssemblyReloadEvents.beforeAssemblyReload`. The TTS package releases
   the process-wide `OrtEnv` in its own hook; a session still alive then

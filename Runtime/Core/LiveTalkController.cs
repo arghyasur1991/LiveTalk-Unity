@@ -16,13 +16,31 @@ namespace LiveTalk.Core
 
         public FrameStream DrivingFramesStream => _drivingFramesStream;
 
+        /// <summary>
+        /// Starts a producer. In Play it is a Unity coroutine on this host; in
+        /// the editor outside Play it is stepped by
+        /// <see cref="EditModeCoroutines"/>, because the player loop that
+        /// drives <c>StartCoroutine</c> only runs while the editor is focused.
+        /// </summary>
+        internal void Run(IEnumerator routine)
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                EditModeCoroutines.Start(routine);
+                return;
+            }
+#endif
+            StartCoroutine(routine);
+        }
+
         public void LoadDrivingFrames(string[] frameFiles)
         {
             _drivingFramesStream = new FrameStream(frameFiles.Length)
             {
                 TotalExpectedFrames = frameFiles.Length
             };
-            StartCoroutine(Produce(LoadDrivingFramesAsync(frameFiles, _drivingFramesStream), _drivingFramesStream,
+            Run(Produce(LoadDrivingFramesAsync(frameFiles, _drivingFramesStream), _drivingFramesStream,
                 "LiveTalkController.LoadDrivingFrames(files)"));
         }
 
@@ -61,7 +79,7 @@ namespace LiveTalk.Core
             {
                 TotalExpectedFrames = frameCount
             };
-            StartCoroutine(Produce(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream, maxFrames), _drivingFramesStream,
+            Run(Produce(LoadDrivingFramesAsync(videoPlayer, _drivingFramesStream, maxFrames), _drivingFramesStream,
                 "LiveTalkController.LoadDrivingFrames(video)"));
         }
 
