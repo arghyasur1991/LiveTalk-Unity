@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cuDNN conv `Session.Run` even on a large stack. The GPU core runs, but
   Unity's main thread and pool threads are still too small for that
   search, so `Model` runs every session on one 16 MB background thread.
-  `DrivingFrameCap` limits avatar creation to that many frames of the
-  first expression (zero means the full clips). `[FrameProfile]` logs
+  `DrivingFrameCap` limits each expression to that many frames (zero
+  means the full clips). A non-zero cap is part of the avatar id, so
+  a short probe folder is not reused when the cap is later zero. `[FrameProfile]` logs
   video `ReadPixels` and PNG encode/write. A copy of the core this launch
   needs an editor restart.
 - Edit-mode bakes no longer depend on the player loop. Unity services

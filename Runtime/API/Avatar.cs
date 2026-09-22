@@ -220,10 +220,17 @@ namespace LiveTalk.API
         /// <summary>
         /// The expression-set half of the avatar id. Carries <see cref="Version"/>,
         /// so a recipe or clip change gives every avatar a new id: an old
-        /// folder is neither reused nor half-matched.
+        /// folder is neither reused nor half-matched. A non-zero
+        /// <see cref="LiveTalkAPI.DrivingFrameCap"/> is part of the id too:
+        /// a short probe avatar must not be loaded later as the full one.
         /// </summary>
-        internal static string Signature(CreationMode mode) =>
-            mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";v" + Version;
+        internal static string Signature(CreationMode mode)
+        {
+            string sig = mode + ":" + string.Join(",", ExpressionsFor(mode)) + ";v" + Version;
+            if (LiveTalkAPI.DrivingFrameCap > 0)
+                sig += ";cap" + LiveTalkAPI.DrivingFrameCap;
+            return sig;
+        }
 
         /// <summary>Human name of an expression index, for logs.</summary>
         internal static string GetExpressionName(int index) =>
