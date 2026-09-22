@@ -359,6 +359,11 @@ namespace LiveTalk.API
                     Directory.CreateDirectory(expressionFolder);
 
                     Logger.Log($"[Avatar] Processing expression: {expression} (index: {expressionIndex})");
+                    if (LiveTalkAPI.DrivingFrameCap > 0 && expressionIndex > 0)
+                    {
+                        Logger.Log("[FrameProfile] driving-frame cap set; skipping remaining expressions");
+                        break;
+                    }
 
                     // A missing driving video is a failed avatar, not a shorter
                     // one: the folder is contractually complete or absent.
@@ -367,7 +372,8 @@ namespace LiveTalk.API
                             $"No driving video for expression '{expression}'. Expected a VideoClip at " +
                             $"Resources/driving/{expression} (or LiveTalk/driving/{expression}).");
 
-                    yield return ProcessExpressionCoroutine(image, expression, drivingVideo, expressionFolder, api);
+                    yield return ProcessExpressionCoroutine(
+                        image, expression, drivingVideo, expressionFolder, api, LiveTalkAPI.DrivingFrameCap);
                 }
 
                 // Manifest last: its presence is what marks the folder complete.
@@ -406,7 +412,8 @@ namespace LiveTalk.API
             string expression,
             VideoClip drivingVideo,
             string expressionFolder,
-            LiveTalkAPI liveTalkAPI)
+            LiveTalkAPI liveTalkAPI,
+            int maxFrames)
         {
             var videoPlayer = liveTalkAPI.Object.GetComponent<VideoPlayer>();
             videoPlayer.clip = drivingVideo;
@@ -419,7 +426,8 @@ namespace LiveTalk.API
             // Generate animated textures using LivePortrait, recording the
             // driving pose each frame came from.
             var poses = new List<float[]>();
-            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, poses);
+            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(
+                image, videoPlayer, poses, maxFrames > 0 ? maxFrames : -1);
 
             // Process frames
             var processResult = new ProcessFramesResult();
@@ -476,16 +484,25 @@ namespace LiveTalk.API
             // Process frames as they become available using coroutine pattern
             while (outputStream.HasMoreFrames)
             {
+                var wait = System.Diagnostics.Stopwatch.StartNew();
                 var awaiter = outputStream.WaitForNext();
                 yield return awaiter;
+                long waitMs = wait.ElapsedMilliseconds;
 
                 if (awaiter.Texture != null)
                 {
-                    // Save LivePortrait generated frames as numbered PNGs (these are the driving frames)
-                    string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
+                    var encode = System.Diagnostics.Stopwatch.StartNew();
                     byte[] pngData = awaiter.Texture.EncodeToPNG();
+                    long encodeMs = encode.ElapsedMilliseconds;
+                    int w = awaiter.Texture.width;
+                    int h = awaiter.Texture.height;
+
+                    string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
+                    var write = System.Diagnostics.Stopwatch.StartNew();
                     yield return TaskYield.Wait(File.WriteAllBytesAsync(frameFileName, pngData),
                         $"Avatar.ProcessFrames write {frameFileName}");
+                    Logger.Log(
+                        $"[FrameProfile] png={frameIndex} {w}x{h} waitForFrame={waitMs}ms encode={encodeMs}ms write={write.ElapsedMilliseconds}ms bytes={pngData.Length}");
 
                     // Keep reference for cache generation
                     if (liveTalkAPI.Config.MemoryUsage != MemoryUsage.Optimal)

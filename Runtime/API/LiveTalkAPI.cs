@@ -808,6 +808,12 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// When greater than zero, avatar creation renders only this many
+        /// driving frames of the first expression. Zero renders the full clips.
+        /// </summary>
+        public static int DrivingFrameCap;
+
+        /// <summary>
         /// Generates animated textures from a source image and a video player's frames.
         /// This method provides pipelined processing for efficient video-based animation.
         /// </summary>

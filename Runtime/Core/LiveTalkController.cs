@@ -88,30 +88,27 @@ namespace LiveTalk.Core
                 
                 Logger.LogVerbose($"[LiveTalkController] Video texture size: {videoTexture.width}x{videoTexture.height}");
                 
-                // Read from the VideoPlayer's texture
+                var read = System.Diagnostics.Stopwatch.StartNew();
                 RenderTexture.active = videoTexture;
                 Texture2D frameTexture = new(videoTexture.width, videoTexture.height, TextureFormat.RGB24, false);
                 frameTexture.ReadPixels(new Rect(0, 0, videoTexture.width, videoTexture.height), 0, 0);
                 frameTexture.Apply();
                 RenderTexture.active = null;
-                
-                // Convert to RGB24 format if needed
+                long readMs = read.ElapsedMilliseconds;
+
+                var convert = System.Diagnostics.Stopwatch.StartNew();
                 var rgbTexture = TextureUtils.ConvertTexture2DToRGB24(frameTexture);
                 rgbTexture.name = $"VideoFrame_{frameIndex:D6}";
-                
-                // Enqueue the frame
+                long convertMs = convert.ElapsedMilliseconds;
+
                 if (frameIndex < _drivingFramesStream.TotalExpectedFrames)
-                {
                     _drivingFramesStream.Queue.Enqueue(rgbTexture);
-                }
-                
-                // Clean up original texture if different
+
                 if (rgbTexture != frameTexture)
-                {
                     DestroyImmediate(frameTexture);
-                }
-                
-                Logger.LogVerbose($"[LiveTalkController] Processed frame {frameIndex}");
+
+                Logger.Log(
+                    $"[FrameProfile] video={frameIndex} {videoTexture.width}x{videoTexture.height} readPixels={readMs}ms convert={convertMs}ms");
                 
                 // Check if we've processed all frames
                 if (frameIndex >= _totalFramesToProcess - 1)

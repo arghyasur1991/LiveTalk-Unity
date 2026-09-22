@@ -29,7 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cuDNN conv `Session.Run` even on a large stack. The GPU core runs, but
   Unity's main thread and pool threads are still too small for that
   search, so `Model` runs every session on one 16 MB background thread.
-  A copy of the core this launch needs an editor restart.
+  `DrivingFrameCap` limits avatar creation to that many frames of the
+  first expression (zero means the full clips). `[FrameProfile]` logs
+  video `ReadPixels` and PNG encode/write. A copy of the core this launch
+  needs an editor restart. Do not domain-reload while CUDA sessions
+  are alive: their finalizer crashes the editor.
 
 ### Changed
 - Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
