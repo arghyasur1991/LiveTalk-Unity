@@ -110,6 +110,9 @@ namespace LiveTalk.Core
                 Logger.Log($"[Performance] {fingerprint}: {resolved.TickCount} ticks ({resolved.Duration:0.0}s), " +
                            $"{resolved.Utterances.Count} utterances, {resolved.Expressions.Count} expression cues, " +
                            $"{resolved.Plans.Count} animated character(s).");
+                // Audio for this performance is done. Hosts drop TTS before
+                // LivePortrait / MuseTalk open.
+                onProgress?.Invoke("Faces", 0.1f);
 
                 var manifest = new PerformanceManifest
                 {
