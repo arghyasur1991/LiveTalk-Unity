@@ -599,7 +599,8 @@ Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at
 two expressions never shares frames. Lip-sync frames also hash the wav
 bytes: a re-rolled take misses mouths generated against the previous wav
-(`frames_cache_v3` / `perf_mouth_v2`; old folders are simply never matched).
+(`frames_cache_v3` / `perf_mouth_v2`, plus `HashUtils.LipSyncRecipe`, which also salts
+rendered performances; old folders are simply never matched).
 A frames folder left short by a failed run is deleted rather than taken as
 a hit next time. `SpeakAsync(..., useCache: false)` and
 `QueueSpeech(..., useCache: false)` skip the audio read for that call only

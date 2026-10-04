@@ -281,6 +281,7 @@ namespace LiveTalk.Core
 
                 stream.StartFrameIndex = startFrameIndex;
                 int emitted = 0;
+                var refiner = new MouthRefiner();
                 var watch = System.Diagnostics.Stopwatch.StartNew();
 
                 while (true)
@@ -319,7 +320,7 @@ namespace LiveTalk.Core
                             "MuseTalkInference.RunUNet");
 
                         Frame frame = default;
-                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
+                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData, refiner), r => frame = r,
                             "MuseTalkInference.DecodeLatents");
 
                         stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
@@ -655,6 +656,7 @@ namespace LiveTalk.Core
                 // The bridge logs the original fault and rethrows it.
                 yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
 
+                var refiner = new MouthRefiner();
                 for (int idx = 0; idx < numFrames; idx++)
                 {
                     // The avatar frame this output frame is rendered onto:
@@ -675,7 +677,7 @@ namespace LiveTalk.Core
 
                     // Decode latents to images (async)
                     Frame frame = default;
-                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
+                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData, refiner), r => frame = r,
                         "MuseTalkInference.DecodeLatents");
 
                     // Stream frames to output as they're generated
@@ -1002,9 +1004,11 @@ namespace LiveTalk.Core
         /// <param name="unetOutputBatch">The predicted latent tensor from UNet inference</param>
         /// <param name="avatarIndex">The avatar frame the latent came from (<see cref="AvatarData.AvatarFrameIndex"/>); its face region is what the mouth is blended into</param>
         /// <param name="avatarData">The avatar data containing original images and precomputed blending masks</param>
+        /// <param name="refiner">The stream's detail and stability pass; frames must arrive in order</param>
         /// <returns>A task containing the final blended texture ready for display</returns>
         /// <exception cref="InvalidOperationException">Thrown when VAE decoding or blending fails</exception>
-        private async Task<Frame> DecodeLatents(Tensor<float> unetOutputBatch, int avatarIndex, AvatarData avatarData)
+        private async Task<Frame> DecodeLatents(
+            Tensor<float> unetOutputBatch, int avatarIndex, AvatarData avatarData, MouthRefiner refiner)
         {      
             return await Task.Run(async () =>
             {
@@ -1095,6 +1099,7 @@ namespace LiveTalk.Core
                         faceData.FaceLarge, 
                         _config.ExtraMargin,
                         blendingMode);
+                    refiner.Apply(faceData.OriginalTexture, blendedFrame, faceData.BlurredMask, faceData.CropBox);
                     return blendedFrame;
                 }
                 return rawDecodedTexture;

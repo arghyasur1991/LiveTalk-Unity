@@ -478,6 +478,13 @@ namespace LiveTalk.API
         public static string CacheLocation => LiveTalkCache.Path;
 
         /// <summary>
+        /// Identifies how lip-sync frames are produced after the model runs.
+        /// It changes when that output changes, so a host that keeps its own
+        /// renders (exported clips, baked slices) can key them on it.
+        /// </summary>
+        public static string LipSyncRecipe => HashUtils.LipSyncRecipe;
+
+        /// <summary>
         /// Gets whether caching is enabled.
         /// </summary>
         public static bool IsCacheEnabled => LiveTalkCache.IsEnabled;

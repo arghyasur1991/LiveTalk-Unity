@@ -15,6 +15,13 @@ namespace LiveTalk.Utils
     /// </summary>
     internal static class HashUtils
     {
+        /// <summary>
+        /// How lip-sync frames are made after the UNet (blend, MouthRefiner).
+        /// Salts every cached mouth and every rendered performance, so a
+        /// change here re-renders them instead of replaying old frames.
+        /// </summary>
+        internal const string LipSyncRecipe = "refine-1";
+
         // FNV-1a constants for 64-bit hashing
         private const ulong FNV_OFFSET_BASIS_64 = 14695981039346656037UL;
         private const ulong FNV_PRIME_64 = 1099511628211UL;
@@ -345,6 +352,7 @@ namespace LiveTalk.Utils
             // Salt. v3: the wav itself, so a re-rolled take does not replay
             // mouths generated against the previous wav. v2 omitted it.
             combined = HashString(combined, "frames_cache_v3");
+            combined = HashString(combined, LipSyncRecipe);
 
             string mainHash = combined.ToString("x16");
             uint collisionResistance = (uint)(combined >> 32) ^ (uint)combined;
@@ -403,6 +411,7 @@ namespace LiveTalk.Utils
             // Salt. v2: wav content hash, not file length — two takes of the
             // same duration are different mouths.
             combined = HashString(combined, "perf_mouth_v2");
+            combined = HashString(combined, LipSyncRecipe);
 
             string mainHash = combined.ToString("x16");
             uint collisionResistance = (uint)(combined >> 32) ^ (uint)combined;

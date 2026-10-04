@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch.
 
 ### Added
+- Lip-sync detail and stability pass after the MuseTalk blend. The 256²
+  decode has no skin texture and is generated frame by frame, so the
+  lower face read soft and boiled. The avatar frame's fine detail is now
+  added back where the face has not changed shape (so the source mouth
+  never ghosts), and the generated residual is held steady where it
+  barely changes while real articulation passes through. Measured on a
+  talking clip: mouth sharpness 6.5 → 7.7 (8.7 is the driving video),
+  cheek flicker down about a third. Lip-sync caches and rendered performances
+  are salted with `HashUtils.LipSyncRecipe`, so a recipe change re-renders
+  them.
 - `Performance.AddUtterance(character, text, audioPath, at)`: a line whose
   audio the host already has. The renderer loads that wav for duration,
   playback and lip-sync instead of synthesising the text, so a host that
