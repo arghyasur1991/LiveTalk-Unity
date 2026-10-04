@@ -27,6 +27,8 @@ namespace LiveTalk.Utils
         private static bool _disposeLoadThread = false;
         private static string _cacheDirectory = "";
         private static OrtLoggingLevel _ortLogLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
+        private static bool _cudaLibraryRegistered;
+        private static string _cachedProjectRoot;
 
         #endregion
 
@@ -50,6 +52,7 @@ namespace LiveTalk.Utils
         /// <exception cref="InvalidOperationException">Thrown when ONNX Runtime initialization fails</exception>
         public static void Initialize(LogLevel logLevel = LogLevel.WARNING)
         {
+            EnsureNativeProviderSearchPath();
             var ortLogLevel = logLevel switch
             {
                 LogLevel.VERBOSE => OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE,
@@ -151,17 +154,239 @@ namespace LiveTalk.Utils
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"{modelConfig.modelName} model not found: {modelPath}");
             
-            var sessionOptions = CreateSessionOptions();
-            if (modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML) 
+            bool wantAccelerator = modelConfig.preferredExecutionProvider == ExecutionProvider.CoreML
+                || modelConfig.preferredExecutionProvider == ExecutionProvider.CUDA;
+
+            if (wantAccelerator && CoreMLAvailable())
             {
-                return LoadModelWithCoreML(modelPath, sessionOptions);
+                return LoadModelWithCoreML(modelPath, CreateSessionOptions());
             }
-            
-            // Default CPU execution with optimized settings
-            var cpuModel = new InferenceSession(modelPath, sessionOptions);
+
+            if (wantAccelerator && CudaPlatform())
+            {
+                var cuda = TryLoadCuda(modelPath);
+                if (cuda != null)
+                    return cuda;
+            }
+
+            if (wantAccelerator && WebGpuPlatform())
+            {
+                var webGpu = TryLoadWithProvider(modelPath, "WebGPU",
+                    options => options.AppendExecutionProvider("WebGPU", new Dictionary<string, string>()));
+                if (webGpu != null)
+                    return webGpu;
+            }
+
+            var cpuModel = new InferenceSession(modelPath, CreateSessionOptions());
             Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
             return cpuModel;
         }
+
+        /// <summary>
+        /// Puts the Windows CUDA provider DLLs, CUDA 13 cuBLAS, and cuDNN 9
+        /// on this process's PATH so
+        /// <c>LoadLibrary("onnxruntime_providers_cuda.dll")</c> can succeed
+        /// in the Unity editor, then registers that library with
+        /// <c>OrtEnv.RegisterExecutionProviderLibrary</c>. The player copies
+        /// those DLLs next to <c>onnxruntime.dll</c>; the editor leaves them
+        /// in another PackageCache folder. Idempotent. No-op off Windows.
+        /// Call before the first session; safe if <c>OrtEnv</c> already exists.
+        /// </summary>
+        internal static void EnsureNativeProviderSearchPath()
+        {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            PrependToProcessPath(FindWindowsGpuProviderDirectory());
+            PrependToProcessPath(FindCuda13BinDirectory());
+            PrependToProcessPath(FindCudnn9BinDirectory());
+            TryRegisterCudaProviderLibrary();
+#endif
+        }
+
+        internal static string[] GetAvailableProviders()
+        {
+            EnsureNativeProviderSearchPath();
+            var names = new List<string>(OrtEnv.Instance().GetAvailableProviders());
+            try
+            {
+                foreach (var device in OrtEnv.Instance().GetEpDevices())
+                {
+                    if (!string.IsNullOrEmpty(device.EpName) && !names.Contains(device.EpName))
+                        names.Add(device.EpName);
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"[ModelUtils] GetEpDevices failed: {e.Message}");
+            }
+            return names.ToArray();
+        }
+
+        static InferenceSession TryLoadCuda(string modelPath)
+        {
+            EnsureNativeProviderSearchPath();
+            var env = OrtEnv.Instance();
+            var cudaDevices = new List<OrtEpDevice>();
+            foreach (var device in env.GetEpDevices())
+            {
+                if (device.EpName != null &&
+                    device.EpName.IndexOf("CUDA", StringComparison.OrdinalIgnoreCase) >= 0)
+                    cudaDevices.Add(device);
+            }
+            if (cudaDevices.Count > 0)
+            {
+                var viaDevices = TryLoadWithProvider(modelPath, "CUDA-EP-device",
+                    options => options.AppendExecutionProvider(env, cudaDevices, null));
+                if (viaDevices != null)
+                    return viaDevices;
+            }
+            return TryLoadWithProvider(modelPath, "CUDA",
+                options => options.AppendExecutionProvider("CUDA",
+                    new Dictionary<string, string> { ["device_id"] = "0" }));
+        }
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        static void PrependToProcessPath(string dir)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return;
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (PathContains(path, dir))
+                return;
+            Environment.SetEnvironmentVariable("PATH", dir + Path.PathSeparator + path);
+            Logger.Log($"[ModelUtils] Prepended native search PATH: {dir}");
+        }
+
+        static bool PathContains(string path, string dir)
+        {
+            string trimmed = dir.TrimEnd('\\', '/');
+            foreach (string part in path.Split(Path.PathSeparator))
+            {
+                if (string.Equals(part.TrimEnd('\\', '/'), trimmed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        static string FindWindowsGpuProviderDirectory()
+        {
+            if (string.IsNullOrEmpty(_cachedProjectRoot))
+                _cachedProjectRoot = Path.GetDirectoryName(Application.dataPath);
+            string project = _cachedProjectRoot;
+            if (string.IsNullOrEmpty(project))
+                return null;
+            string cache = Path.Combine(project, "Library", "PackageCache");
+            if (!Directory.Exists(cache))
+                return null;
+            foreach (string pkg in Directory.GetDirectories(cache, "com.github.asus4.onnxruntime.win-x64-gpu@*"))
+            {
+                string x64 = Path.Combine(pkg, "Plugins", "Windows", "x64");
+                if (File.Exists(Path.Combine(x64, "onnxruntime_providers_cuda.dll")))
+                    return x64;
+            }
+            return null;
+        }
+
+        static string FindCuda13BinDirectory()
+        {
+            string fromEnv = Environment.GetEnvironmentVariable("CUDA_PATH");
+            string fromEnvBin = Cuda13BinIfPresent(fromEnv);
+            if (fromEnvBin != null)
+                return fromEnvBin;
+            string root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "NVIDIA GPU Computing Toolkit", "CUDA");
+            if (!Directory.Exists(root))
+                return null;
+            foreach (string ver in Directory.GetDirectories(root, "v13.*"))
+            {
+                string found = Cuda13BinIfPresent(ver);
+                if (found != null)
+                    return found;
+            }
+            return null;
+        }
+
+        static string Cuda13BinIfPresent(string cudaRoot)
+        {
+            if (string.IsNullOrEmpty(cudaRoot) || !Directory.Exists(cudaRoot))
+                return null;
+            string binX64 = Path.Combine(cudaRoot, "bin", "x64");
+            if (File.Exists(Path.Combine(binX64, "cublas64_13.dll")))
+                return binX64;
+            string bin = Path.Combine(cudaRoot, "bin");
+            if (File.Exists(Path.Combine(bin, "cublas64_13.dll")))
+                return bin;
+            return null;
+        }
+
+        static string FindCudnn9BinDirectory()
+        {
+            string fromEnv = Cudnn9BinIfPresent(Environment.GetEnvironmentVariable("CUDNN_PATH"));
+            if (fromEnv != null)
+                return fromEnv;
+            string cudaRoot = Environment.GetEnvironmentVariable("CUDA_PATH");
+            if (!string.IsNullOrEmpty(cudaRoot))
+            {
+                string fromCuda = Cudnn9BinIfPresent(cudaRoot)
+                    ?? Cudnn9BinIfPresent(Path.Combine(cudaRoot, "bin"))
+                    ?? Cudnn9BinIfPresent(Path.Combine(cudaRoot, "bin", "x64"));
+                if (fromCuda != null)
+                    return fromCuda;
+            }
+            string nvidia = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "NVIDIA", "CUDNN");
+            if (Directory.Exists(nvidia))
+            {
+                foreach (string ver in Directory.GetDirectories(nvidia, "v9.*"))
+                {
+                    string found = Cudnn9BinIfPresent(Path.Combine(ver, "bin"));
+                    if (found != null)
+                        return found;
+                }
+            }
+            return null;
+        }
+
+        static string Cudnn9BinIfPresent(string dir)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return null;
+            return File.Exists(Path.Combine(dir, "cudnn64_9.dll")) ? dir : null;
+        }
+
+        static void TryRegisterCudaProviderLibrary()
+        {
+            if (_cudaLibraryRegistered)
+                return;
+            string dir = FindWindowsGpuProviderDirectory();
+            if (string.IsNullOrEmpty(dir))
+            {
+                Logger.LogWarning("[ModelUtils] CUDA provider DLL folder not found");
+                return;
+            }
+            string dll = Path.Combine(dir, "onnxruntime_providers_cuda.dll");
+            if (!File.Exists(dll))
+                return;
+            try
+            {
+                OrtEnv.Instance().RegisterExecutionProviderLibrary("cuda", dll);
+                _cudaLibraryRegistered = true;
+                Logger.Log($"[ModelUtils] Registered CUDA EP library: {dll}");
+            }
+            catch (Exception e)
+            {
+                string msg = e.Message ?? "";
+                if (msg.IndexOf("already", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _cudaLibraryRegistered = true;
+                    Logger.Log("[ModelUtils] CUDA EP library already registered");
+                    return;
+                }
+                Logger.LogWarning($"[ModelUtils] RegisterExecutionProviderLibrary(cuda) failed: {e}");
+            }
+        }
+#endif
 
         #endregion
 
@@ -323,7 +548,8 @@ namespace LiveTalk.Utils
                 LogSeverityLevel = _ortLogLevel
             };
 
-            if (LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
+            if (LiveTalkAPI.Instance?.Config != null
+                && LiveTalkAPI.Instance.Config.MemoryUsage == MemoryUsage.Optimal)
             {
                 options.EnableMemoryPattern = false;
                 options.EnableCpuMemArena = false;
@@ -417,7 +643,57 @@ namespace LiveTalk.Utils
                     Logger.LogWarning($"[ModelUtils] CoreML fallback also failed: {fallbackException.Message}. Using CPU provider.");
                 }
             }
-            return null;
+
+            var cpuFallback = new InferenceSession(modelPath, CreateSessionOptions());
+            Logger.Log($"[ModelUtils] Loaded model with CPU provider: {modelPath}");
+            return cpuFallback;
+        }
+
+        static bool CoreMLAvailable()
+        {
+            return Application.platform == RuntimePlatform.OSXEditor
+                || Application.platform == RuntimePlatform.OSXPlayer
+                || Application.platform == RuntimePlatform.IPhonePlayer;
+        }
+
+        static bool CudaPlatform()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor
+                || Application.platform == RuntimePlatform.WindowsPlayer
+                || Application.platform == RuntimePlatform.LinuxEditor
+                || Application.platform == RuntimePlatform.LinuxPlayer;
+        }
+
+        static bool WebGpuPlatform()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor
+                || Application.platform == RuntimePlatform.WindowsPlayer;
+        }
+
+        /// <summary>
+        /// Attempts one execution provider on a fresh SessionOptions. A failed
+        /// AppendExecutionProvider can taint the options object, so callers
+        /// must not reuse it. Returns null when the provider is missing from
+        /// this ONNX Runtime build (typical for CUDA in the Unity editor).
+        /// </summary>
+        static InferenceSession TryLoadWithProvider(
+            string modelPath,
+            string label,
+            Action<SessionOptions> configure)
+        {
+            try
+            {
+                var options = CreateSessionOptions();
+                configure(options);
+                var session = new InferenceSession(modelPath, options);
+                Logger.Log($"[ModelUtils] Loaded model with {label} provider: {modelPath}");
+                return session;
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"[ModelUtils] {label} provider failed: {e}");
+                return null;
+            }
         }
 
         #endregion

@@ -99,16 +99,13 @@ namespace LiveTalk.Core
             await _faceAnalysis.StartFaceAnalysisSession();
             await _faceAnalysis.StartFaceParsingSession();
             await _vaeEncoder.StartSession();
-            foreach (var path in avatarFramePaths)
+            await ComputeAvatarDataBatched(avatarFramePaths, path =>
             {
                 var texture = FileUtils.LoadFrame(path);
                 if (texture == null)
-                {
                     Logger.LogWarning($"[MuseTalkInference] Failed to load texture from path {path}");
-                    continue;
-                }
-                await ComputeAvatarDataForFrame(texture, avatarData);
-            }
+                return texture;
+            }, avatarData);
             _faceAnalysis.EndFaceAnalysisSession();
             _faceAnalysis.EndFaceParsingSession();
             _vaeEncoder.EndSession();
@@ -140,11 +137,7 @@ namespace LiveTalk.Core
             await _faceAnalysis.StartFaceAnalysisSession();
             await _faceAnalysis.StartFaceParsingSession();
             await _vaeEncoder.StartSession();
-
-            foreach (var texture in avatarTextures)
-            {
-                await ComputeAvatarDataForFrame(texture, avatarData);
-            }
+            await ComputeAvatarDataBatched(avatarTextures, texture => texture, avatarData);
 
             _faceAnalysis.EndFaceAnalysisSession();
             _faceAnalysis.EndFaceParsingSession();
@@ -288,6 +281,7 @@ namespace LiveTalk.Core
 
                 stream.StartFrameIndex = startFrameIndex;
                 int emitted = 0;
+                var refiner = new MouthRefiner();
                 var watch = System.Diagnostics.Stopwatch.StartNew();
 
                 while (true)
@@ -326,7 +320,7 @@ namespace LiveTalk.Core
                             "MuseTalkInference.RunUNet");
 
                         Frame frame = default;
-                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
+                        yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData, refiner), r => frame = r,
                             "MuseTalkInference.DecodeLatents");
 
                         stream.Queue.Enqueue(TextureUtils.FrameToTexture2D(frame));
@@ -662,6 +656,7 @@ namespace LiveTalk.Core
                 // The bridge logs the original fault and rethrows it.
                 yield return TaskYield.Wait(StartGeneratorSession(), "MuseTalkInference.StartGeneratorSession");
 
+                var refiner = new MouthRefiner();
                 for (int idx = 0; idx < numFrames; idx++)
                 {
                     // The avatar frame this output frame is rendered onto:
@@ -682,7 +677,7 @@ namespace LiveTalk.Core
 
                     // Decode latents to images (async)
                     Frame frame = default;
-                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData), r => frame = r,
+                    yield return TaskYield.Wait(DecodeLatents(predictedLatents, avatarIndex, avatarData, refiner), r => frame = r,
                         "MuseTalkInference.DecodeLatents");
 
                     // Stream frames to output as they're generated
@@ -700,49 +695,72 @@ namespace LiveTalk.Core
             }
         }
 
-        /// <summary>
-        /// Asynchronously computes avatar data for a single frame.
-        /// This method detects faces, crops the face region, generates segmentation masks,
-        /// and computes latents for the UNet model.
-        /// </summary>
-        /// <param name="texture"></param>
-        /// <param name="avatarData"></param>
-        /// <returns></returns>
-        private async Task ComputeAvatarDataForFrame(Texture2D texture, AvatarData avatarData)
+        // Textures become frames on the main thread; everything after is
+        // pool work. One main-thread hop per batch rather than per frame:
+        // in edit mode each hop waits for the next editor tick (~150 ms
+        // unfocused), which made a 676-frame expression cost minutes of
+        // waiting for a few seconds of inference.
+        const int MainThreadBatch = 32;
+
+        private async Task ComputeAvatarDataBatched<T>(
+            IReadOnlyList<T> items, Func<T, Texture2D> load, AvatarData avatarData)
         {
-            var frame = TextureUtils.Texture2DToFrame(texture);
-            UnityEngine.Object.DestroyImmediate(texture);
-            await Task.Run(async () =>
+            var batch = new List<Frame>(MainThreadBatch);
+            int i = 0;
+            while (i < items.Count)
             {
-                var bbox = await _faceAnalysis.GetLandmarkAndBbox(frame);
-                if (bbox == Vector4.zero)
+                batch.Clear();
+                for (; i < items.Count && batch.Count < MainThreadBatch; i++)
                 {
-                    Logger.LogWarning($"[MuseTalkInference] No face detected in image {frame.width}x{frame.height}");
-                    return;
+                    var texture = load(items[i]);
+                    if (texture == null) continue;
+                    batch.Add(TextureUtils.Texture2DToFrame(texture));
+                    UnityEngine.Object.DestroyImmediate(texture);
                 }
-
-                var croppedFrame = CropFaceRegion(frame, bbox, _config.Version);
-                var segmentationData = await ComputeSegmentationData(frame, bbox);
-                var faceData = new FaceData
+                var frames = batch.ToArray();
+                await Task.Run(async () =>
                 {
-                    HasFace = true,
-                    BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
-                    CroppedFaceTexture = croppedFrame,
-                    OriginalTexture = frame,
-                    FaceLarge = segmentationData.FaceLarge,
-                    SegmentationMask = segmentationData.SegmentationMask,
-                    AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
-                    CropBox = segmentationData.CropBox,
-                    MaskSmall = segmentationData.MaskSmall,
-                    FullMask = segmentationData.FullMask,
-                    BoundaryMask = segmentationData.BoundaryMask,
-                    BlurredMask = segmentationData.BlurredMask
-                };
-                avatarData.FaceRegions.Add(faceData);
+                    foreach (var frame in frames)
+                        await ComputeAvatarDataForFrame(frame, avatarData).ConfigureAwait(false);
+                });
+                Logger.Log($"[MuseTalkInference] Avatar data {i}/{items.Count} frames");
+            }
+        }
 
-                var latents = await GetLatentsForUNet(croppedFrame);
-                avatarData.Latents.Add(latents);
-            });
+        /// <summary>
+        /// Face detection, crop, segmentation masks and UNet latents for one
+        /// frame. Pool thread only; the caller owns the main-thread hop.
+        /// </summary>
+        private async Task ComputeAvatarDataForFrame(Frame frame, AvatarData avatarData)
+        {
+            var bbox = await _faceAnalysis.GetLandmarkAndBbox(frame);
+            if (bbox == Vector4.zero)
+            {
+                Logger.LogWarning($"[MuseTalkInference] No face detected in image {frame.width}x{frame.height}");
+                return;
+            }
+
+            var croppedFrame = CropFaceRegion(frame, bbox, _config.Version);
+            var segmentationData = await ComputeSegmentationData(frame, bbox);
+            var faceData = new FaceData
+            {
+                HasFace = true,
+                BoundingBox = new Rect(bbox.x, bbox.y, bbox.z - bbox.x, bbox.w - bbox.y),
+                CroppedFaceTexture = croppedFrame,
+                OriginalTexture = frame,
+                FaceLarge = segmentationData.FaceLarge,
+                SegmentationMask = segmentationData.SegmentationMask,
+                AdjustedFaceBbox = segmentationData.AdjustedFaceBbox,
+                CropBox = segmentationData.CropBox,
+                MaskSmall = segmentationData.MaskSmall,
+                FullMask = segmentationData.FullMask,
+                BoundaryMask = segmentationData.BoundaryMask,
+                BlurredMask = segmentationData.BlurredMask
+            };
+            avatarData.FaceRegions.Add(faceData);
+
+            var latents = await GetLatentsForUNet(croppedFrame);
+            avatarData.Latents.Add(latents);
         }
 
         /// <summary>
@@ -986,9 +1004,11 @@ namespace LiveTalk.Core
         /// <param name="unetOutputBatch">The predicted latent tensor from UNet inference</param>
         /// <param name="avatarIndex">The avatar frame the latent came from (<see cref="AvatarData.AvatarFrameIndex"/>); its face region is what the mouth is blended into</param>
         /// <param name="avatarData">The avatar data containing original images and precomputed blending masks</param>
+        /// <param name="refiner">The stream's detail and stability pass; frames must arrive in order</param>
         /// <returns>A task containing the final blended texture ready for display</returns>
         /// <exception cref="InvalidOperationException">Thrown when VAE decoding or blending fails</exception>
-        private async Task<Frame> DecodeLatents(Tensor<float> unetOutputBatch, int avatarIndex, AvatarData avatarData)
+        private async Task<Frame> DecodeLatents(
+            Tensor<float> unetOutputBatch, int avatarIndex, AvatarData avatarData, MouthRefiner refiner)
         {      
             return await Task.Run(async () =>
             {
@@ -1079,6 +1099,7 @@ namespace LiveTalk.Core
                         faceData.FaceLarge, 
                         _config.ExtraMargin,
                         blendingMode);
+                    refiner.Apply(faceData.OriginalTexture, blendedFrame, faceData.BlurredMask, faceData.CropBox);
                     return blendedFrame;
                 }
                 return rawDecodedTexture;

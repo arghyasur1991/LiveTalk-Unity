@@ -129,11 +129,21 @@ namespace LiveTalk.API
         /// <summary>Caption text; null shows <see cref="Text"/>.</summary>
         public string Caption { get; set; }
 
-        internal Utterance(Character character, string text, Anchor at)
+        /// <summary>
+        /// A wav the host already has for this line. The renderer plays and
+        /// lip-syncs it instead of synthesising <see cref="Text"/>. Null speaks.
+        /// </summary>
+        public string AudioPath { get; }
+
+        internal string AudioHash { get; }
+
+        internal Utterance(Character character, string text, Anchor at, string audioPath = null, string audioHash = null)
         {
             Character = character;
             Text = text;
             At = at;
+            AudioPath = audioPath;
+            AudioHash = audioHash;
         }
 
         public override string ToString() =>
@@ -193,6 +203,23 @@ namespace LiveTalk.API
             return u;
         }
 
+        /// <summary>
+        /// A line whose audio already exists. Nothing is synthesised for it:
+        /// the wav at <paramref name="audioPath"/> is its duration, its sound
+        /// and its lip-sync input. Its content is part of
+        /// <see cref="Fingerprint"/>, so a replaced wav re-renders.
+        /// </summary>
+        public Utterance AddUtterance(Character character, string text, string audioPath, Anchor at)
+        {
+            if (character == null) throw new ArgumentNullException(nameof(character));
+            if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("Utterance text is empty.", nameof(text));
+            string hash = Utils.HashUtils.GenerateAudioContentHash(audioPath);
+            if (hash == null) throw new System.IO.FileNotFoundException("Utterance audio not found.", audioPath);
+            var u = new Utterance(character, text, at, audioPath, hash) { Id = new CueId(_nextId++) };
+            Utterances.Add(u);
+            return u;
+        }
+
         /// <summary>Convenience: the next line, <see cref="DefaultGap"/> after the previous one.</summary>
         public Utterance AddUtterance(Character character, string text) =>
             AddUtterance(character, text, Anchor.AfterPrevious(DefaultGap));
@@ -221,18 +248,19 @@ namespace LiveTalk.API
         }
 
         /// <summary>
-        /// Content fingerprint of the authored cues (not of the audio or
-        /// avatars). Two performances with the same fingerprint, characters
-        /// and voices render the same thing.
+        /// Content fingerprint of the authored cues and of any supplied
+        /// utterance audio (not of avatars). Two performances with the same
+        /// fingerprint, characters and voices render the same thing.
         /// </summary>
         public string Fingerprint()
         {
             var sb = new System.Text.StringBuilder();
-            sb.Append("perf_v1;gap=").Append(DefaultGap.ToString("R")).Append(";tail=").Append(Tail.ToString("R")).Append(';');
+            sb.Append("perf_v1;").Append(Utils.HashUtils.LipSyncRecipe).Append(";gap=").Append(DefaultGap.ToString("R")).Append(";tail=").Append(Tail.ToString("R")).Append(';');
             foreach (var u in Utterances)
                 sb.Append("U|").Append(u.Id.Value).Append('|').Append(u.Character?.Id).Append('|')
                   .Append(u.Character?.Voice?.Id).Append('|').Append(u.Character?.Avatar?.Id).Append('|')
-                  .Append(u.Text).Append('|').Append(u.At).Append('|').Append(u.LipSync ? 1 : 0).Append(';');
+                  .Append(u.Text).Append('|').Append(u.At).Append('|').Append(u.LipSync ? 1 : 0)
+                  .Append(u.AudioHash != null ? "|A:" + u.AudioHash : "").Append(';');
             foreach (var e in Expressions)
                 sb.Append("E|").Append(e.Id.Value).Append('|').Append(e.Character?.Id).Append('|')
                   .Append(e.Character?.Avatar?.Id).Append('|').Append(e.Expression).Append('|')

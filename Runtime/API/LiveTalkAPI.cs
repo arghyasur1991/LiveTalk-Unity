@@ -478,6 +478,13 @@ namespace LiveTalk.API
         public static string CacheLocation => LiveTalkCache.Path;
 
         /// <summary>
+        /// Identifies how lip-sync frames are produced after the model runs.
+        /// It changes when that output changes, so a host that keeps its own
+        /// renders (exported clips, baked slices) can key them on it.
+        /// </summary>
+        public static string LipSyncRecipe => HashUtils.LipSyncRecipe;
+
+        /// <summary>
         /// Gets whether caching is enabled.
         /// </summary>
         public static bool IsCacheEnabled => LiveTalkCache.IsEnabled;
@@ -515,6 +522,27 @@ namespace LiveTalk.API
         public static long GetCacheSizeBytes(string cacheLocation = null) =>
             string.IsNullOrEmpty(cacheLocation) ? LiveTalkCache.GetSize() : LiveTalkCache.GetSize(cacheLocation);
 
+        /// <summary>
+        /// Windows: puts the CUDA execution provider's native dependencies on
+        /// this process's library search path and registers the provider —
+        /// the <c>com.github.asus4.onnxruntime.win-x64-gpu</c> plugin folder,
+        /// CUDA 13 <c>bin</c> (from <c>CUDA_PATH</c>) and cuDNN 9
+        /// (<c>CUDNN_PATH</c>, the CUDA <c>bin</c>, or
+        /// <c>Program Files\NVIDIA\CUDNN\v9.*\bin</c>). A no-op elsewhere.
+        /// Call before the first ONNX session is created. Idempotent; a host
+        /// may set <c>CUDNN_PATH</c> for this process and call it again.
+        /// </summary>
+        public static void PrepareNativeExecutionProviders() =>
+            ModelUtils.EnsureNativeProviderSearchPath();
+
+        /// <summary>
+        /// ONNX Runtime execution providers this process can name. Triggers
+        /// environment creation if needed, so call it after
+        /// <see cref="PrepareNativeExecutionProviders"/>.
+        /// </summary>
+        public static string[] GetAvailableExecutionProviders() =>
+            ModelUtils.GetAvailableProviders();
+
         #endregion
 
         #region Constructor
@@ -538,6 +566,7 @@ namespace LiveTalk.API
             bool enableCache = true,
             string ttsModelRoot = null)
         {
+            ModelUtils.EnsureNativeProviderSearchPath();
             if (_initialized)
             {
                 EnsureRuntimeHost();
@@ -756,11 +785,31 @@ namespace LiveTalk.API
             var inputStream = CreateInputStreamFromFrames(drivingFrames);
             inputStream.TotalExpectedFrames = drivingFrames.Count;
             
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, inputStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(frames)"));
             return outputStream;
         }
+
+        /// <summary>
+        /// When greater than zero, avatar creation renders only this many
+        /// driving frames per expression; zero (the default) renders the full
+        /// clips. For quick iteration and profiling: the avatar is complete
+        /// but short, and the cap is part of its id, so it is never reused as
+        /// a full avatar.
+        /// </summary>
+        public static int DrivingFrameCap { get; set; }
+
+        /// <summary>
+        /// Optional source of pre-extracted driving frames for avatar creation.
+        /// Given an expression name and its <see cref="VideoClip"/>, return a
+        /// folder of frames whose file names sort in playback order (PNG or
+        /// JPG), or null to decode the clip with a <see cref="VideoPlayer"/>.
+        /// Set it when creating avatars in edit mode: the
+        /// <see cref="VideoPlayer"/> only advances while the editor is the
+        /// foreground application, the folder path does not.
+        /// </summary>
+        public static Func<string, VideoClip, string> DrivingFramesFolderProvider { get; set; }
 
         /// <summary>
         /// Generates animated textures from a source image and a video player's frames.
@@ -793,7 +842,7 @@ namespace LiveTalk.API
 
             var outputStream = new FrameStream(frameCount) { Poses = poseSink };
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(video)"));
 
@@ -810,6 +859,15 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated animated frames</returns>
         /// <exception cref="ArgumentException">Thrown when source image or path is invalid, or no frames are found</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, string drivingFramesPath, int maxFrames = -1)
+            => GenerateAnimatedTexturesAsync(sourceImage, drivingFramesPath, poseSink: null, maxFrames);
+
+        /// <summary>
+        /// As <see cref="GenerateAnimatedTexturesAsync(Texture2D, string, int)"/>,
+        /// additionally recording each frame's final driving pose into
+        /// <paramref name="poseSink"/> (see <see cref="FrameStream.Poses"/>).
+        /// </summary>
+        internal FrameStream GenerateAnimatedTexturesAsync(
+            Texture2D sourceImage, string drivingFramesPath, List<float[]> poseSink, int maxFrames = -1)
         {
             if (!_initialized)
             {
@@ -820,9 +878,9 @@ namespace LiveTalk.API
             var frameFiles = GetFrameFiles(drivingFramesPath, maxFrames);
             Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameFiles.Length} driving frames from directory");
 
-            var outputStream = new FrameStream(frameFiles.Length);
+            var outputStream = new FrameStream(frameFiles.Length) { Poses = poseSink };
             _controller.LoadDrivingFrames(frameFiles);
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
                 "LiveTalkAPI.GenerateAnimatedTextures(directory)"));
 
@@ -1089,7 +1147,7 @@ namespace LiveTalk.API
             int estimatedFrames = EstimateFrameCount(audioClip);
             
             var outputStream = new FrameStream(estimatedFrames);
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _museTalk.GenerateAsync(avatarTextures, audioClip, outputStream), outputStream,
                 "LiveTalkAPI.GenerateTalkingHead"));
             
@@ -1115,7 +1173,7 @@ namespace LiveTalk.API
             int estimatedFrames = EstimateFrameCount(audioClip);
             var outputStream = new FrameStream(estimatedFrames) { StartFrameIndex = startFrameIndex };
             
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _museTalk.GenerateWithPreloadedDataAsync(audioClip, avatarData, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadWithPreloadedData"));
             return outputStream;
@@ -1139,7 +1197,7 @@ namespace LiveTalk.API
             Logger.Log("[LiveTalkAPI] Generating talking head (streaming)");
 
             var outputStream = new FrameStream(0) { StartFrameIndex = startFrameIndex };
-            _controller.StartCoroutine(LiveTalkController.Produce(
+            _controller.Run(LiveTalkController.Produce(
                 _museTalk.GenerateFramesIncremental(avatarData, features, outputStream, startFrameIndex), outputStream,
                 "LiveTalkAPI.GenerateTalkingHeadIncremental"));
             return outputStream;
@@ -2026,6 +2084,23 @@ namespace LiveTalk.API
         /// <exception cref="ArgumentException">Thrown when no frames are found</exception>
         private static string[] GetFrameFiles(string drivingFramesPath, int maxFrames)
         {
+            // FileUtils prefixes StreamingAssets. An absolute folder (a host's
+            // extracted-frame cache) is already the directory to read.
+            if (Path.IsPathRooted(drivingFramesPath))
+            {
+                var rooted = Directory.Exists(drivingFramesPath)
+                    ? Directory.GetFiles(drivingFramesPath, "*.png")
+                    : Array.Empty<string>();
+                Array.Sort(rooted, (a, b) => string.Compare(
+                    Path.GetFileNameWithoutExtension(a),
+                    Path.GetFileNameWithoutExtension(b),
+                    StringComparison.Ordinal));
+                if (maxFrames > 0 && rooted.Length > maxFrames)
+                    Array.Resize(ref rooted, maxFrames);
+                if (rooted.Length == 0)
+                    throw new ArgumentException($"No driving frames found in path: {drivingFramesPath}");
+                return rooted;
+            }
             var frameFiles = FileUtils.GetFrameFiles(drivingFramesPath, maxFrames);
             if (frameFiles.Length == 0)
             {

@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-04
+
+Sharper, steadier lip-sync; avatar creation that keeps going with the editor
+in the background; performances that reuse audio you already have; and
+GPU (WebGPU / CUDA) loading on Windows.
+
+### Added
+- **Lip-sync detail and stability pass.** MuseTalk's 256² mouth region has
+  no fine skin texture and is generated frame by frame, so the lower face
+  read soft and shimmered. After the blend, the avatar frame's fine detail
+  is added back where the face has not changed shape (the source mouth
+  never shows through), and the generated region is held steady where it
+  barely changes while real articulation passes through. On a talking clip:
+  mouth sharpness 6.7 → 7.7 (the undubbed driving video is 8.7), cheek
+  flicker down about a fifth. See *How lip-sync frames are made*.
+- `LiveTalkAPI.LipSyncRecipe`: identifies how lip-sync frames are produced.
+  Lip-sync caches and rendered performances are keyed on it, so frames from
+  an older recipe are re-rendered rather than replayed; key your own
+  exported renders on it too.
+- `Performance.AddUtterance(character, text, audioPath, at)`: a line whose
+  audio you already have. The renderer uses that wav for timing, playback
+  and lip-sync instead of synthesising the text, and its content is part of
+  the performance fingerprint, so replacing the file re-renders.
+- `LiveTalkAPI.DrivingFramesFolderProvider`: give avatar creation a folder
+  of pre-extracted driving frames instead of decoding the clip with a
+  `VideoPlayer`, which only advances while the editor is in the foreground.
+- `LiveTalkAPI.DrivingFrameCap`: render a complete but short avatar for
+  quick iteration. The cap is part of the avatar id.
+- Windows / Linux GPU loading for models that prefer CoreML: CUDA, then
+  WebGPU (D3D12) on Windows, then CPU. CUDA needs the optional
+  `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu` package,
+  CUDA 13 and cuDNN 9; LiveTalk puts them on the native search path and
+  registers the provider (`LiveTalkAPI.PrepareNativeExecutionProviders`).
+  On Windows the CUDA provider also needs the `Microsoft.ML.OnnxRuntime.Gpu.Windows`
+  1.29.0 core: **LiveTalk → Windows GPU Core…** points LiveTalk at it and
+  swaps it in on the next editor load, hash-checked. **LiveTalk → Log ONNX
+  Execution Providers** shows what loaded.
+- Progress logging for avatar creation's MuseTalk preprocess and
+  face-texture save.
+
+### Changed
+- Every ONNX session runs on one dedicated 16 MB-stack thread: cuDNN's
+  convolution search overflows Unity's main and pool thread stacks.
+- Edit-mode producers are stepped from `EditorApplication.update` instead
+  of `StartCoroutine`, so edit-mode work does not stall while another
+  application has focus.
+- `DrivingFrameCap` caps every expression (a short, complete avatar)
+  instead of skipping expressions.
+- Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU EP
+  in the Windows core).
+
+### Fixed
+- Avatar creation in edit mode no longer crawls with the editor in the
+  background. Each await that resumed on the main thread waited for an
+  editor tick, and the face-texture save awaited eight writes per frame
+  there — minutes per expression for under a second of I/O. The save runs
+  off the main thread, the MuseTalk preprocess returns to it once per 32
+  frames, and driving-frame writes overlap the next frame. A full
+  seven-expression avatar now builds in about eight minutes on an M4 Max,
+  focused or not.
+- CoreML-preferred models (LivePortrait, MuseTalk, face analysis) load on
+  CPU when CoreML is not in the ONNX Runtime build (Windows, Linux). They
+  used to fail with `Failed to load model`.
+- No editor crash on script reload: every LiveTalk inference session is
+  disposed in `beforeAssemblyReload`, before the TTS package releases the
+  process-wide ONNX Runtime environment.
+- A finished avatar or voice whose staging rename Windows denied is copied
+  into place, and is no longer swept as unfinished on the next launch.
+
 ## [2.4.0] - 2026-09-19
 
 Hosts can pull an expression's frames for a duration without reaching

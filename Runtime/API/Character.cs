@@ -965,7 +965,7 @@ namespace LiveTalk.API
                         var expression = Avatar.LoadedExpressions[expressionIndex];
                         var animationStream = outputStream;
                         var extractor = features;
-                        liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                        liveTalkAPI.Controller.Run(TaskYield.Guard(
                             GenerateAnimationWithQueue(liveTalkAPI, expression.Data,
                                 start => liveTalkAPI.GenerateTalkingHeadIncremental(expression.Data, extractor, start),
                                 startFrameIndexProvider, expectedFrames: -1,
@@ -1123,7 +1123,7 @@ namespace LiveTalk.API
                 // so a failed read finishes the stream and reaches onError
                 // rather than dying inside Unity's coroutine scheduler.
                 var cachedStream = outputStream;
-                liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+                liveTalkAPI.Controller.Run(TaskYield.Guard(
                     LoadFramesFromCacheWithCallback(cachedFramesFolder, cachedFrameCount, cachedStream, onAnimationComplete),
                     ex => { cachedStream.Fail(ex); onError?.Invoke(ex); },
                     "Character.LoadFramesFromCache"));
@@ -1151,7 +1151,7 @@ namespace LiveTalk.API
             // The frame count is a function of the audio length, so the start
             // frame provider can be told it up front.
             int expectedFrames = WhisperModel.FrameCountFor(Mathf.RoundToInt(clip.length * AudioUtils.SAMPLE_RATE));
-            liveTalkAPI.Controller.StartCoroutine(TaskYield.Guard(
+            liveTalkAPI.Controller.Run(TaskYield.Guard(
                 GenerateAnimationWithQueue(liveTalkAPI, expressionData.Data,
                     start => liveTalkAPI.GenerateTalkingHeadWithPreloadedData(expressionData.Data, clip, start),
                     startFrameIndexProvider, expectedFrames,

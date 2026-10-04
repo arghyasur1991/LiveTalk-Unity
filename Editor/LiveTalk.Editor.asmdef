@@ -2,7 +2,8 @@
     "name": "LiveTalk.Editor",
     "rootNamespace": "LiveTalk",
     "references": [
-        "LiveTalk.Runtime"
+        "LiveTalk.Runtime",
+        "com.github.asus4.onnxruntime"
     ],
     "includePlatforms": [
         "Editor"
