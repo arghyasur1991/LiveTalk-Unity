@@ -71,10 +71,12 @@ What falls out of that:
 
 ## Install
 
-Requires Unity **6000.0.46f1** or newer. Developed on macOS (CoreML). Windows
-loads CoreML-tagged models on **WebGPU** in the editor (D3D12, bundled in
-`com.github.asus4.onnxruntime`) and on **CUDA** in a Windows player when the
-optional GPU package is present.
+Requires Unity **6000.0.46f1** or newer. Developed on macOS (CoreML). On
+Windows — editor and player — CoreML-tagged models load on **CUDA** when the
+optional GPU package and CUDA libraries are present (see
+[Requirements](#requirements-and-performance)), otherwise on **WebGPU**
+(D3D12, bundled in `com.github.asus4.onnxruntime`), otherwise on CPU. Linux
+tries CUDA, then CPU.
 
 Three steps, in this order, in `Packages/manifest.json` (or the equivalent
 Package Manager UI):
@@ -751,10 +753,10 @@ method), `QueueSpeechBatch`, `HasQueuedSpeech` (use `QueuedSpeechCount`).
 
 - Unity 6000.0.46f1 or newer.
 - macOS with CoreML tested (Apple silicon).
-- Windows: WebGPU (editor and player) via the core ONNX Runtime package
-  0.4.9+. CUDA: add `com.github.asus4.onnxruntime.win-x64-gpu` at the
-  same version and install CUDA Toolkit **13.1** (cuBLAS 13;
-  `cublas64_13.dll`). LiveTalk prepends the provider folder to PATH and
+- Windows (editor and player) tries CUDA, then WebGPU, then CPU. WebGPU
+  needs nothing beyond the core ONNX Runtime package 0.4.9+. CUDA: add
+  `com.github.asus4.onnxruntime.win-x64-gpu` at the same version and
+  install CUDA Toolkit **13.1** (cuBLAS 13; `cublas64_13.dll`). LiveTalk prepends the provider folder to PATH and
   registers `onnxruntime_providers_cuda.dll` with
   `OrtEnv.RegisterExecutionProviderLibrary`. Two more pieces:
   - **cuDNN 9** (`cudnn64_9.dll`) for the first convolution. LiveTalk looks
