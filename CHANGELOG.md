@@ -7,90 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Avatar creation in edit mode no longer stalls with the editor in the
-  background. Every await on the main thread waits for the next editor
-  tick (about 150 ms unfocused), and the face-texture save awaited eight
-  writes per frame there — about 13 minutes per expression of waiting
-  for under a second of I/O, with nothing logged. The save now runs off
-  the main thread, the MuseTalk preprocess hops once per 32 frames
-  rather than per frame, and driving-frame PNG writes overlap the next
-  frame. The preprocess and the texture save log progress.
-- Committing a finished avatar or voice copies the staging folder into
-  place when Windows denies the rename, and a staging folder that
-  already has `avatar.json` or `voice.json` is not swept on the next
-  launch.
+## [2.5.0] - 2026-10-04
+
+Sharper, steadier lip-sync; avatar creation that keeps going with the editor
+in the background; performances that reuse audio you already have; and
+GPU (WebGPU / CUDA) loading on Windows.
 
 ### Added
-- Lip-sync detail and stability pass after the MuseTalk blend. The 256²
-  decode has no skin texture and is generated frame by frame, so the
-  lower face read soft and boiled. The avatar frame's fine detail is now
-  added back where the face has not changed shape (so the source mouth
-  never ghosts), and the generated residual is held steady where it
-  barely changes while real articulation passes through. Measured on a
-  talking clip: mouth sharpness 6.5 → 7.7 (8.7 is the driving video),
-  cheek flicker down about a third. Lip-sync caches and rendered performances
-  are salted with `HashUtils.LipSyncRecipe`, so a recipe change re-renders
-  them.
+- **Lip-sync detail and stability pass.** MuseTalk's 256² mouth region has
+  no fine skin texture and is generated frame by frame, so the lower face
+  read soft and shimmered. After the blend, the avatar frame's fine detail
+  is added back where the face has not changed shape (the source mouth
+  never shows through), and the generated region is held steady where it
+  barely changes while real articulation passes through. On a talking clip:
+  mouth sharpness 6.7 → 7.7 (the undubbed driving video is 8.7), cheek
+  flicker down about a fifth. See *How lip-sync frames are made*.
+- `LiveTalkAPI.LipSyncRecipe`: identifies how lip-sync frames are produced.
+  Lip-sync caches and rendered performances are keyed on it, so frames from
+  an older recipe are re-rendered rather than replayed; key your own
+  exported renders on it too.
 - `Performance.AddUtterance(character, text, audioPath, at)`: a line whose
-  audio the host already has. The renderer loads that wav for duration,
-  playback and lip-sync instead of synthesising the text, so a host that
-  keeps its own takes never reaches TTS for them. The wav's content is
-  part of the performance fingerprint, and the lip-sync cache already
-  keys on it.
-- Windows / Linux GPU load for models that prefer CoreML or CUDA:
-  CUDA first, then WebGPU (D3D12) on Windows, then CPU. CUDA needs the
-  optional `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu`
-  package and the CUDA 13 toolkit (`cublas64_13`). LiveTalk prepends the
-  gpu-package plugin folder and `CUDA_PATH\bin` (CUDA 13.1: `bin\x64`)
-  to PATH, then `OrtEnv.RegisterExecutionProviderLibrary` on
-  `onnxruntime_providers_cuda.dll`. Session.Run still needs cuDNN 9
-  (`cudnn64_9.dll`); LiveTalk prepends `CUDNN_PATH`, CUDA `bin`,
-  `%USERPROFILE%\Downloads\cudnn-cu13\nvidia\cudnn\bin`, or
-  `NVIDIA\CUDNN\v9.*\bin`. The editor's CPU `onnxruntime.dll` does not
-  name CUDA on the string API; registered EP devices do
-  (`AppendExecutionProvider(OrtEnv, cudaDevices)`). Menu: **LiveTalk →
-  Log ONNX Execution Providers**. `ProbeCudaExecutionProviderRun` opens
-  a CUDA session and runs one dummy forward on the calling thread.
-  On Windows the editor setup replaces the asus4 CPU
-  `onnxruntime.dll` with the Gpu.Windows 1.29.0 core from the Genesis
-  Drive mount (`My Private/Projects/GenesisInteractive/onnxruntime/win-x64/1.29.0`)
-  before the first session. The stock CPU core fast-fails on the first
-  cuDNN conv `Session.Run` even on a large stack. The GPU core runs, but
-  Unity's main thread and pool threads are still too small for that
-  search, so `Model` runs every session on one 16 MB background thread.
-  `DrivingFrameCap` limits each expression to that many frames (zero
-  means the full clips). A non-zero cap is part of the avatar id, so
-  a short probe folder is not reused when the cap is later zero. `[FrameProfile]` logs
-  video `ReadPixels` and PNG encode/write. A copy of the core this launch
-  needs an editor restart.
-- Edit-mode bakes no longer depend on the player loop. Unity services
-  that loop — and every `StartCoroutine` — only while the editor is the
-  foreground application, so an unfocused avatar bake advanced one frame
-  per stray repaint. Producers now start through
-  `LiveTalkController.Run`: a Unity coroutine in Play, an
-  `EditorApplication.update`-driven iterator (`EditModeCoroutines`) in
-  the editor. `LiveTalkAPI.DrivingFramesFolderProvider` lets a host hand
-  avatar creation a folder of pre-extracted driving frames instead of the
-  `VideoPlayer`, which also needs the player loop. `DrivingFrameCap` now
-  caps every expression (a complete, short avatar) instead of skipping
-  expressions.
-- Editor: LiveTalk disposes all of its inference sessions in
-  `AssemblyReloadEvents.beforeAssemblyReload`. The TTS package releases
-  the process-wide `OrtEnv` in its own hook; a session still alive then
-  was finalized against a dead environment during domain unload and
-  crashed the editor. The hook logs its order relative to the TTS
-  release so a wrong order is visible.
+  audio you already have. The renderer uses that wav for timing, playback
+  and lip-sync instead of synthesising the text, and its content is part of
+  the performance fingerprint, so replacing the file re-renders.
+- `LiveTalkAPI.DrivingFramesFolderProvider`: give avatar creation a folder
+  of pre-extracted driving frames instead of decoding the clip with a
+  `VideoPlayer`, which only advances while the editor is in the foreground.
+- `LiveTalkAPI.DrivingFrameCap`: render a complete but short avatar for
+  quick iteration. The cap is part of the avatar id.
+- Windows / Linux GPU loading for models that prefer CoreML: CUDA, then
+  WebGPU (D3D12) on Windows, then CPU. CUDA needs the optional
+  `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu` package,
+  CUDA 13 and cuDNN 9; LiveTalk puts them on the native search path and
+  registers the provider (`LiveTalkAPI.PrepareNativeExecutionProviders`).
+  On Windows the CUDA provider also needs the `Microsoft.ML.OnnxRuntime.Gpu.Windows`
+  1.29.0 core: **LiveTalk → Windows GPU Core…** points LiveTalk at it and
+  swaps it in on the next editor load, hash-checked. **LiveTalk → Log ONNX
+  Execution Providers** shows what loaded.
+- Progress logging for avatar creation's MuseTalk preprocess and
+  face-texture save.
 
 ### Changed
-- Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU
-  EP in the Windows core binary).
+- Every ONNX session runs on one dedicated 16 MB-stack thread: cuDNN's
+  convolution search overflows Unity's main and pool thread stacks.
+- Edit-mode producers are stepped from `EditorApplication.update` instead
+  of `StartCoroutine`, so edit-mode work does not stall while another
+  application has focus.
+- `DrivingFrameCap` caps every expression (a short, complete avatar)
+  instead of skipping expressions.
+- Declared `com.github.asus4.onnxruntime` dependency is 0.4.9 (WebGPU EP
+  in the Windows core).
 
 ### Fixed
-- CoreML-preferred models (LivePortrait, MuseTalk, face analysis) now
-  load on CPU when CoreML is not in the ONNX Runtime build (Windows
-  editor, Linux). The previous path logged a CPU fallback and returned
-  null, so the first inference failed with `Failed to load model`.
+- Avatar creation in edit mode no longer crawls with the editor in the
+  background. Each await that resumed on the main thread waited for an
+  editor tick, and the face-texture save awaited eight writes per frame
+  there — minutes per expression for under a second of I/O. The save runs
+  off the main thread, the MuseTalk preprocess returns to it once per 32
+  frames, and driving-frame writes overlap the next frame. A full
+  seven-expression avatar now builds in about eight minutes on an M4 Max,
+  focused or not.
+- CoreML-preferred models (LivePortrait, MuseTalk, face analysis) load on
+  CPU when CoreML is not in the ONNX Runtime build (Windows, Linux). They
+  used to fail with `Failed to load model`.
+- No editor crash on script reload: every LiveTalk inference session is
+  disposed in `beforeAssemblyReload`, before the TTS package releases the
+  process-wide ONNX Runtime environment.
+- A finished avatar or voice whose staging rename Windows denied is copied
+  into place, and is no longer swept as unfinished on the next launch.
 
 ## [2.4.0] - 2026-09-19
 

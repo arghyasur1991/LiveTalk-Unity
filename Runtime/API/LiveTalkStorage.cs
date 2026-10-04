@@ -145,9 +145,9 @@ namespace LiveTalk.API
                 {
                     if (Path.GetFileName(dir).Contains(StagingSuffix))
                     {
-                        // A finished tree whose rename was denied is not
-                        // unfinished. Sweeping it is how a completed avatar
-                        // disappeared (2026-09-22).
+                        // A finished tree whose rename was denied (Windows
+                        // file locks) is not unfinished; sweeping it would
+                        // delete a completed avatar or voice.
                         if (File.Exists(Path.Combine(dir, "avatar.json"))
                             || File.Exists(Path.Combine(dir, "voice.json"))
                             || File.Exists(Path.Combine(dir, "voice.meta.json")))

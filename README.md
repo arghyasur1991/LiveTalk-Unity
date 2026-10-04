@@ -228,6 +228,25 @@ them (`Avatar.ExpressionIndices`, `Avatar.CanAnimate`):
 Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 `GetAvailableAvatarIds()`, `DeleteAvatar(avatarId)`.
 
+### Creating avatars in edit mode
+
+Avatar creation runs in the editor without entering Play, including while
+another application has focus. Two knobs help there:
+
+```csharp
+// Decode each expression's driving clip from a folder of frames instead of a
+// VideoPlayer, which only advances while the editor is in the foreground.
+// Return null to fall back to the VideoPlayer.
+LiveTalkAPI.DrivingFramesFolderProvider = (expression, clip) =>
+    MyFrameCache.FolderFor(clip);        // e.g. frames extracted once with ffmpeg
+
+// Iterate quickly: a complete but short avatar (the cap is part of its id).
+LiveTalkAPI.DrivingFrameCap = 48;        // 0 = full clips (default)
+```
+
+Progress for the slow phases (MuseTalk preprocessing, face-texture save) is
+logged as it goes.
+
 ### How the driving clips are applied
 
 Each expression is a bundled 25 fps clip of a rendered face
@@ -389,6 +408,27 @@ generation catches up. Time to first mouth movement drops from ~29 s to
 ~2.4 s on a 4 s line. Turn it on when latency matters more than fidelity;
 the batch path is unchanged when it is off, and cache hits are unaffected
 either way.
+
+### How lip-sync frames are made
+
+MuseTalk generates the mouth region at 256 × 256 for each frame, and it is
+blended back over the lower face of the current avatar frame. Two things
+happen after the blend, per frame, inside the blend mask:
+
+- **Detail.** The generated region has no fine skin texture (stubble,
+  pores), so the avatar frame's fine detail is added back, but only where
+  the coarse shape of the face has not changed. Where the mouth has opened
+  the two disagree and nothing is added, so the source mouth never shows
+  through.
+- **Stability.** Each frame is generated independently, so the region
+  shimmers. The generated difference from the avatar frame is held toward
+  the previous frame's where it barely changes, and passes through where it
+  moves, so articulation keeps its timing and the lower face stays on a
+  moving head.
+
+On a talking clip this raised mouth sharpness from 6.7 to 7.7 (mean
+absolute Laplacian; the undubbed driving video is 8.7) and cut flicker on
+the cheeks by about a fifth. It costs a few milliseconds per frame.
 
 ## Speak directly with SpeakAsync
 
@@ -598,9 +638,11 @@ and `DialogueOrchestrator` — read and write two kinds of entry under
 Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at
 two expressions never shares frames. Lip-sync frames also hash the wav
-bytes: a re-rolled take misses mouths generated against the previous wav
-(`frames_cache_v3` / `perf_mouth_v2`, plus `HashUtils.LipSyncRecipe`, which also salts
-rendered performances; old folders are simply never matched).
+bytes: a re-rolled take misses mouths generated against the previous wav.
+Lip-sync frames and rendered performances are also keyed on
+`LiveTalkAPI.LipSyncRecipe`, which changes whenever the way frames are made
+changes; older folders are simply never matched. Key your own exported
+renders on it too if you keep them.
 A frames folder left short by a failed run is deleted rather than taken as
 a hit next time. `SpeakAsync(..., useCache: false)` and
 `QueueSpeech(..., useCache: false)` skip the audio read for that call only
@@ -714,10 +756,25 @@ method), `QueueSpeechBatch`, `HasQueuedSpeech` (use `QueuedSpeechCount`).
   same version and install CUDA Toolkit **13.1** (cuBLAS 13;
   `cublas64_13.dll`). LiveTalk prepends the provider folder to PATH and
   registers `onnxruntime_providers_cuda.dll` with
-  `OrtEnv.RegisterExecutionProviderLibrary`. **LiveTalk → Log ONNX
-  Execution Providers** should list `CUDAExecutionProvider` (EP devices,
-  not the compiled-in factory list). The 4060 8 GB card is for
-  LivePortrait / MuseTalk, not Qwen 1.7B fp32.
+  `OrtEnv.RegisterExecutionProviderLibrary`. Two more pieces:
+  - **cuDNN 9** (`cudnn64_9.dll`) for the first convolution. LiveTalk looks
+    in `CUDNN_PATH`, the CUDA `bin` folders and
+    `Program Files\NVIDIA\CUDNN\v9.*\bin`.
+  - **The Gpu.Windows ONNX Runtime core.** The core package ships the CPU
+    `onnxruntime.dll`; with it, CUDA sessions open but fail on the first
+    cuDNN convolution. Take `runtimes/win-x64/native/onnxruntime.dll` from
+    the `Microsoft.ML.OnnxRuntime.Gpu.Windows` 1.29.0 NuGet package and
+    point **LiveTalk → Windows GPU Core…** at it (or set
+    `LIVETALK_ORT_GPU_CORE`, or the `LiveTalk.WindowsGpuCore` editor pref).
+    On the next editor load LiveTalk swaps it in for the CPU core — only
+    when both files match the expected builds — and asks for a restart.
+
+  **LiveTalk → Log ONNX Execution Providers** should then list
+  `CUDAExecutionProvider` (EP devices, not the compiled-in factory list).
+  LiveTalk runs every ONNX session on one 16 MB-stack worker thread (on all
+  platforms), because cuDNN's convolution search overflows Unity's main and
+  pool thread stacks. An 8 GB GPU is
+  enough for LivePortrait / MuseTalk; not for Qwen 1.7B fp32.
 - RAM: 32 GB recommended for avatar creation with a TTS checkpoint resident;
   see [Memory](#memory).
 - Disk: ~7 GB LivePortrait + MuseTalk ONNX, plus ~8 GB per Qwen3-TTS checkpoint.

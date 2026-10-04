@@ -7,30 +7,70 @@ using UnityEngine;
 namespace LiveTalk.Editor
 {
     /// <summary>
-    /// asus4 onnxruntime-unity 0.4.9 ships the CPU <c>onnxruntime.dll</c> on
-    /// Windows x64. Registering the CUDA EP against that core lets a session
-    /// open, then the first cuDNN conv <c>Session.Run</c> fast-fails.
-    /// The Microsoft Gpu.Windows 1.29.0 core (same ORT git, CUDA host hooks
-    /// included) lives on the Genesis Drive mount. This copies it over the
-    /// PackageCache plugin before any session is created.
+    /// CUDA in the Windows editor. <c>com.github.asus4.onnxruntime</c> 0.4.9
+    /// ships the CPU <c>onnxruntime.dll</c> for Windows x64. The CUDA execution
+    /// provider registers against it and opens sessions, but the first cuDNN
+    /// convolution in <c>Session.Run</c> fails fast. The core from
+    /// <c>Microsoft.ML.OnnxRuntime.Gpu.Windows</c> 1.29.0 (same ORT revision,
+    /// with the CUDA host hooks) runs.
+    ///
+    /// <para>
+    /// Point LiveTalk at that file — <c>runtimes/win-x64/native/onnxruntime.dll</c>
+    /// from the NuGet package — with <b>LiveTalk → Windows GPU Core…</b>, the
+    /// <see cref="SourcePrefKey"/> editor pref, or the
+    /// <see cref="SourceEnvVar"/> environment variable (a file or its folder).
+    /// On editor load the overlay swaps it in for the package's CPU core,
+    /// only when both files match the hashes below, and asks for a restart:
+    /// the old core is already mapped into the process.
+    /// </para>
+    /// <para>
+    /// Without a configured source nothing happens, and the console stays
+    /// quiet unless the CUDA provider package is installed.
+    /// </para>
     /// </summary>
-    static class WindowsGpuCoreOverlay
+    public static class WindowsGpuCoreOverlay
     {
-        const string RelativeDll = "onnxruntime/win-x64/1.29.0/onnxruntime.dll";
+        /// <summary>EditorPrefs key holding the GPU core path (file or folder).</summary>
+        public const string SourcePrefKey = "LiveTalk.WindowsGpuCore";
 
-        // Microsoft.ML.OnnxRuntime.Gpu.Windows 1.29.0 win-x64 core.
+        /// <summary>Environment variable consulted when the pref is empty.</summary>
+        public const string SourceEnvVar = "LIVETALK_ORT_GPU_CORE";
+
+        const string CoreFileName = "onnxruntime.dll";
+
+        // Microsoft.ML.OnnxRuntime.Gpu.Windows 1.29.0, runtimes/win-x64/native.
         const string GpuCoreSha256 = "5458C46E26EFE64D7B2F960BA6AFF97209B454A007AF0F93D682AC2570F7541D";
         const long GpuCoreBytes = 16588600;
 
-        // asus4 / Microsoft.ML.OnnxRuntime 1.29.0 win-x64 CPU core. The only
-        // file this overlay is allowed to replace.
+        // com.github.asus4.onnxruntime 0.4.9 (ORT 1.29.0) win-x64 CPU core:
+        // the only file this overlay will replace.
         const string CpuCoreSha256 = "69D8E6D3879A3B4001CDC74C8ED9CCC7E7F799A5B847059738323404519EC471";
 
         /// <summary>
-        /// Copies the Drive GPU core over the Windows x64 CPU plugin when
-        /// that plugin is still the known 1.29.0 CPU build. Returns true
-        /// when the file on disk changed; the process already mapped the
-        /// old DLL, so ORT must not be created until the next editor launch.
+        /// The configured GPU core, or null. The pref wins over the
+        /// environment variable; either may name the DLL or its folder.
+        /// </summary>
+        public static string ConfiguredSource
+        {
+            get
+            {
+                string value = EditorPrefs.GetString(SourcePrefKey, "");
+                if (string.IsNullOrEmpty(value))
+                    value = Environment.GetEnvironmentVariable(SourceEnvVar);
+                if (string.IsNullOrEmpty(value))
+                    return null;
+                if (Directory.Exists(value))
+                    value = Path.Combine(value, CoreFileName);
+                return File.Exists(value) ? value : null;
+            }
+        }
+
+        /// <summary>
+        /// Copies the configured GPU core over the package's CPU core when
+        /// that core is still the known CPU build. Returns true when the file
+        /// on disk changed; ONNX Runtime must not be created until the next
+        /// editor launch. <paramref name="message"/> is set when there is
+        /// something to tell the user.
         /// </summary>
         internal static bool TryApply(out string message)
         {
@@ -40,32 +80,25 @@ namespace LiveTalk.Editor
 #else
             string installed = FindInstalledCore();
             if (string.IsNullOrEmpty(installed))
-            {
-                message = "Windows onnxruntime.dll not in PackageCache yet";
                 return false;
-            }
 
             string installedHash = Sha256(installed);
             if (string.Equals(installedHash, GpuCoreSha256, StringComparison.OrdinalIgnoreCase))
-            {
-                string leftover = installed + ".cpu-1.29.0";
-                if (File.Exists(leftover))
-                {
-                    try { File.Delete(leftover); }
-                    catch (IOException) { }
-                }
                 return false;
-            }
             if (!string.Equals(installedHash, CpuCoreSha256, StringComparison.OrdinalIgnoreCase))
             {
-                message = "left Windows onnxruntime.dll alone (not the known 1.29.0 CPU build): " + installedHash;
+                message = "Left the Windows onnxruntime.dll alone: it is not the known 1.29.0 CPU build (" + installedHash + ").";
                 return false;
             }
 
-            string source = FindDriveCore();
+            string source = ConfiguredSource;
             if (string.IsNullOrEmpty(source))
             {
-                message = "Genesis Drive GPU core missing. Expected onnxruntime/win-x64/1.29.0/onnxruntime.dll under My Private/Projects/GenesisInteractive";
+                if (CudaProviderPackageInstalled())
+                {
+                    message = "CUDA needs the Microsoft.ML.OnnxRuntime.Gpu.Windows 1.29.0 onnxruntime.dll. " +
+                              "Set it with LiveTalk → Windows GPU Core… (or " + SourceEnvVar + "). Running on the CPU core until then.";
+                }
                 return false;
             }
 
@@ -74,7 +107,7 @@ namespace LiveTalk.Editor
             if (info.Length != GpuCoreBytes
                 || !string.Equals(sourceHash, GpuCoreSha256, StringComparison.OrdinalIgnoreCase))
             {
-                message = "refusing Drive GPU core; hash/size is not Gpu.Windows 1.29.0: " + sourceHash;
+                message = "Ignored " + source + ": not the Gpu.Windows 1.29.0 onnxruntime.dll (" + sourceHash + ").";
                 return false;
             }
 
@@ -87,67 +120,62 @@ namespace LiveTalk.Editor
             {
                 File.Delete(installed);
                 File.Move(backup, installed);
-                message = "GPU core copy failed hash check; restored the CPU dll";
+                message = "GPU core copy failed its hash check; restored the CPU core.";
                 return false;
             }
             File.Delete(backup);
-            message = "Replaced the Windows CPU onnxruntime.dll with the Gpu.Windows 1.29.0 core from Drive. Restart the editor before creating an ONNX session.";
+            message = "Installed the Gpu.Windows 1.29.0 onnxruntime.dll. Restart the editor before creating an ONNX session.";
             return true;
 #endif
         }
 
-        static string FindInstalledCore()
+#if UNITY_EDITOR_WIN
+        [MenuItem("LiveTalk/Windows GPU Core…")]
+        static void PickSource()
+        {
+            string current = ConfiguredSource;
+            string picked = EditorUtility.OpenFilePanel(
+                "Gpu.Windows 1.29.0 onnxruntime.dll",
+                string.IsNullOrEmpty(current) ? "" : Path.GetDirectoryName(current),
+                "dll");
+            if (string.IsNullOrEmpty(picked))
+                return;
+            EditorPrefs.SetString(SourcePrefKey, picked);
+            if (TryApply(out string message))
+                EditorUtility.DisplayDialog("LiveTalk", message, "OK");
+            else if (!string.IsNullOrEmpty(message))
+                Debug.LogWarning("[LiveTalk] " + message);
+        }
+#endif
+
+        static string ProjectPackageCache()
         {
             string project = Path.GetDirectoryName(Application.dataPath);
             if (string.IsNullOrEmpty(project))
                 return null;
             string cache = Path.Combine(project, "Library", "PackageCache");
-            if (!Directory.Exists(cache))
+            return Directory.Exists(cache) ? cache : null;
+        }
+
+        static string FindInstalledCore()
+        {
+            string cache = ProjectPackageCache();
+            if (cache == null)
                 return null;
             foreach (string pkg in Directory.GetDirectories(cache, "com.github.asus4.onnxruntime@*"))
             {
-                if (pkg.IndexOf("win-x64-gpu", StringComparison.OrdinalIgnoreCase) >= 0)
-                    continue;
-                string dll = Path.Combine(pkg, "Plugins", "Windows", "x64", "onnxruntime.dll");
+                string dll = Path.Combine(pkg, "Plugins", "Windows", "x64", CoreFileName);
                 if (File.Exists(dll))
                     return dll;
             }
             return null;
         }
 
-        static string FindDriveCore()
+        static bool CudaProviderPackageInstalled()
         {
-            string root = FindGenesisRoot();
-            if (string.IsNullOrEmpty(root))
-                return null;
-            string dll = Path.Combine(root, RelativeDll.Replace('/', Path.DirectorySeparatorChar));
-            return File.Exists(dll) ? dll : null;
-        }
-
-        static string FindGenesisRoot()
-        {
-            string fromEnv = Environment.GetEnvironmentVariable("GENESIS_PROJECTS");
-            if (!string.IsNullOrEmpty(fromEnv) && Directory.Exists(fromEnv))
-                return fromEnv;
-
-            string windows = Path.Combine(
-                "G:", "My Drive", "My Private", "Projects", "GenesisInteractive");
-            if (Directory.Exists(windows))
-                return windows;
-
-            string cloud = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "Library", "CloudStorage");
-            if (!Directory.Exists(cloud))
-                return null;
-            foreach (string drive in Directory.GetDirectories(cloud, "GoogleDrive-*"))
-            {
-                string mac = Path.Combine(
-                    drive, "My Drive", "My Private", "Projects", "GenesisInteractive");
-                if (Directory.Exists(mac))
-                    return mac;
-            }
-            return null;
+            string cache = ProjectPackageCache();
+            return cache != null
+                && Directory.GetDirectories(cache, "com.github.asus4.onnxruntime.win-x64-gpu@*").Length > 0;
         }
 
         static string Sha256(string path)

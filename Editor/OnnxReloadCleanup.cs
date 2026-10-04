@@ -14,9 +14,8 @@ namespace LiveTalk.Editor
     /// <c>InferenceSession</c> still alive at that point is torn down by the
     /// finalizer thread during domain unload, against an environment that no
     /// longer exists — a native access violation in <c>OrtReleaseSession</c>
-    /// that takes the editor with it (twice on 2026-09-22, CUDA sessions
-    /// mid-bake). Disposing here, while the environment is intact, is the
-    /// same order the TTS package uses for its own sessions.
+    /// that takes the editor with it. Disposing here, while the environment
+    /// is intact, is the same order the TTS package uses for its own sessions.
     ///
     /// A bake in flight is lost; the alternative is a crash. Hosts that drive
     /// LiveTalk from edit-mode code should cancel their pump before editing

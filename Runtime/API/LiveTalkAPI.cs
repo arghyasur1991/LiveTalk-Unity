@@ -523,8 +523,14 @@ namespace LiveTalk.API
             string.IsNullOrEmpty(cacheLocation) ? LiveTalkCache.GetSize() : LiveTalkCache.GetSize(cacheLocation);
 
         /// <summary>
-        /// Puts Windows CUDA provider DLLs on this process's library search
-        /// path. Call before the first ONNX environment is created. Idempotent.
+        /// Windows: puts the CUDA execution provider's native dependencies on
+        /// this process's library search path and registers the provider —
+        /// the <c>com.github.asus4.onnxruntime.win-x64-gpu</c> plugin folder,
+        /// CUDA 13 <c>bin</c> (from <c>CUDA_PATH</c>) and cuDNN 9
+        /// (<c>CUDNN_PATH</c>, the CUDA <c>bin</c>, or
+        /// <c>Program Files\NVIDIA\CUDNN\v9.*\bin</c>). A no-op elsewhere.
+        /// Call before the first ONNX session is created. Idempotent; a host
+        /// may set <c>CUDNN_PATH</c> for this process and call it again.
         /// </summary>
         public static void PrepareNativeExecutionProviders() =>
             ModelUtils.EnsureNativeProviderSearchPath();
@@ -536,35 +542,6 @@ namespace LiveTalk.API
         /// </summary>
         public static string[] GetAvailableExecutionProviders() =>
             ModelUtils.GetAvailableProviders();
-
-        /// <summary>
-        /// Opens one ONNX file with the CUDA EP and disposes it. Returns a
-        /// short status; the console has the ORT exception if CUDA cannot load.
-        /// </summary>
-        public static string ProbeCudaExecutionProvider(string modelPath) =>
-            ModelUtils.ProbeCuda(modelPath);
-
-        /// <summary>
-        /// Opens one ONNX file with CUDA and runs a dummy forward on the
-        /// calling thread. Use this to test Session.Run without a thread-pool hop.
-        /// </summary>
-        public static void ConfigureCudaProbe(int dummySpatial, Dictionary<string, string> cudaEpOptions)
-        {
-            ModelUtils.ProbeDummySpatial = dummySpatial;
-            ModelUtils.ProbeCudaEpOptions = cudaEpOptions;
-        }
-
-        public static string ProbeCudaExecutionProviderRun(string modelPath) =>
-            ModelUtils.ProbeCudaRun(modelPath);
-
-        public static string ProbeCudaExecutionProviderRunOnLargeStack(string modelPath, int stackBytes) =>
-            ModelUtils.ProbeCudaRunOnLargeStack(modelPath, stackBytes);
-
-        /// <summary>
-        /// Opens one ONNX file on CPU and runs a dummy forward on the calling thread.
-        /// </summary>
-        public static string ProbeCpuExecutionProviderRun(string modelPath) =>
-            ModelUtils.ProbeCpuRun(modelPath);
 
         #endregion
 
@@ -816,20 +793,23 @@ namespace LiveTalk.API
 
         /// <summary>
         /// When greater than zero, avatar creation renders only this many
-        /// driving frames per expression. Zero renders the full clips. A
-        /// profiling knob: the avatar it produces is complete but short.
+        /// driving frames per expression; zero (the default) renders the full
+        /// clips. For quick iteration and profiling: the avatar is complete
+        /// but short, and the cap is part of its id, so it is never reused as
+        /// a full avatar.
         /// </summary>
-        public static int DrivingFrameCap;
+        public static int DrivingFrameCap { get; set; }
 
         /// <summary>
         /// Optional source of pre-extracted driving frames for avatar creation.
         /// Given an expression name and its <see cref="VideoClip"/>, return a
-        /// folder of numbered PNG/JPG frames, or null to decode the clip with a
-        /// <see cref="VideoPlayer"/>. A host that bakes in the editor sets
-        /// this so avatar creation does not depend on the player loop, which
-        /// only runs while the editor is focused.
+        /// folder of frames whose file names sort in playback order (PNG or
+        /// JPG), or null to decode the clip with a <see cref="VideoPlayer"/>.
+        /// Set it when creating avatars in edit mode: the
+        /// <see cref="VideoPlayer"/> only advances while the editor is the
+        /// foreground application, the folder path does not.
         /// </summary>
-        public static Func<string, VideoClip, string> DrivingFramesFolderProvider;
+        public static Func<string, VideoClip, string> DrivingFramesFolderProvider { get; set; }
 
         /// <summary>
         /// Generates animated textures from a source image and a video player's frames.

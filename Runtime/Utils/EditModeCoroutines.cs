@@ -13,9 +13,9 @@ namespace LiveTalk.Utils
     ///
     /// Unity services the player loop — and with it every <c>MonoBehaviour</c>
     /// coroutine — only while the editor is the foreground application.
-    /// <c>EditorApplication.QueuePlayerLoopUpdate</c> does not change that
-    /// (measured 2026-09-22: a host coroutine advanced 0 times in 177 s
-    /// unfocused, 10 times in 350 ms once focused). <c>EditorApplication.update</c>
+    /// <c>EditorApplication.QueuePlayerLoopUpdate</c> does not change that: a
+    /// coroutine can sit for minutes without a step while another application
+    /// has focus. <c>EditorApplication.update</c>
     /// keeps ticking unfocused, so an edit-mode bake steps its iterators from
     /// here instead of <c>StartCoroutine</c>.
     ///

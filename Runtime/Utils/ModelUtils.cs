@@ -1,11 +1,8 @@
 using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -32,8 +29,6 @@ namespace LiveTalk.Utils
         private static OrtLoggingLevel _ortLogLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
         private static bool _cudaLibraryRegistered;
         private static string _cachedProjectRoot;
-        internal static int ProbeDummySpatial = 512;
-        internal static Dictionary<string, string> ProbeCudaEpOptions;
 
         #endregion
 
@@ -226,198 +221,6 @@ namespace LiveTalk.Utils
             return names.ToArray();
         }
 
-        internal static string ProbeCuda(string modelPath)
-        {
-            EnsureNativeProviderSearchPath();
-            var env = OrtEnv.Instance();
-            string providers = string.Join(",", GetAvailableProviders());
-            string devices = DescribeEpDevices(env);
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
-                return $"missing model: {modelPath}; providers={providers}; devices={devices}";
-
-            var session = TryLoadCuda(modelPath);
-            if (session == null)
-                return $"CUDA session failed; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
-            session.Dispose();
-            return $"CUDA session ok; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
-        }
-
-        /// <summary>
-        /// Opens a CUDA session and runs one dummy forward on this thread.
-        /// Does not hop to the thread pool. Dispose happens on the same thread.
-        /// </summary>
-        internal static string ProbeCudaRun(string modelPath)
-        {
-            int threadId = Thread.CurrentThread.ManagedThreadId;
-            EnsureNativeProviderSearchPath();
-            var env = OrtEnv.Instance();
-            string providers = string.Join(",", GetAvailableProviders());
-            string devices = DescribeEpDevices(env);
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
-                return $"missing model: {modelPath}; thread={threadId}; providers={providers}; devices={devices}";
-
-            var session = TryLoadCuda(modelPath);
-            if (session == null)
-                return $"CUDA session failed; thread={threadId}; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
-
-            string shapes = DescribeInputShapes(session);
-            try
-            {
-                var inputs = BuildDummyInputs(session);
-                var start = Stopwatch.StartNew();
-                using var results = session.Run(inputs);
-                int outputs = 0;
-                foreach (var _ in results)
-                    outputs++;
-                return $"CUDA run ok; thread={threadId}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}; registered={_cudaLibraryRegistered}; providers={providers}; devices={devices}";
-            }
-            catch (Exception e)
-            {
-                return $"CUDA run failed; thread={threadId}; inputs={shapes}; registered={_cudaLibraryRegistered}; {e}";
-            }
-            finally
-            {
-                session.Dispose();
-            }
-        }
-
-        /// <summary>
-        /// Creates the CUDA session on the caller and runs one dummy forward
-        /// on a new thread with a large stack. Dispose stays on the caller.
-        /// </summary>
-        internal static string ProbeCudaRunOnLargeStack(string modelPath, int stackBytes)
-        {
-            int createThread = Thread.CurrentThread.ManagedThreadId;
-            EnsureNativeProviderSearchPath();
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
-                return $"missing model: {modelPath}; createThread={createThread}";
-
-            var session = TryLoadCuda(modelPath);
-            if (session == null)
-                return $"CUDA session failed; createThread={createThread}; registered={_cudaLibraryRegistered}";
-
-            string shapes = DescribeInputShapes(session);
-            string report = "large-stack run did not finish";
-            var worker = new Thread(() =>
-            {
-                int runThread = Thread.CurrentThread.ManagedThreadId;
-                try
-                {
-                    var inputs = BuildDummyInputs(session);
-                    var start = Stopwatch.StartNew();
-                    using var results = session.Run(inputs);
-                    int outputs = 0;
-                    foreach (var _ in results)
-                        outputs++;
-                    report = $"CUDA run ok; createThread={createThread}; runThread={runThread}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}";
-                }
-                catch (Exception e)
-                {
-                    report = $"CUDA run failed; createThread={createThread}; runThread={runThread}; inputs={shapes}; {e.GetType().Name}: {e.Message}";
-                }
-            }, stackBytes)
-            {
-                IsBackground = true,
-                Name = "LiveTalkCudaRun"
-            };
-            worker.Start();
-            if (!worker.Join(180000))
-                report = "large-stack CUDA run timed out";
-            session.Dispose();
-            return report;
-        }
-
-        internal static string ProbeCpuRun(string modelPath)
-        {
-            int threadId = Thread.CurrentThread.ManagedThreadId;
-            EnsureNativeProviderSearchPath();
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
-                return $"missing model: {modelPath}; thread={threadId}";
-
-            InferenceSession session;
-            try
-            {
-                session = new InferenceSession(modelPath, CreateSessionOptions());
-            }
-            catch (Exception e)
-            {
-                return $"CPU session failed; thread={threadId}; {e}";
-            }
-
-            string shapes = DescribeInputShapes(session);
-            try
-            {
-                var inputs = BuildDummyInputs(session);
-                var start = Stopwatch.StartNew();
-                using var results = session.Run(inputs);
-                int outputs = 0;
-                foreach (var _ in results)
-                    outputs++;
-                return $"CPU run ok; thread={threadId}; ms={start.ElapsedMilliseconds}; outputs={outputs}; inputs={shapes}";
-            }
-            catch (Exception e)
-            {
-                return $"CPU run failed; thread={threadId}; inputs={shapes}; {e}";
-            }
-            finally
-            {
-                session.Dispose();
-            }
-        }
-
-        static string DescribeInputShapes(InferenceSession session)
-        {
-            var parts = new List<string>();
-            foreach (var kv in session.InputMetadata)
-            {
-                string dims = kv.Value.Dimensions == null
-                    ? "?"
-                    : string.Join("x", kv.Value.Dimensions);
-                parts.Add(kv.Key + ":" + kv.Value.ElementType.Name + "[" + dims + "]");
-            }
-            return parts.Count == 0 ? "(none)" : string.Join(";", parts);
-        }
-
-        static List<NamedOnnxValue> BuildDummyInputs(InferenceSession session)
-        {
-            var inputs = new List<NamedOnnxValue>();
-            foreach (var kv in session.InputMetadata)
-            {
-                if (kv.Value.ElementType != typeof(float))
-                    throw new InvalidOperationException(
-                        $"probe only handles float inputs; {kv.Key} is {kv.Value.ElementType}");
-                int[] dims = ProbeRunDimensions(kv.Value.Dimensions);
-                long len = 1;
-                foreach (int d in dims)
-                    len *= d;
-                var tensor = new DenseTensor<float>(new float[len], dims);
-                inputs.Add(NamedOnnxValue.CreateFromTensor(kv.Key, tensor));
-            }
-            return inputs;
-        }
-
-        static int[] ProbeRunDimensions(int[] dims)
-        {
-            var copy = new int[dims.Length];
-            for (int i = 0; i < dims.Length; i++)
-            {
-                if (dims[i] > 0)
-                {
-                    copy[i] = dims[i];
-                    continue;
-                }
-                if (dims.Length == 4 && i == 0)
-                    copy[i] = 1;
-                else if (dims.Length == 4 && i == 1)
-                    copy[i] = 3;
-                else if (dims.Length == 4)
-                    copy[i] = ProbeDummySpatial > 0 ? ProbeDummySpatial : 512;
-                else
-                    copy[i] = 1;
-            }
-            return copy;
-        }
-
         static InferenceSession TryLoadCuda(string modelPath)
         {
             EnsureNativeProviderSearchPath();
@@ -432,7 +235,7 @@ namespace LiveTalk.Utils
             if (cudaDevices.Count > 0)
             {
                 var viaDevices = TryLoadWithProvider(modelPath, "CUDA-EP-device",
-                    options => options.AppendExecutionProvider(env, cudaDevices, ProbeCudaEpOptions));
+                    options => options.AppendExecutionProvider(env, cudaDevices, null));
                 if (viaDevices != null)
                     return viaDevices;
             }
@@ -530,12 +333,6 @@ namespace LiveTalk.Utils
                 if (fromCuda != null)
                     return fromCuda;
             }
-            string downloads = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "Downloads", "cudnn-cu13", "nvidia", "cudnn", "bin");
-            string fromDownloads = Cudnn9BinIfPresent(downloads);
-            if (fromDownloads != null)
-                return fromDownloads;
             string nvidia = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
                 "NVIDIA", "CUDNN");
@@ -590,21 +387,6 @@ namespace LiveTalk.Utils
             }
         }
 #endif
-
-        static string DescribeEpDevices(OrtEnv env)
-        {
-            try
-            {
-                var names = new List<string>();
-                foreach (var device in env.GetEpDevices())
-                    names.Add(device.EpName ?? "?");
-                return names.Count == 0 ? "(none)" : string.Join(",", names);
-            }
-            catch (Exception e)
-            {
-                return "GetEpDevices failed: " + e.Message;
-            }
-        }
 
         #endregion
 
