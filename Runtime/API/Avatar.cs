@@ -495,6 +495,9 @@ namespace LiveTalk.API
             LiveTalkAPI liveTalkAPI)
         {
             int frameIndex = 0;
+            // Each write overlaps the next frame; waiting per frame cost one
+            // more editor tick per frame in edit mode. All land before return.
+            var writes = new List<Task>();
 
             // Process frames as they become available using coroutine pattern
             while (outputStream.HasMoreFrames)
@@ -513,11 +516,9 @@ namespace LiveTalk.API
                     int h = awaiter.Texture.height;
 
                     string frameFileName = Path.Combine(expressionFolder, $"{frameIndex:D5}.png");
-                    var write = System.Diagnostics.Stopwatch.StartNew();
-                    yield return TaskYield.Wait(File.WriteAllBytesAsync(frameFileName, pngData),
-                        $"Avatar.ProcessFrames write {frameFileName}");
+                    writes.Add(File.WriteAllBytesAsync(frameFileName, pngData));
                     Logger.Log(
-                        $"[FrameProfile] png={frameIndex} {w}x{h} waitForFrame={waitMs}ms encode={encodeMs}ms write={write.ElapsedMilliseconds}ms bytes={pngData.Length}");
+                        $"[FrameProfile] png={frameIndex} {w}x{h} waitForFrame={waitMs}ms encode={encodeMs}ms bytes={pngData.Length}");
 
                     // Keep reference for cache generation
                     if (liveTalkAPI.Config.MemoryUsage != MemoryUsage.Optimal)
@@ -532,6 +533,7 @@ namespace LiveTalk.API
                     frameIndex++;
                 }
             }
+            yield return TaskYield.Wait(Task.WhenAll(writes), $"Avatar.ProcessFrames write {expressionFolder}");
         }
 
         /// <summary>
@@ -578,8 +580,11 @@ namespace LiveTalk.API
                     "MuseTalk produced no avatar data for the generated driving frames. No fallback available.");
             }
 
-            await SaveLatentsToFile(expressionFolder, avatarData.Latents);
-            await SaveFaceDataToFile(expressionFolder, avatarData.FaceRegions);
+            // File I/O and JSON only. Off the main thread: in edit mode each
+            // context hop waits for an editor tick (~150 ms unfocused), and
+            // the face textures are eight writes per frame.
+            await SaveLatentsToFile(expressionFolder, avatarData.Latents).ConfigureAwait(false);
+            await SaveFaceDataToFile(expressionFolder, avatarData.FaceRegions).ConfigureAwait(false);
 
             Logger.LogVerbose($"[Avatar] Saved {avatarData.Latents.Count} latents, {avatarData.FaceRegions.Count} face regions");
         }
@@ -633,7 +638,7 @@ namespace LiveTalk.API
             // Convert to bytes and save
             var latentsBytes = new byte[allLatents.Length * sizeof(float)];
             Buffer.BlockCopy(allLatents, 0, latentsBytes, 0, latentsBytes.Length);
-            await File.WriteAllBytesAsync(latentsFile, latentsBytes);
+            await File.WriteAllBytesAsync(latentsFile, latentsBytes).ConfigureAwait(false);
 
             Logger.LogVerbose($"[Avatar] Saved {latents.Count} latent arrays ({totalFloats} total floats) to {latentsFile}");
         }
@@ -656,7 +661,7 @@ namespace LiveTalk.API
             }
             var bytes = new byte[all.Length * sizeof(float)];
             Buffer.BlockCopy(all, 0, bytes, 0, bytes.Length);
-            await File.WriteAllBytesAsync(path, bytes);
+            await File.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
             Logger.LogVerbose($"[Avatar] Saved {poses.Count} poses to {path}");
         }
 
@@ -717,7 +722,9 @@ namespace LiveTalk.API
                 var face = faceRegions[faceIndex];
 
                 // Save all precomputed textures for this face
-                var texturePaths = await SaveFaceTextures(texturesFolder, face, faceIndex);
+                var texturePaths = await SaveFaceTextures(texturesFolder, face, faceIndex).ConfigureAwait(false);
+                if ((faceIndex + 1) % 100 == 0 || faceIndex + 1 == faceRegions.Count)
+                    Logger.Log($"[Avatar] Face textures {faceIndex + 1}/{faceRegions.Count} in {expressionFolder}");
 
                 // Create face data entry with texture file references
                 var faceDataEntry = new
@@ -774,7 +781,7 @@ namespace LiveTalk.API
             };
 
             string json = JsonConvert.SerializeObject(faceDataJson, Formatting.Indented);
-            await File.WriteAllTextAsync(facesFile, json);
+            await File.WriteAllTextAsync(facesFile, json).ConfigureAwait(false);
 
             Logger.LogVerbose($"[Avatar] Saved complete face data with textures for {faceRegions.Count} face regions to {facesFile}");
         }
@@ -808,7 +815,7 @@ namespace LiveTalk.API
                     string fullPath = Path.Combine(folderPath, filename);
 
                     // Save as bytes array
-                    await File.WriteAllBytesAsync(fullPath, frame.data);
+                    await File.WriteAllBytesAsync(fullPath, frame.data).ConfigureAwait(false);
 
                     // Store relative path for JSON reference
                     string relativePath = Path.Combine("textures", folder, filename).Replace('\\', '/');

@@ -8,12 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Avatar creation in edit mode no longer stalls with the editor in the
+  background. Every await on the main thread waits for the next editor
+  tick (about 150 ms unfocused), and the face-texture save awaited eight
+  writes per frame there — about 13 minutes per expression of waiting
+  for under a second of I/O, with nothing logged. The save now runs off
+  the main thread, the MuseTalk preprocess hops once per 32 frames
+  rather than per frame, and driving-frame PNG writes overlap the next
+  frame. The preprocess and the texture save log progress.
 - Committing a finished avatar or voice copies the staging folder into
   place when Windows denies the rename, and a staging folder that
   already has `avatar.json` or `voice.json` is not swept on the next
   launch.
 
 ### Added
+- `Performance.AddUtterance(character, text, audioPath, at)`: a line whose
+  audio the host already has. The renderer loads that wav for duration,
+  playback and lip-sync instead of synthesising the text, so a host that
+  keeps its own takes never reaches TTS for them. The wav's content is
+  part of the performance fingerprint, and the lip-sync cache already
+  keys on it.
 - Windows / Linux GPU load for models that prefer CoreML or CUDA:
   CUDA first, then WebGPU (D3D12) on Windows, then CPU. CUDA needs the
   optional `com.github.asus4.onnxruntime.win-x64-gpu` / `linux-x64-gpu`

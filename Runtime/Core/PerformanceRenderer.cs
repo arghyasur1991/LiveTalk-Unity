@@ -80,6 +80,15 @@ namespace LiveTalk.Core
                 {
                     onProgress?.Invoke($"Audio {++ui}/{performance.Utterances.Count}: {u.Character.Name}", 0.05f * ui / performance.Utterances.Count);
                     AudioClip clip = null;
+                    if (u.AudioPath != null)
+                    {
+                        yield return TaskYield.Wait(AudioFileIO.LoadClipAsync(u.AudioPath), c => clip = c,
+                            $"Performance.LoadAudio {u.Id}");
+                        if (clip == null) throw new InvalidOperationException($"Could not read {u.AudioPath} for {u}.");
+                        durations[u] = clip.length;
+                        clips[u] = (clip, u.AudioPath);
+                        continue;
+                    }
                     Exception fail = null;
                     yield return u.Character.SpeakAsync(
                         u.Text, expressionIndex: -1,

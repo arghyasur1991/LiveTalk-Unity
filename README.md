@@ -526,6 +526,11 @@ is what actually plays wavs and frames.
 What rendering does, once per fingerprint (cues + characters + voices):
 
 1. **Audio** for every utterance (the normal speech cache, voice + text).
+   An utterance added with a wav path —
+   `perf.AddUtterance(alex, text, "/abs/line.wav", Anchor.At(1f))` — skips
+   TTS and uses that file. Its content is in the fingerprint, so a host
+   that keeps its own takes (committed per-line wavs) re-renders only when
+   one of them changes.
 2. **Resolve**: anchors become seconds; the expression track becomes a *pose
    per tick* for each animated character. Idle (expression 0) runs underneath,
    forward, wrapping. A cue blends in from whatever pose is on screen, plays its
